@@ -5,8 +5,8 @@ import (
 
 	"log"
 
-	"github.com/grafana/grafana/pkg/tsdb/plugins/proto"
-	shared "github.com/grafana/grafana/pkg/tsdb/plugins/shared"
+	shared "github.com/grafana/grafana/pkg/plugins/backend/shared"
+	proto "github.com/grafana/grafana/pkg/tsdb/models"
 	plugin "github.com/hashicorp/go-plugin"
 )
 

@@ -3,7 +3,7 @@ package shared
 import (
 	"golang.org/x/net/context"
 
-	proto "github.com/grafana/grafana/pkg/tsdb/plugins/proto"
+	proto "github.com/grafana/grafana/pkg/tsdb/models"
 	plugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 )

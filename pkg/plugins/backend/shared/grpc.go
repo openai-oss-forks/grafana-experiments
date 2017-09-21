@@ -1,7 +1,7 @@
 package shared
 
 import (
-	proto "github.com/grafana/grafana/pkg/tsdb/plugins/proto"
+	proto "github.com/grafana/grafana/pkg/tsdb/models"
 	"golang.org/x/net/context"
 )
 

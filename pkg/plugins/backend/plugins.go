@@ -6,8 +6,8 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/grafana/grafana/pkg/log"
-	"github.com/grafana/grafana/pkg/tsdb/plugins/proto"
-	"github.com/grafana/grafana/pkg/tsdb/plugins/shared"
+	"github.com/grafana/grafana/pkg/plugins/backend/shared"
+	"github.com/grafana/grafana/pkg/tsdb/models"
 	plugin "github.com/hashicorp/go-plugin"
 )
 
@@ -25,7 +25,7 @@ func Init() (*plugin.Client, error) {
 			MagicCookieValue: "hello",
 		},
 		Plugins:          shared.PluginMap,
-		Cmd:              exec.Command("sh", "-c", "/home/carl/go/src/github.com/grafana/grafana/pkg/tsdb/plugins/mock_tsdb_plugin/simple-plugin"),
+		Cmd:              exec.Command("sh", "-c", "/home/carl/go/src/github.com/grafana/grafana/pkg/plugins/backend/mock_tsdb_plugin/simple-plugin"),
 		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
 		Logger:           logWrapper{logger: logger},
 	})
