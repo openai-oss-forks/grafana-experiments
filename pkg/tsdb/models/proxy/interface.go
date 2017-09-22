@@ -1,7 +1,9 @@
-package shared
+package proxy
 
 import (
 	"golang.org/x/net/context"
+
+	//tsdb "github.com/grafana/grafana/pkg/tsdb"
 
 	proto "github.com/grafana/grafana/pkg/tsdb/models"
 	plugin "github.com/hashicorp/go-plugin"
@@ -13,7 +15,7 @@ var PluginMap = map[string]plugin.Plugin{
 }
 
 type TsdbPlugin interface {
-	Get(ctx context.Context, req *proto.TsdbRequest) (*proto.TsdbResponse, error)
+	Query(ctx context.Context, req *proto.TsdbQuery) (*proto.Response, error)
 }
 
 type TsdbPluginImpl struct { //LOL IMPL LOL
