@@ -2250,6 +2250,14 @@ var (
 			Expression:  "false",
 		},
 		{
+			Name:        "grafana.dedicatedGrafanaComProxyAPIToken",
+			Description: "Use a dedicated auth token for Grafana.com proxy requests and plugin installs",
+			Stage:       FeatureStageExperimental,
+			Generate:    Generate{Go: true},
+			Owner:       grafanaPluginsPlatformSquad,
+			Expression:  "false",
+		},
+		{
 			Name:        "newVizSuggestions",
 			Description: "Enable new visualization suggestions",
 			Stage:       FeatureStageGeneralAvailability,
