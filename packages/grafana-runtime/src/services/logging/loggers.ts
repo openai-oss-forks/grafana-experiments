@@ -5,6 +5,7 @@ export type LoggerDefaults = { context?: Omit<LogContext, 'source'>; logToConsol
 export const Loggers = {
   /* new loggers should follow package/area.feature naming convention */
   'grafana/runtime.plugins.meta': { logToConsole: true },
+  'grafana/runtime.plugins.settings': { logToConsole: true },
   'grafana/runtime.utils.getCachedPromise': {},
 
   /* existing loggers that keep their existing source name */
