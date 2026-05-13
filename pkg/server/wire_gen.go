@@ -452,7 +452,7 @@ func Initialize(ctx context.Context, cfg *setting.Cfg, opts Options, apiOpts api
 		return nil, err
 	}
 	retrieverService := retriever.ProvideService(sqlStore, apikeyService, kvStore, userimplService, orgService)
-	serviceAccountPermissionsService, err := ossaccesscontrol.ProvideServiceAccountPermissions(cfg, featureToggles, routeRegisterImpl, sqlStore, accessControl, ossLicensingService, retrieverService, acimplService, teamimplService, userimplService, actionSetService)
+	serviceAccountPermissionsService, err := ossaccesscontrol.ProvideServiceAccountPermissions(cfg, featureToggles, routeRegisterImpl, sqlStore, accessControl, ossLicensingService, retrieverService, acimplService, teamimplService, userimplService, actionSetService, eventualRestConfigProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -1163,7 +1163,7 @@ func InitializeForTest(ctx context.Context, t sqlutil.ITestDB, testingT interfac
 		return nil, err
 	}
 	retrieverService := retriever.ProvideService(sqlStore, apikeyService, kvStore, userimplService, orgService)
-	serviceAccountPermissionsService, err := ossaccesscontrol.ProvideServiceAccountPermissions(cfg, featureToggles, routeRegisterImpl, sqlStore, accessControl, ossLicensingService, retrieverService, acimplService, teamimplService, userimplService, actionSetService)
+	serviceAccountPermissionsService, err := ossaccesscontrol.ProvideServiceAccountPermissions(cfg, featureToggles, routeRegisterImpl, sqlStore, accessControl, ossLicensingService, retrieverService, acimplService, teamimplService, userimplService, actionSetService, eventualRestConfigProvider)
 	if err != nil {
 		return nil, err
 	}
