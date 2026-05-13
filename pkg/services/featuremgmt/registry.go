@@ -1938,6 +1938,15 @@ var (
 			Generate:     Generate{LegacyGo: true, LegacyFrontend: true},
 		},
 		{
+			Name:         "kubernetesAuthzServiceAccountResourcePermissions",
+			Description:  "Enables service account resource permissions via the K8s IAM resource permission APIs",
+			Stage:        FeatureStageExperimental,
+			Owner:        identityAccessTeam,
+			HideFromDocs: true,
+			Expression:   "false",
+			Generate:     Generate{LegacyGo: true, LegacyFrontend: true},
+		},
+		{
 			Name:        "recentlyViewedDashboards",
 			Description: "Enables recently viewed dashboards section in the browsing dashboard page",
 			Stage:       FeatureStageExperimental,
