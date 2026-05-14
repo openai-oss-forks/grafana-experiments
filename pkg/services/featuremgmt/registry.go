@@ -107,7 +107,7 @@ var (
 			Expression:  "true", // enabled by default
 		},
 		{
-			Name:            "liveAPIServer",
+			Name:            "live.runAPIServer",
 			Description:     "Registers a live apiserver",
 			Stage:           FeatureStageExperimental,
 			RequiresDevMode: true,
@@ -115,7 +115,17 @@ var (
 			Owner:           grafanaAppPlatformSquad,
 			RequiresRestart: true,
 			Expression:      "false",
-			Generate:        Generate{LegacyGo: true, LegacyFrontend: true},
+			Generate:        Generate{Go: true},
+		},
+		{
+			Name:            "live.keepHAPrefixInCloud",
+			Description:     "keep the prefix (just in case)",
+			Stage:           FeatureStageExperimental,
+			HideFromDocs:    true,
+			Owner:           grafanaAppPlatformSquad,
+			RequiresRestart: true,
+			Expression:      "false",
+			Generate:        Generate{Go: true},
 		},
 		{
 			Name:         "starsFromAPIServer",
