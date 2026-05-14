@@ -2808,7 +2808,7 @@ var (
 		{
 			Name:        "flameGraphWithCallTree",
 			Description: "Enables the new Flame Graph UI containing the Call Tree view",
-			Stage:       FeatureStageExperimental,
+			Stage:       FeatureStagePublicPreview,
 			Owner:       grafanaObservabilityTracesAndProfilingSquad,
 			Generate:    Generate{LegacyFrontend: true, React: true}, // legacy frontend for old naming convention
 			Expression:  "false",
