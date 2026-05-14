@@ -514,6 +514,11 @@ export interface FeatureToggles {
   */
   sqlExpressionsColumnAutoComplete?: boolean;
   /**
+  * Enables CodeMirror editor for SQL Expressions
+  * @default false
+  */
+  sqlExpressionsCodeMirror?: boolean;
+  /**
   * Enable grafana's embedded kube-aggregator
   * @default false
   */

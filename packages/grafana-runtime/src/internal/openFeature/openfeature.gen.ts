@@ -79,6 +79,8 @@ export const FlagKeys = {
   ReportingAnyPageReporting: "reporting.anyPageReporting",
   /** Enables the splash screen modal for introducing new Grafana features on first session */
   SplashScreen: "splashScreen",
+  /** Enables CodeMirror editor for SQL Expressions */
+  SqlExpressionsCodeMirror: "sqlExpressionsCodeMirror",
   /** Enables option to position series names above bars in the state timeline panel */
   StateTimelineNameAboveBars: "stateTimeline.nameAboveBars",
   /** Enables the 'Customize with Assistant' button on suggested dashboard cards */
@@ -446,6 +448,17 @@ export const useFlagReportingAnyPageReporting = (options?: ReactFlagEvaluationOp
  */
 export const useFlagSplashScreen = (options?: ReactFlagEvaluationOptions): boolean => {
   return useFlag("splashScreen", false, options).value;
+};
+
+/**
+ * Enables CodeMirror editor for SQL Expressions
+ *
+ * **Details:**
+ * - flag key: `sqlExpressionsCodeMirror`
+ * - default value: `false`
+ */
+export const useFlagSqlExpressionsCodeMirror = (options?: ReactFlagEvaluationOptions): boolean => {
+  return useFlag("sqlExpressionsCodeMirror", false, options).value;
 };
 
 /**
