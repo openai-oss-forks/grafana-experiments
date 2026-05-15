@@ -1387,6 +1387,11 @@ export interface FeatureToggles {
   */
   dashboardSectionVariables?: boolean;
   /**
+  * Enables global and folder-scoped dashboard variables via dashboard.grafana.app
+  * @default false
+  */
+  globalDashboardVariables?: boolean;
+  /**
   * Enables the ASAP smoothing transformation for time series data
   * @default false
   */
