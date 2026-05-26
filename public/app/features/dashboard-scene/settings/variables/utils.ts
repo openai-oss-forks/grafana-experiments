@@ -24,6 +24,7 @@ import { VariableHide, VariableType } from '@grafana/schema';
 import { OptionsPaneItemDescriptor } from 'app/features/dashboard/components/PanelEditor/OptionsPaneItemDescriptor';
 
 import { getIntervalsQueryFromNewIntervalModel } from '../../utils/utils';
+import { DashboardQueryVariable } from '../../variables/DashboardQueryVariable';
 
 import { AdHocFiltersVariableEditor, getAdHocFilterOptions } from './editors/AdHocFiltersVariableEditor';
 import { ConstantVariableEditor, getConstantVariableOptions } from './editors/ConstantVariableEditor';
@@ -185,7 +186,7 @@ export function getVariableScene(type: EditableVariableType, initialState: Commo
     case 'custom':
       return new CustomVariable(initialState);
     case 'query':
-      return new QueryVariable(initialState);
+      return new DashboardQueryVariable(initialState);
     case 'constant':
       return new ConstantVariable({ ...initialState, hide: VariableHide.hideVariable });
     case 'interval':
@@ -209,7 +210,7 @@ export function getVariableScene(type: EditableVariableType, initialState: Commo
 export function getVariableDefault(variables: Array<SceneVariable<SceneVariableState>>) {
   const defaultVariableType = 'query';
   const nextVariableIdName = getNextAvailableId(defaultVariableType, variables);
-  return new QueryVariable({
+  return new DashboardQueryVariable({
     name: nextVariableIdName,
   });
 }
