@@ -6,13 +6,14 @@ import { type SceneObject, SceneVariableSet } from '@grafana/scenes';
 import { type DashboardScene } from '../../scene/DashboardScene';
 import { getNextAvailableId, getVariableNamePrefix, getVariableScene } from '../../settings/variables/utils';
 import { DashboardInteractions } from '../../utils/interactions';
+import { DashboardVariableSet } from '../../variables/DashboardVariableSet';
 import { dashboardEditActions } from '../shared';
 
 import { AddButton } from './AddButton';
 
 export function openAddFilterForm(dashboard: DashboardScene, sectionOwner: SceneObject) {
   const existing = sectionOwner.state.$variables;
-  const variablesSet = existing instanceof SceneVariableSet ? existing : new SceneVariableSet({ variables: [] });
+  const variablesSet = existing instanceof SceneVariableSet ? existing : new DashboardVariableSet({ variables: [] });
 
   if (!existing) {
     sectionOwner.setState({ $variables: variablesSet });

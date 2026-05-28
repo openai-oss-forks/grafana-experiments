@@ -23,6 +23,7 @@ import { ReportInteractionBehavior } from '../scene/ReportInteractionBehavior';
 import { SnapshotVariable } from '../serialization/custom-variables/SnapshotVariable';
 import { migrateGroupByVariablesV1 } from '../serialization/groupByMigration';
 import { createSceneVariableFromVariableModel as createSceneVariableFromVariableModelV2 } from '../serialization/transformSaveModelSchemaV2ToScene';
+import { DashboardVariableSet } from '../variables/DashboardVariableSet';
 
 import { getCurrentValueForOldIntervalModel, getIntervalsFromQueryString } from './utils';
 
@@ -73,7 +74,7 @@ export function createVariablesForDashboard(oldModel: DashboardModel, defaultVar
     variableObjects.push(new ScopesVariable({ enable: true }));
   }
 
-  return new SceneVariableSet({
+  return new DashboardVariableSet({
     variables: [...defaultVariableObjects, ...variableObjects],
   });
 }

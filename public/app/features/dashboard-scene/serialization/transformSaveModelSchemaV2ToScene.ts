@@ -81,6 +81,7 @@ import { DashboardScene } from '../scene/DashboardScene';
 import { ReportInteractionBehavior } from '../scene/ReportInteractionBehavior';
 import { type DashboardLayoutManager } from '../scene/types/DashboardLayoutManager';
 import { getIntervalsFromQueryString } from '../utils/utils';
+import { DashboardVariableSet } from '../variables/DashboardVariableSet';
 
 import { transformV2ToV1AnnotationQuery } from './annotations';
 import { SnapshotVariable } from './custom-variables/SnapshotVariable';
@@ -337,7 +338,7 @@ function createVariablesForDashboard(dashboard: DashboardV2Spec, defaultVariable
     variableObjects.push(new ScopesVariable({ enable: true }));
   }
 
-  return new SceneVariableSet({
+  return new DashboardVariableSet({
     variables: [...defaultVariableObjects, ...variableObjects],
   });
 }

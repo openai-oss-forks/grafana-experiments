@@ -24,6 +24,7 @@ import { initialIntervalVariableModelState } from 'app/features/variables/interv
 import { DashboardDatasourceBehaviour } from '../scene/DashboardDatasourceBehaviour';
 import { type DashboardLayoutOrchestrator } from '../scene/DashboardLayoutOrchestrator';
 import { DashboardScene, type DashboardSceneState } from '../scene/DashboardScene';
+import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 import { LibraryPanelBehavior } from '../scene/LibraryPanelBehavior';
 import { VizPanelLinks, VizPanelLinksMenu } from '../scene/PanelLinks';
 import { panelMenuBehavior } from '../scene/PanelMenuBehavior';
@@ -299,7 +300,7 @@ export function getDefaultVizPanel(): VizPanel {
     }),
     $data: datasourceSettings
       ? new SceneDataTransformer({
-          $data: new SceneQueryRunner({
+          $data: new DashboardSceneQueryRunner({
             queries: [{ refId: 'A' }],
             datasource: getDataSourceRef(datasourceSettings),
             $behaviors: [new DashboardDatasourceBehaviour({})],

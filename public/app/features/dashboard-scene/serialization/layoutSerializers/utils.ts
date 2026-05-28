@@ -6,7 +6,6 @@ import {
   type SceneDataQuery,
   SceneDataTransformer,
   type SceneObject,
-  SceneQueryRunner,
   VizPanel,
   VizPanelMenu,
   type VizPanelState,
@@ -30,6 +29,7 @@ import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSou
 import { ConditionalRenderingGroup } from '../../conditional-rendering/group/ConditionalRenderingGroup';
 import { DashboardDatasourceBehaviour } from '../../scene/DashboardDatasourceBehaviour';
 import { type DashboardScene } from '../../scene/DashboardScene';
+import { DashboardSceneQueryRunner } from '../../scene/DashboardSceneQueryRunner';
 import { LibraryPanelBehavior } from '../../scene/LibraryPanelBehavior';
 import { VizPanelLinks, VizPanelLinksMenu } from '../../scene/PanelLinks';
 import { panelLinksBehavior, panelMenuBehavior } from '../../scene/PanelMenuBehavior';
@@ -203,7 +203,7 @@ export function createPanelDataProvider(
   let dataProvider: SceneDataProvider | undefined = undefined;
   const datasource = getPanelDataSource(panelKind);
 
-  dataProvider = new SceneQueryRunner({
+  dataProvider = new DashboardSceneQueryRunner({
     datasource,
     queries: queriesWithUniqueRefIds.map(panelQueryKindToSceneQuery),
     maxDataPoints: panel.data.spec.queryOptions.maxDataPoints ?? undefined,

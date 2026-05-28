@@ -15,7 +15,6 @@ import {
   type SceneObjectRef,
   type SceneObjectState,
   SceneObjectStateChangedEvent,
-  SceneQueryRunner,
   sceneUtils,
   type VizPanel,
 } from '@grafana/scenes';
@@ -27,6 +26,7 @@ import { vizSuggestionsTracker } from 'app/features/panel/components/VizTypePick
 
 import { DashboardEditActionEvent, EDIT_PANE_COLLAPSED_KEY } from '../edit-pane/shared';
 import { DashboardSceneChangeTracker } from '../saving/DashboardSceneChangeTracker';
+import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 import { UNCONFIGURED_PANEL_PLUGIN_ID } from '../scene/UnconfiguredPanel';
 import { DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
 import { type DashboardLayoutItem, isDashboardLayoutItem } from '../scene/types/DashboardLayoutItem';
@@ -282,7 +282,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
 
         panel.setState({
           $data: new SceneDataTransformer({
-            $data: new SceneQueryRunner({
+            $data: new DashboardSceneQueryRunner({
               datasource: {
                 uid: ds,
               },

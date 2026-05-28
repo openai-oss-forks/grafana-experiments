@@ -13,6 +13,8 @@ import { isRecord } from 'app/core/utils/isRecord';
 import type { GraphEdge, GraphNode } from 'app/features/variables/inspect/types';
 import { getPropsWithVariable } from 'app/features/variables/inspect/utils';
 
+import { DashboardVariableSet } from './DashboardVariableSet';
+
 export const variableRegex = /\$(\w+)|\[\[(\w+?)(?::(\w+))?\]\]|\${(\w+)(?:\.([^:^\}]+))?(?::([^\}]+))?}/g;
 
 export function createDependencyNodes(variables: Array<SceneVariable<SceneVariableState>>): GraphNode[] {
@@ -272,7 +274,7 @@ export function getSectionBaseVariables(section: SceneObject): SceneVariableSet 
     return undefined;
   }
 
-  return new SceneVariableSet({ variables: baseVariables.map((variable) => variable.clone()) });
+  return new DashboardVariableSet({ variables: baseVariables.map((variable) => variable.clone()) });
 }
 
 export function filterSectionRepeatLocalVariables<T extends SceneVariable>(

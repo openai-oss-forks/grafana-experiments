@@ -22,7 +22,6 @@ import {
   SceneObjectBase,
   type SceneObjectRef,
   type SceneObjectState,
-  SceneQueryRunner,
   SceneTimeRange,
   sceneUtils,
   type SceneVariable,
@@ -104,6 +103,7 @@ import { AddLibraryPanelDrawer } from './AddLibraryPanelDrawer';
 import { type DashboardControls } from './DashboardControls';
 import { DashboardLayoutOrchestrator } from './DashboardLayoutOrchestrator';
 import { createMutationClient } from './DashboardMutationClientSetter';
+import { DashboardSceneQueryRunner } from './DashboardSceneQueryRunner';
 import { DashboardSceneRenderer } from './DashboardSceneRenderer';
 import { DashboardSceneUrlSync } from './DashboardSceneUrlSync';
 import { LibraryPanelBehavior } from './LibraryPanelBehavior';
@@ -939,7 +939,7 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
     if (!skipDataQuery && !panel.state.$data) {
       panel.setState({
         $data: new SceneDataTransformer({
-          $data: new SceneQueryRunner({
+          $data: new DashboardSceneQueryRunner({
             datasource: { uid: config.defaultDatasource },
             queries: [{ refId: 'A' }],
           }),

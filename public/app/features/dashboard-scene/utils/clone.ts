@@ -8,6 +8,8 @@ import {
   type VariableValueSingle,
 } from '@grafana/scenes';
 
+import { DashboardVariableSet } from '../variables/DashboardVariableSet';
+
 const CLONE_KEY = '-clone-';
 
 /**
@@ -55,7 +57,7 @@ export function getLocalVariableValueSet(
   value: VariableValueSingle,
   text: VariableValueSingle
 ): SceneVariableSet {
-  return new SceneVariableSet({
+  return new DashboardVariableSet({
     variables: [
       new LocalValueVariable({
         name: variable.state.name,
@@ -78,10 +80,10 @@ export function getRepeatVariableValueSet(
   const localSet = getLocalVariableValueSet(variable, value, text);
   const localVariables = localSet.state.variables.map((v) => v.clone());
   if (!baseSet) {
-    return new SceneVariableSet({ variables: localVariables });
+    return new DashboardVariableSet({ variables: localVariables });
   }
 
-  return new SceneVariableSet({
+  return new DashboardVariableSet({
     // Always clone base variables to avoid attaching the same SceneObject instance
     // to multiple SceneVariableSet parents during repeat updates.
     variables: [...baseSet.state.variables.map((v) => v.clone()), ...localVariables],
@@ -104,5 +106,5 @@ export function removeRepeatLocalVariableFromSet(
     return undefined;
   }
 
-  return new SceneVariableSet({ variables: variables.map((variable) => variable.clone()) });
+  return new DashboardVariableSet({ variables: variables.map((variable) => variable.clone()) });
 }

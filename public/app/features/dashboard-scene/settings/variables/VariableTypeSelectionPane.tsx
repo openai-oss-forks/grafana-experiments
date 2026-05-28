@@ -20,6 +20,7 @@ import { type DashboardSidebarPane } from '../../edit-pane/types';
 import { type DashboardScene } from '../../scene/DashboardScene';
 import { DashboardInteractions } from '../../utils/interactions';
 import { getDashboardSceneFor } from '../../utils/utils';
+import { DashboardVariableSet } from '../../variables/DashboardVariableSet';
 
 import {
   type EditableVariableType,
@@ -56,7 +57,8 @@ export function VariableAddPaneRenderer({ model }: SceneComponentProps<VariableA
       const dashboard = getDashboardSceneFor(model);
       const sectionOwner = model.state.sectionOwner.resolve();
       const existing = sectionOwner.state.$variables;
-      const variablesSet = existing instanceof SceneVariableSet ? existing : new SceneVariableSet({ variables: [] });
+      const variablesSet =
+        existing instanceof SceneVariableSet ? existing : new DashboardVariableSet({ variables: [] });
 
       if (!existing) {
         sectionOwner.setState({ $variables: variablesSet });

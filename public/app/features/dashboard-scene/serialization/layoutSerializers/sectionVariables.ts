@@ -1,7 +1,8 @@
 import { FlagKeys, getFeatureFlagClient } from '@grafana/runtime/internal';
-import { type SceneVariables, SceneVariableSet } from '@grafana/scenes';
+import type { SceneVariables, SceneVariableSet } from '@grafana/scenes';
 import { type VariableKind } from '@grafana/schema/apis/dashboard.grafana.app/v2';
 
+import { DashboardVariableSet } from '../../variables/DashboardVariableSet';
 import { sceneVariablesSetToSchemaV2Variables } from '../sceneVariablesSetToVariables';
 import { createSceneVariableFromVariableModel } from '../transformSaveModelSchemaV2ToScene';
 
@@ -27,5 +28,5 @@ export function deserializeSectionVariables(variables?: VariableKind[]): SceneVa
     return undefined;
   }
 
-  return new SceneVariableSet({ variables: sceneVariables });
+  return new DashboardVariableSet({ variables: sceneVariables });
 }
