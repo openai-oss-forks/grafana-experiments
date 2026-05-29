@@ -7,6 +7,8 @@ import {
   VariableValueSingle,
 } from '@grafana/scenes';
 
+import { DashboardVariableSet } from '../variables/DashboardVariableSet';
+
 const CLONE_KEY = '-clone-';
 
 /**
@@ -37,7 +39,7 @@ export function getLocalVariableValueSet(
   value: VariableValueSingle,
   text: VariableValueSingle
 ): SceneVariableSet {
-  return new SceneVariableSet({
+  return new DashboardVariableSet({
     variables: [
       new LocalValueVariable({
         name: variable.state.name,

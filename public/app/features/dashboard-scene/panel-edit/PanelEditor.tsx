@@ -13,7 +13,6 @@ import {
   SceneObjectRef,
   SceneObjectState,
   SceneObjectStateChangedEvent,
-  SceneQueryRunner,
   sceneUtils,
   VizPanel,
 } from '@grafana/scenes';
@@ -25,6 +24,7 @@ import { saveLibPanel } from 'app/features/library-panels/state/api';
 import { DashboardEditActionEvent } from '../edit-pane/shared';
 import { DashboardSceneChangeTracker } from '../saving/DashboardSceneChangeTracker';
 import { getPanelChanges } from '../saving/getDashboardChanges';
+import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 import { UNCONFIGURED_PANEL_PLUGIN_ID } from '../scene/UnconfiguredPanel';
 import { DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
 import { DashboardLayoutItem, isDashboardLayoutItem } from '../scene/types/DashboardLayoutItem';
@@ -312,7 +312,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
 
         panel.setState({
           $data: new SceneDataTransformer({
-            $data: new SceneQueryRunner({
+            $data: new DashboardSceneQueryRunner({
               datasource: {
                 uid: ds,
               },
