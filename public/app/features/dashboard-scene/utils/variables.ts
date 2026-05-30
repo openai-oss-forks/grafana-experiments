@@ -17,6 +17,7 @@ import {
 import { DashboardModel } from 'app/features/dashboard/state/DashboardModel';
 
 import { SnapshotVariable } from '../serialization/custom-variables/SnapshotVariable';
+import { DashboardVariableSet } from '../variables/DashboardVariableSet';
 
 import { getCurrentValueForOldIntervalModel, getIntervalsFromQueryString } from './utils';
 
@@ -41,7 +42,7 @@ export function createVariablesForDashboard(oldModel: DashboardModel) {
     variableObjects.push(new ScopesVariable({ enable: true }));
   }
 
-  return new SceneVariableSet({
+  return new DashboardVariableSet({
     variables: variableObjects,
   });
 }

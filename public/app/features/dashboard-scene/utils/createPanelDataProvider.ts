@@ -1,9 +1,10 @@
 import { config } from '@grafana/runtime';
-import { SceneDataProvider, SceneDataTransformer, SceneQueryRunner } from '@grafana/scenes';
+import { SceneDataProvider, SceneDataTransformer } from '@grafana/scenes';
 import { DataQuery, DataSourceRef } from '@grafana/schema';
 import { PanelModel } from 'app/features/dashboard/state/PanelModel';
 
 import { DashboardDatasourceBehaviour } from '../scene/DashboardDatasourceBehaviour';
+import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 
 export function createPanelDataProvider(panel: PanelModel): SceneDataProvider | undefined {
   // Skip setting query runner for panels without queries
@@ -18,7 +19,7 @@ export function createPanelDataProvider(panel: PanelModel): SceneDataProvider | 
 
   let dataProvider: SceneDataProvider | undefined = undefined;
 
-  dataProvider = new SceneQueryRunner({
+  dataProvider = new DashboardSceneQueryRunner({
     // If panel.datasource is not defined, we use the first datasource from the targets (queries)
     datasource: panel.datasource ?? findFirstDatasource(panel.targets),
     queries: panel.targets,
