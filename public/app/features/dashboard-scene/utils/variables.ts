@@ -7,7 +7,6 @@ import {
   DataSourceVariable,
   GroupByVariable,
   IntervalVariable,
-  QueryVariable,
   SceneVariable,
   SceneVariableSet,
   ScopesVariable,
@@ -17,6 +16,7 @@ import {
 import { DashboardModel } from 'app/features/dashboard/state/DashboardModel';
 
 import { SnapshotVariable } from '../serialization/custom-variables/SnapshotVariable';
+import { DashboardQueryVariable } from '../variables/DashboardQueryVariable';
 import { DashboardVariableSet } from '../variables/DashboardVariableSet';
 
 import { getCurrentValueForOldIntervalModel, getIntervalsFromQueryString } from './utils';
@@ -189,7 +189,7 @@ export function createSceneVariableFromVariableModel(variable: TypedVariableMode
     });
     // Query variable
   } else if (variable.type === 'query') {
-    return new QueryVariable({
+    return new DashboardQueryVariable({
       ...commonProperties,
       value: variable.current?.value ?? '',
       text: variable.current?.text ?? '',

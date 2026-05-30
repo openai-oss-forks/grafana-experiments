@@ -9,7 +9,6 @@ import {
   DataSourceVariable,
   GroupByVariable,
   IntervalVariable,
-  QueryVariable,
   SceneRefreshPicker,
   SceneTimePicker,
   SceneTimeRange,
@@ -74,6 +73,7 @@ import { DashboardReloadBehavior } from '../scene/DashboardReloadBehavior';
 import { DashboardScene } from '../scene/DashboardScene';
 import { DashboardLayoutManager } from '../scene/types/DashboardLayoutManager';
 import { getIntervalsFromQueryString } from '../utils/utils';
+import { DashboardQueryVariable } from '../variables/DashboardQueryVariable';
 import { DashboardVariableSet } from '../variables/DashboardVariableSet';
 
 import { transformV2ToV1AnnotationQuery } from './annotations';
@@ -358,7 +358,7 @@ function createSceneVariableFromVariableModel(variable: TypedVariableModelV2): S
       valuesFormat: variable.spec.valuesFormat || 'csv',
     });
   } else if (variable.kind === defaultQueryVariableKind().kind) {
-    return new QueryVariable({
+    return new DashboardQueryVariable({
       ...commonProperties,
       value: variable.spec.current?.value ?? '',
       text: variable.spec.current?.text ?? '',

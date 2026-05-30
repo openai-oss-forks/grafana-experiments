@@ -1,8 +1,16 @@
 import { Subject, of } from 'rxjs';
 
 import { DataQueryRequest, DataSourceApi, LoadingState } from '@grafana/data';
-import { EmbeddedScene, QueryVariable, SceneCanvasText, SceneTimeRange, VariableValueOption } from '@grafana/scenes';
+import {
+  EmbeddedScene,
+  QueryVariable,
+  SceneCanvasText,
+  SceneTimeRange,
+  sceneGraph,
+  VariableValueOption,
+} from '@grafana/scenes';
 
+import { DashboardQueryVariable } from '../variables/DashboardQueryVariable';
 import { DashboardVariableSet } from '../variables/DashboardVariableSet';
 
 import { DashboardSceneQueryRunner } from './DashboardSceneQueryRunner';
@@ -84,6 +92,59 @@ describe('DashboardSceneQueryRunner query-variable value readiness', () => {
     deactivate();
   });
 
+  it('queries Prometheus panels with implicit All while candidate options are unresolved', async () => {
+    const { variable, runner, completeHydration, deactivate } = activateSceneWithHydratingVariable({
+      value: '$__all',
+      text: 'All',
+      includeAll: true,
+      datasource: { uid: 'prometheus', type: 'prometheus' },
+    });
+
+    await waitForTasks();
+    expect(runRequestMock).toHaveBeenCalledTimes(1);
+    expect(sceneGraph.interpolate(runner, 'up{cluster=~"$cluster"}')).toBe('up{cluster=~".*"}');
+    expect(sceneGraph.interpolate(runner, '$cluster', undefined, 'text')).toBe('All');
+
+    completeHydration([{ value: 'prod', label: 'prod' }]);
+    await waitForTasks();
+    expect(variable.getValue()).toEqual(['prod']);
+    expect(sceneGraph.interpolate(runner, 'up{cluster=~"$cluster"}')).toBe('up{cluster=~"prod"}');
+
+    deactivate();
+  });
+
+  it('returns to empty implicit All expansion after an empty Prometheus hydration result', async () => {
+    const { variable, completeHydration, deactivate } = activateSceneWithHydratingVariable({
+      value: '$__all',
+      text: 'All',
+      includeAll: true,
+      datasource: { uid: 'prometheus', type: 'prometheus' },
+    });
+
+    await waitForTasks();
+    completeHydration([]);
+    await waitForTasks();
+    expect(variable.getValue()).toEqual([]);
+
+    deactivate();
+  });
+
+  it('queries before a chain of Prometheus implicit All variables completes hydration', async () => {
+    const first = createUnresolvedPrometheusAllVariable('cluster', { refId: 'cluster' });
+    const second = createUnresolvedPrometheusAllVariable('pod', 'label_values(up{cluster=~"$cluster"}, pod)');
+    stubCandidateHydration(first);
+    stubCandidateHydration(second);
+    const { runner, deactivate } = activateRunner([first, second], 'up{cluster=~"$cluster",pod=~"$pod"}');
+
+    await waitForTasks();
+    expect(first.state.loading).toBe(true);
+    expect(second.state.loading).not.toBe(true);
+    expect(runRequestMock).toHaveBeenCalledTimes(1);
+    expect(sceneGraph.interpolate(runner, 'up{cluster=~"$cluster",pod=~"$pod"}')).toBe('up{cluster=~".*",pod=~".*"}');
+
+    deactivate();
+  });
+
   it('keeps dependent dropdown hydration ordered while querying its selected value', async () => {
     const first = new QueryVariable({
       name: 'cluster',
@@ -134,7 +195,7 @@ describe('DashboardSceneQueryRunner query-variable value readiness', () => {
 });
 
 function activateSceneWithHydratingVariable(state: Partial<QueryVariable['state']>) {
-  const variable = new QueryVariable({
+  const variable = new DashboardQueryVariable({
     name: 'cluster',
     query: { refId: 'variable' },
     datasource: { uid: 'ds-1' },
@@ -143,10 +204,10 @@ function activateSceneWithHydratingVariable(state: Partial<QueryVariable['state'
   const completeHydration = stubCandidateHydration(variable);
   const { runner, deactivate } = activateRunner([variable], 'up{cluster="$cluster"}');
 
-  return { runner, completeHydration, deactivate };
+  return { variable, runner, completeHydration, deactivate };
 }
 
-function stubCandidateHydration(variable: QueryVariable) {
+function stubCandidateHydration(variable: QueryVariable | DashboardQueryVariable) {
   const candidateResults = new Subject<VariableValueOption[]>();
   jest.spyOn(variable, 'getValueOptions').mockImplementation(() => {
     variable.setState({ loading: true });
@@ -159,7 +220,7 @@ function stubCandidateHydration(variable: QueryVariable) {
   };
 }
 
-function activateRunner(variables: QueryVariable[], expr: string) {
+function activateRunner(variables: Array<QueryVariable | DashboardQueryVariable>, expr: string) {
   const runner = new DashboardSceneQueryRunner({
     datasource: { uid: 'ds-1' },
     queries: [{ refId: 'A', expr }],
@@ -175,4 +236,15 @@ function activateRunner(variables: QueryVariable[], expr: string) {
 
 async function waitForTasks() {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function createUnresolvedPrometheusAllVariable(name: string, query: QueryVariable['state']['query']) {
+  return new DashboardQueryVariable({
+    name,
+    value: '$__all',
+    text: 'All',
+    includeAll: true,
+    query,
+    datasource: { uid: 'prometheus', type: 'prometheus' },
+  });
 }
