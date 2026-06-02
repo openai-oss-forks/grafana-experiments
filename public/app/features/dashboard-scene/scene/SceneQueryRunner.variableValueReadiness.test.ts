@@ -113,6 +113,21 @@ describe('DashboardSceneQueryRunner query-variable value readiness', () => {
     deactivate();
   });
 
+  it('keeps the initial Prometheus implicit All value after candidate hydration is canceled', async () => {
+    const { variable, runner, deactivate } = activateSceneWithHydratingVariable({
+      value: '$__all',
+      text: 'All',
+      includeAll: true,
+      datasource: { uid: 'prometheus', type: 'prometheus' },
+    });
+
+    await waitForTasks();
+    variable.validateAndUpdate().subscribe().unsubscribe();
+    expect(sceneGraph.interpolate(runner, 'up{cluster=~"$cluster"}')).toBe('up{cluster=~".*"}');
+
+    deactivate();
+  });
+
   it('returns to empty implicit All expansion after an empty Prometheus hydration result', async () => {
     const { variable, completeHydration, deactivate } = activateSceneWithHydratingVariable({
       value: '$__all',

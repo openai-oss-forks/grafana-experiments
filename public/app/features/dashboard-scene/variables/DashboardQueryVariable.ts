@@ -1,4 +1,4 @@
-import { finalize } from 'rxjs';
+import { tap } from 'rxjs';
 
 import {
   QueryVariable,
@@ -21,8 +21,10 @@ export class DashboardQueryVariable extends QueryVariable {
 
   public override validateAndUpdate() {
     return super.validateAndUpdate().pipe(
-      finalize(() => {
-        this.hasCompletedInitialOptionsHydration = true;
+      tap({
+        complete: () => {
+          this.hasCompletedInitialOptionsHydration = true;
+        },
       })
     );
   }
