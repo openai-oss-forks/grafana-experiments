@@ -133,6 +133,35 @@ describe('LabelsApiClient', () => {
         defaultCacheHeaders
       );
     });
+
+    it('should fall back to the raw UTF-8 label name when the escaped label-values endpoint is empty', async () => {
+      mockRequest.mockResolvedValueOnce([]).mockResolvedValueOnce(['gpt55bio-api-1-c353']);
+      mockInterpolateString.mockImplementationOnce(() => 'api.engine_id');
+
+      const result = await client.queryLabelValues(mockTimeRange, '"api.engine_id"');
+
+      expect(result).toEqual(['gpt55bio-api-1-c353']);
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        1,
+        '/api/v1/label/U__api_2e_engine__id/values',
+        {
+          start: expect.any(String),
+          end: expect.any(String),
+          limit: 40000,
+        },
+        defaultCacheHeaders
+      );
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        2,
+        '/api/v1/label/api.engine_id/values',
+        {
+          start: expect.any(String),
+          end: expect.any(String),
+          limit: 40000,
+        },
+        defaultCacheHeaders
+      );
+    });
   });
 
   describe('LabelsCache', () => {
