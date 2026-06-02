@@ -170,7 +170,8 @@ export class LabelsApiClient extends BaseResourceClient implements ResourceApiCl
     const effectiveLimit = this.getEffectiveLimit(limit);
     const searchParams = { limit: effectiveLimit, ...timeParams, ...(match ? { 'match[]': match } : {}) };
     const interpolatedName = this.datasource.interpolateString(labelKey);
-    const interpolatedAndEscapedName = escapeForUtf8Support(removeQuotesIfExist(interpolatedName));
+    const rawLabelName = removeQuotesIfExist(interpolatedName);
+    const interpolatedAndEscapedName = escapeForUtf8Support(rawLabelName);
     const effectiveMatch = `${match ?? ''}-${interpolatedAndEscapedName}`;
     const maybeCachedValues = this._cache.getLabelValues(timeRange, effectiveMatch, effectiveLimit);
     if (maybeCachedValues) {
@@ -178,7 +179,14 @@ export class LabelsApiClient extends BaseResourceClient implements ResourceApiCl
     }
 
     const url = `/api/v1/label/${interpolatedAndEscapedName}/values`;
-    const value = await this.requestLabels(url, searchParams, getDefaultCacheHeaders(this.datasource.cacheLevel));
+    let value = await this.requestLabels(url, searchParams, getDefaultCacheHeaders(this.datasource.cacheLevel));
+    if (value.length === 0 && interpolatedAndEscapedName !== rawLabelName) {
+      // Some Prometheus-compatible backends expose native UTF-8 labels but do not
+      // resolve Prometheus' escaped label-name form on the label-values endpoint.
+      const rawUrl = `/api/v1/label/${encodeURIComponent(rawLabelName)}/values`;
+      value = await this.requestLabels(rawUrl, searchParams, getDefaultCacheHeaders(this.datasource.cacheLevel));
+    }
+
     this._cache.setLabelValues(timeRange, effectiveMatch, effectiveLimit, value ?? []);
     return value ?? [];
   };
