@@ -298,19 +298,16 @@ describe('Range Utils', () => {
       };
     };
 
-    it('clamps short fixed intervals to the default minimum step', () => {
-      expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000).interval).toEqual('1m');
-      expect(calculateInterval(rangeFor(30 * 60 * 1000), 1000).interval).toEqual('1m');
-      expect(calculateInterval(rangeFor(60 * 60 * 1000), 1000).interval).toEqual('1m');
+    it('uses raw fixed intervals without a lower interval limit', () => {
+      expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000).interval).toEqual('1s');
+      expect(calculateInterval(rangeFor(30 * 60 * 1000), 1000).interval).toEqual('10s');
+      expect(calculateInterval(rangeFor(60 * 60 * 1000), 1000).interval).toEqual('20s');
     });
 
     it('clamps after deriving the raw fixed interval', () => {
+      expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000, '1m').interval).toEqual('1m');
       expect(calculateInterval(rangeFor(24 * 60 * 60 * 1000), 1000, '10m').interval).toEqual('10m');
       expect(calculateInterval(rangeFor(2 * 24 * 60 * 60 * 1000), 1000, '1m').interval).toEqual('10m');
-    });
-
-    it('allows callers to provide a lower minimum step', () => {
-      expect(calculateInterval(rangeFor(15 * 60 * 1000), 1000, undefined, '1s').interval).toEqual('5s');
     });
 
     it('does not depend on max data points for automatic intervals', () => {

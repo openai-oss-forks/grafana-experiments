@@ -9,7 +9,7 @@ import (
 )
 
 func TestIntervalCalculator_Calculate(t *testing.T) {
-	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Millisecond})
+	calculator := NewCalculator()
 
 	timeNow := time.Now()
 
@@ -41,8 +41,8 @@ func TestIntervalCalculator_Calculate(t *testing.T) {
 	}
 }
 
-func TestIntervalCalculator_CalculateDefaultMinimumStep(t *testing.T) {
-	calculator := NewCalculator(CalculatorOptions{})
+func TestIntervalCalculator_CalculateWithOneMinuteMinimumStep(t *testing.T) {
+	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Minute})
 	timeNow := time.Now()
 
 	interval := calculator.Calculate(backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, time.Millisecond, 1000)

@@ -580,8 +580,6 @@ export function msRangeToTimeString(rangeMs: number): string {
   return formattedH + formattedM + formattedS || 'less than 1sec';
 }
 
-export const defaultMinimumStep = '1m';
-
 export function calculateTimeRangeIntervalMs(rangeMs: number): number {
   const minute = 60 * 1000;
   const hour = 60 * minute;
@@ -614,12 +612,11 @@ export function calculateTimeRangeIntervalMs(rangeMs: number): number {
 export function calculateInterval(
   range: TimeRange,
   _resolution: number,
-  lowLimitInterval?: string,
-  minimumStep = defaultMinimumStep
+  lowLimitInterval?: string
 ): IntervalValues {
-  let lowLimitMs = intervalToMs(minimumStep);
+  let lowLimitMs = 1; // 1 millisecond default low limit
   if (lowLimitInterval) {
-    lowLimitMs = Math.max(lowLimitMs, intervalToMs(lowLimitInterval));
+    lowLimitMs = intervalToMs(lowLimitInterval);
   }
 
   let intervalMs = calculateTimeRangeIntervalMs(range.to.valueOf() - range.from.valueOf());

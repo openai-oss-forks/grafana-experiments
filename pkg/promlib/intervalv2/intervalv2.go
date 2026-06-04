@@ -10,8 +10,7 @@ import (
 
 var (
 	DefaultRes         int64 = 1500
-	DefaultMinimumStep       = time.Minute
-	defaultMinInterval       = DefaultMinimumStep
+	defaultMinInterval       = time.Millisecond * 1
 )
 
 type Interval struct {
@@ -33,7 +32,7 @@ type CalculatorOptions struct {
 }
 
 func NewCalculator(opts ...CalculatorOptions) *intervalCalculator {
-	calc := &intervalCalculator{minInterval: defaultMinInterval}
+	calc := &intervalCalculator{}
 
 	for _, o := range opts {
 		if o.MinInterval == 0 {

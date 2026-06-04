@@ -11,7 +11,6 @@ import (
 
 	"github.com/grafana/dskit/concurrency"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana-plugin-sdk-go/backend/gtime"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/tracing"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
@@ -75,26 +74,13 @@ func New(
 		return nil, err
 	}
 
-	minimumStep, err := maputil.GetStringOptional(jsonData, "minimumStep")
-	if err != nil {
-		return nil, err
-	}
-	calculatorOptions := intervalv2.CalculatorOptions{}
-	if minimumStep != "" {
-		minInterval, err := gtime.ParseIntervalStringToTimeDuration(minimumStep)
-		if err != nil {
-			return nil, fmt.Errorf("invalid minimumStep: %w", err)
-		}
-		calculatorOptions.MinInterval = minInterval
-	}
-
 	promClient := client.NewClient(httpClient, httpMethod, settings.URL, queryTimeout)
 
 	// standard deviation sampler is the default for backwards compatibility
 	exemplarSampler := exemplar.NewStandardDeviationSampler
 
 	return &QueryData{
-		intervalCalculator: intervalv2.NewCalculator(calculatorOptions),
+		intervalCalculator: intervalv2.NewCalculator(),
 		tracer:             tracing.DefaultTracer(),
 		log:                plog,
 		client:             promClient,
