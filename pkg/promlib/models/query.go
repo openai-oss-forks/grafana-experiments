@@ -315,7 +315,7 @@ func (query *Query) TimeRange() TimeRange {
 
 func calculatePrometheusInterval(
 	queryInterval, dsScrapeInterval string,
-	intervalMs, _ int64,
+	intervalMs, intervalFactor int64,
 	query backend.DataQuery,
 	intervalCalculator intervalv2.Calculator,
 ) (time.Duration, error) {
@@ -336,7 +336,12 @@ func calculatePrometheusInterval(
 		adjustedInterval = calculatedInterval.Value
 	}
 
-	return adjustedInterval, nil
+	queryIntervalFactor := intervalFactor
+	if queryIntervalFactor == 0 {
+		queryIntervalFactor = 1
+	}
+
+	return time.Duration(int64(adjustedInterval) * queryIntervalFactor), nil
 }
 
 // calculateRateInterval calculates the $__rate_interval value.

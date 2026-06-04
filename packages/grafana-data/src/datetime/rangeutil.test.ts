@@ -298,23 +298,16 @@ describe('Range Utils', () => {
       };
     };
 
-    it('uses raw fixed intervals without a lower interval limit', () => {
-      expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000).interval).toEqual('1s');
-      expect(calculateInterval(rangeFor(30 * 60 * 1000), 1000).interval).toEqual('10s');
-      expect(calculateInterval(rangeFor(60 * 60 * 1000), 1000).interval).toEqual('20s');
+    it('uses the requested resolution for the shared interval helper', () => {
+      const range = rangeFor(60 * 60 * 1000);
+
+      expect(calculateInterval(range, 1000).interval).toEqual('5s');
+      expect(calculateInterval(range, 1).interval).toEqual('1h');
     });
 
-    it('clamps after deriving the raw fixed interval', () => {
+    it('clamps shared intervals to the lower interval limit', () => {
       expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000, '1m').interval).toEqual('1m');
-      expect(calculateInterval(rangeFor(24 * 60 * 60 * 1000), 1000, '10m').interval).toEqual('10m');
-      expect(calculateInterval(rangeFor(2 * 24 * 60 * 60 * 1000), 1000, '1m').interval).toEqual('10m');
-    });
-
-    it('does not depend on max data points for automatic intervals', () => {
-      const range = rangeFor(7 * 24 * 60 * 60 * 1000);
-
-      expect(calculateInterval(range, 1000).interval).toEqual('1h');
-      expect(calculateInterval(range, 2000).interval).toEqual('1h');
+      expect(calculateInterval(rangeFor(60 * 60 * 1000), 1000, '10s').interval).toEqual('10s');
     });
   });
 

@@ -609,17 +609,13 @@ export function calculateTimeRangeIntervalMs(rangeMs: number): number {
   }
 }
 
-export function calculateInterval(
-  range: TimeRange,
-  _resolution: number,
-  lowLimitInterval?: string
-): IntervalValues {
+export function calculateInterval(range: TimeRange, resolution: number, lowLimitInterval?: string): IntervalValues {
   let lowLimitMs = 1; // 1 millisecond default low limit
   if (lowLimitInterval) {
     lowLimitMs = intervalToMs(lowLimitInterval);
   }
 
-  let intervalMs = calculateTimeRangeIntervalMs(range.to.valueOf() - range.from.valueOf());
+  let intervalMs = roundInterval((range.to.valueOf() - range.from.valueOf()) / resolution);
   if (lowLimitMs > intervalMs) {
     intervalMs = lowLimitMs;
   }

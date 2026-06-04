@@ -101,7 +101,7 @@ func TestParse(t *testing.T) {
 
 		res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
 		require.NoError(t, err)
-		require.Equal(t, 10*time.Minute, res.Step)
+		require.Equal(t, 100*time.Minute, res.Step)
 	})
 
 	t.Run("parsing query model with low intervalFactor", func(t *testing.T) {
