@@ -9,7 +9,7 @@ import (
 )
 
 func TestIntervalCalculator_Calculate(t *testing.T) {
-	calculator := NewCalculator()
+	calculator := NewCalculator(CalculatorOptions{TshirtSizeStepSizeEnabled: true})
 
 	timeNow := time.Now()
 
@@ -41,8 +41,23 @@ func TestIntervalCalculator_Calculate(t *testing.T) {
 	}
 }
 
+func TestIntervalCalculator_CalculateLegacyUsesMaxDataPoints(t *testing.T) {
+	calculator := NewCalculator()
+	timeNow := time.Now()
+	timeRange := backend.TimeRange{From: timeNow, To: timeNow.Add(time.Hour)}
+
+	interval := calculator.Calculate(timeRange, time.Millisecond, 60)
+	assert.Equal(t, "1m", interval.Text)
+
+	interval = calculator.Calculate(timeRange, time.Millisecond, 3600)
+	assert.Equal(t, "1s", interval.Text)
+
+	interval = calculator.Calculate(timeRange, 15*time.Second, 3600)
+	assert.Equal(t, "15s", interval.Text)
+}
+
 func TestIntervalCalculator_CalculateWithOneMinuteMinimumStep(t *testing.T) {
-	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Minute})
+	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Minute, TshirtSizeStepSizeEnabled: true})
 	timeNow := time.Now()
 
 	interval := calculator.Calculate(backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, time.Millisecond, 1000)
@@ -50,7 +65,7 @@ func TestIntervalCalculator_CalculateWithOneMinuteMinimumStep(t *testing.T) {
 }
 
 func TestIntervalCalculator_CalculateWithMinimumStep(t *testing.T) {
-	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Second})
+	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Second, TshirtSizeStepSizeEnabled: true})
 	timeNow := time.Now()
 
 	interval := calculator.Calculate(backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, time.Millisecond, 1000)

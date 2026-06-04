@@ -19,16 +19,19 @@ type Interval struct {
 }
 
 type intervalCalculator struct {
-	minInterval time.Duration
+	minInterval               time.Duration
+	tshirtSizeStepSizeEnabled bool
 }
 
 type Calculator interface {
 	Calculate(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval
 	CalculateSafeInterval(timerange backend.TimeRange, resolution int64) Interval
+	TshirtSizeStepSizeEnabled() bool
 }
 
 type CalculatorOptions struct {
-	MinInterval time.Duration
+	MinInterval               time.Duration
+	TshirtSizeStepSizeEnabled bool
 }
 
 func NewCalculator(opts ...CalculatorOptions) *intervalCalculator {
@@ -40,12 +43,21 @@ func NewCalculator(opts ...CalculatorOptions) *intervalCalculator {
 		} else {
 			calc.minInterval = o.MinInterval
 		}
+		calc.tshirtSizeStepSizeEnabled = o.TshirtSizeStepSizeEnabled
 	}
 
 	return calc
 }
 
+func (ic *intervalCalculator) TshirtSizeStepSizeEnabled() bool {
+	return ic.tshirtSizeStepSizeEnabled
+}
+
 func (ic *intervalCalculator) Calculate(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval {
+	if !ic.tshirtSizeStepSizeEnabled {
+		return calculateResolutionBasedInterval(timerange, minInterval, maxDataPoints)
+	}
+
 	calculatedInterval := calculateTimeRangeInterval(timerange.To.Sub(timerange.From))
 
 	if calculatedInterval < minInterval {
@@ -56,6 +68,23 @@ func (ic *intervalCalculator) Calculate(timerange backend.TimeRange, minInterval
 	}
 
 	return Interval{Text: gtime.FormatInterval(calculatedInterval), Value: calculatedInterval}
+}
+
+func calculateResolutionBasedInterval(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval {
+	resolution := maxDataPoints
+	if resolution == 0 {
+		resolution = DefaultRes
+	}
+
+	to := timerange.To.UnixNano()
+	from := timerange.From.UnixNano()
+	calculatedInterval := time.Duration((to - from) / resolution)
+	if calculatedInterval < minInterval {
+		return Interval{Text: gtime.FormatInterval(minInterval), Value: minInterval}
+	}
+
+	rounded := gtime.RoundInterval(calculatedInterval)
+	return Interval{Text: gtime.FormatInterval(rounded), Value: rounded}
 }
 
 func (ic *intervalCalculator) CalculateSafeInterval(timerange backend.TimeRange, safeRes int64) Interval {

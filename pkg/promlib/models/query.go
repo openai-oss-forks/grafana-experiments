@@ -226,6 +226,7 @@ func Parse(ctx context.Context, log glog.Logger, span trace.Span, query backend.
 		model.Interval,
 		dsScrapeInterval,
 		timeRange,
+		intervalCalculator.TshirtSizeStepSizeEnabled(),
 	)
 
 	var scopeFilters []scope.ScopeFilter
@@ -351,6 +352,7 @@ func calculatePrometheusInterval(
 func calculateRateInterval(
 	queryInterval time.Duration,
 	requestedMinStep string,
+	alignToStep bool,
 ) time.Duration {
 	scrape := requestedMinStep
 	if scrape == "" {
@@ -363,7 +365,7 @@ func calculateRateInterval(
 	}
 
 	baseRateInterval := time.Duration(int64(math.Max(float64(queryInterval+scrapeIntervalDuration), float64(4)*float64(scrapeIntervalDuration))))
-	if queryInterval <= 0 {
+	if queryInterval <= 0 || !alignToStep {
 		return baseRateInterval
 	}
 
@@ -385,6 +387,7 @@ func InterpolateVariables(
 	requestedMinStep string,
 	dsScrapeInterval string,
 	timeRange time.Duration,
+	alignRateIntervalToStep bool,
 ) string {
 	rangeMs := timeRange.Milliseconds()
 	rangeSRounded := int64(math.Round(float64(rangeMs) / 1000.0))
@@ -400,7 +403,7 @@ func InterpolateVariables(
 			requestedMinStep = dsScrapeInterval
 		}
 	}
-	rateInterval = calculateRateInterval(calculatedStep, requestedMinStep)
+	rateInterval = calculateRateInterval(calculatedStep, requestedMinStep, alignRateIntervalToStep)
 
 	expr = strings.ReplaceAll(expr, varIntervalMs, strconv.FormatInt(int64(calculatedStep/time.Millisecond), 10))
 	expr = strings.ReplaceAll(expr, varInterval, gtime.FormatInterval(calculatedStep))

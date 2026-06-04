@@ -27,6 +27,8 @@ import (
 
 const legendFormatAuto = "__auto"
 
+const FeatureToggleTshirtSizeStepSize = "prometheusTshirtSizeStepSize"
+
 var legendFormatRegexp = regexp.MustCompile(`\{\{\s*(.+?)\s*\}\}`)
 
 type ExemplarEvent struct {
@@ -80,15 +82,17 @@ func New(
 	exemplarSampler := exemplar.NewStandardDeviationSampler
 
 	return &QueryData{
-		intervalCalculator: intervalv2.NewCalculator(),
-		tracer:             tracing.DefaultTracer(),
-		log:                plog,
-		client:             promClient,
-		TimeInterval:       timeInterval,
-		ID:                 settings.ID,
-		URL:                settings.URL,
-		exemplarSampler:    exemplarSampler,
-		featureToggles:     featureToggles,
+		intervalCalculator: intervalv2.NewCalculator(intervalv2.CalculatorOptions{
+			TshirtSizeStepSizeEnabled: featureToggles.IsEnabled(FeatureToggleTshirtSizeStepSize),
+		}),
+		tracer:          tracing.DefaultTracer(),
+		log:             plog,
+		client:          promClient,
+		TimeInterval:    timeInterval,
+		ID:              settings.ID,
+		URL:             settings.URL,
+		exemplarSampler: exemplarSampler,
+		featureToggles:  featureToggles,
 	}, nil
 }
 

@@ -20,9 +20,10 @@ import (
 )
 
 var (
-	now                = time.Now()
-	intervalCalculator = intervalv2.NewCalculator(intervalv2.CalculatorOptions{MinInterval: time.Millisecond})
-	tracer             = otel.Tracer("instrumentation/package/name")
+	now                      = time.Now()
+	intervalCalculator       = intervalv2.NewCalculator(intervalv2.CalculatorOptions{MinInterval: time.Millisecond, TshirtSizeStepSizeEnabled: true})
+	legacyIntervalCalculator = intervalv2.NewCalculator(intervalv2.CalculatorOptions{MinInterval: time.Millisecond})
+	tracer                   = otel.Tracer("instrumentation/package/name")
 )
 
 func TestParse(t *testing.T) {
@@ -803,6 +804,46 @@ func TestRateInterval(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "sum(rate(cache_requests_total[1m0s]))", res.Expr)
 		require.Equal(t, 15*time.Second, res.Step)
+	})
+}
+
+func TestLegacyIntervalBehaviorWhenTshirtSizeStepSizeDisabled(t *testing.T) {
+	_, span := tracer.Start(context.Background(), "operation")
+	defer span.End()
+
+	t.Run("step uses maxDataPoints", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(time.Hour),
+		}
+
+		q := mockQuery("up", "", 1000, &timeRange)
+		q.MaxDataPoints = 60
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "1s", legacyIntervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, time.Minute, res.Step)
+
+		q.MaxDataPoints = 3600
+
+		res, err = models.Parse(context.Background(), log.New(), span, q, "1s", legacyIntervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, time.Second, res.Step)
+	})
+
+	t.Run("rate interval is not rounded to the step grid", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(5 * time.Hour),
+		}
+
+		q := mockQuery("rate(rpc_durations_seconds_count[$__rate_interval])", "", 60000, &timeRange)
+		q.MaxDataPoints = 60
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "1m", legacyIntervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, 5*time.Minute, res.Step)
+		require.Equal(t, "rate(rpc_durations_seconds_count[6m0s])", res.Expr)
 	})
 }
 
