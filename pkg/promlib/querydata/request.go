@@ -11,6 +11,7 @@ import (
 
 	"github.com/grafana/dskit/concurrency"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/gtime"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/tracing"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
@@ -74,13 +75,26 @@ func New(
 		return nil, err
 	}
 
+	minimumStep, err := maputil.GetStringOptional(jsonData, "minimumStep")
+	if err != nil {
+		return nil, err
+	}
+	calculatorOptions := intervalv2.CalculatorOptions{}
+	if minimumStep != "" {
+		minInterval, err := gtime.ParseIntervalStringToTimeDuration(minimumStep)
+		if err != nil {
+			return nil, fmt.Errorf("invalid minimumStep: %w", err)
+		}
+		calculatorOptions.MinInterval = minInterval
+	}
+
 	promClient := client.NewClient(httpClient, httpMethod, settings.URL, queryTimeout)
 
 	// standard deviation sampler is the default for backwards compatibility
 	exemplarSampler := exemplar.NewStandardDeviationSampler
 
 	return &QueryData{
-		intervalCalculator: intervalv2.NewCalculator(),
+		intervalCalculator: intervalv2.NewCalculator(calculatorOptions),
 		tracer:             tracing.DefaultTracer(),
 		log:                plog,
 		client:             promClient,
@@ -141,7 +155,12 @@ func (s *QueryData) handleQuery(ctx context.Context, bq backend.DataQuery, fromA
 
 func (s *QueryData) fetch(traceCtx context.Context, client *client.Client, q *models.Query) *backend.DataResponse {
 	logger := s.log.FromContext(traceCtx)
-	logger.Debug("Sending query", "start", q.Start, "end", q.End, "step", q.Step, "query", q.Expr)
+	if q.RangeQuery || q.ExemplarQuery {
+		tr := q.TimeRange()
+		logger.Debug("Sending query", "start", tr.Start, "end", tr.End, "step", tr.Step, "query", q.Expr)
+	} else {
+		logger.Debug("Sending query", "time", q.End, "query", q.Expr)
+	}
 
 	dr := &backend.DataResponse{
 		Frames: data.Frames{},

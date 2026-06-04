@@ -43,6 +43,32 @@ func TestRangeResponses(t *testing.T) {
 	}
 }
 
+func TestRangeResponseDefaultMinimumStep(t *testing.T) {
+	queryFileName := filepath.Join("../testdata", "range_simple.query.json")
+	responseFileName := filepath.Join("../testdata", "range_simple.result.json")
+
+	query, err := loadStoredQuery(queryFileName)
+	require.NoError(t, err)
+
+	//nolint:gosec
+	responseBytes, err := os.ReadFile(responseFileName)
+	require.NoError(t, err)
+
+	result, err := runQueryWithDefaultMinimumStep(responseBytes, query)
+	require.NoError(t, err)
+	require.Len(t, result.Responses, 1)
+
+	dr, found := result.Responses["A"]
+	require.True(t, found)
+	require.NotEmpty(t, dr.Frames)
+
+	custom, ok := dr.Frames[0].Meta.Custom.(map[string]any)
+	require.True(t, ok)
+	require.EqualValues(t, 60000, custom["calculatedMinStep"])
+	require.EqualValues(t, 60000, dr.Frames[0].Fields[0].Config.Interval)
+	require.Equal(t, "Expr: \nStep: 1m0s", dr.Frames[0].Meta.ExecutedQueryString)
+}
+
 func TestExemplarResponses(t *testing.T) {
 	tt := []struct {
 		name     string
@@ -142,7 +168,15 @@ func loadStoredQuery(fileName string) (*backend.QueryDataRequest, error) {
 }
 
 func runQuery(response []byte, q *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
-	tCtx, err := setup()
+	return runQueryWithJSONData(response, q, json.RawMessage(`{"timeInterval": "15s", "minimumStep": "1s"}`))
+}
+
+func runQueryWithDefaultMinimumStep(response []byte, q *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+	return runQueryWithJSONData(response, q, json.RawMessage(`{"timeInterval": "15s"}`))
+}
+
+func runQueryWithJSONData(response []byte, q *backend.QueryDataRequest, jsonData json.RawMessage) (*backend.QueryDataResponse, error) {
+	tCtx, err := setupWithJSONData(jsonData)
 	if err != nil {
 		return nil, err
 	}

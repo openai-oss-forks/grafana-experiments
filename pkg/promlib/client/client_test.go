@@ -112,6 +112,32 @@ func TestClient(t *testing.T) {
 			require.Equal(t, "http://localhost:9090/api/v1/query_range", doer.Req.URL.String())
 		})
 
+		t.Run("aligns POST query range to the step grid", func(t *testing.T) {
+			client := NewClient(doer, http.MethodPost, "http://localhost:9090", "60s")
+			req := &models.Query{
+				Expr:       "up",
+				Start:      time.Unix(1062, 0),
+				End:        time.Unix(1962, 0),
+				RangeQuery: true,
+				Step:       10 * time.Minute,
+			}
+			res, err := client.QueryRange(context.Background(), req)
+			defer func() {
+				if res != nil && res.Body != nil {
+					if err := res.Body.Close(); err != nil {
+						fmt.Println("Error", "err", err)
+					}
+				}
+			}()
+			require.NoError(t, err)
+			require.NotNil(t, doer.Req)
+			require.Equal(t, http.MethodPost, doer.Req.Method)
+			body, err := io.ReadAll(doer.Req.Body)
+			require.NoError(t, err)
+			require.Equal(t, []byte("end=1800&query=up&start=600&step=600&timeout=60s"), body)
+			require.Equal(t, "http://localhost:9090/api/v1/query_range", doer.Req.URL.String())
+		})
+
 		t.Run("sends correct GET query", func(t *testing.T) {
 			client := NewClient(doer, http.MethodGet, "http://localhost:9090", "60s")
 			req := &models.Query{

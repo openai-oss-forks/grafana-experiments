@@ -315,14 +315,10 @@ func (query *Query) TimeRange() TimeRange {
 
 func calculatePrometheusInterval(
 	queryInterval, dsScrapeInterval string,
-	intervalMs, intervalFactor int64,
+	intervalMs, _ int64,
 	query backend.DataQuery,
 	intervalCalculator intervalv2.Calculator,
 ) (time.Duration, error) {
-	// we need to compare the original query model after it is overwritten below to variables so that we can
-	// calculate the rateInterval if it is equal to $__rate_interval or ${__rate_interval}
-	originalQueryInterval := queryInterval
-
 	// If we are using variable for interval/step, we will replace it with calculated interval
 	if isVariableInterval(queryInterval) {
 		queryInterval = ""
@@ -340,22 +336,11 @@ func calculatePrometheusInterval(
 		adjustedInterval = calculatedInterval.Value
 	}
 
-	// here is where we compare for $__rate_interval or ${__rate_interval}
-	if originalQueryInterval == varRateInterval || originalQueryInterval == varRateIntervalAlt {
-		// Rate interval is final and is not affected by resolution
-		return calculateRateInterval(adjustedInterval, dsScrapeInterval), nil
-	} else {
-		queryIntervalFactor := intervalFactor
-		if queryIntervalFactor == 0 {
-			queryIntervalFactor = 1
-		}
-		return time.Duration(int64(adjustedInterval) * queryIntervalFactor), nil
-	}
+	return adjustedInterval, nil
 }
 
-// calculateRateInterval calculates the $__rate_interval value
-// queryInterval is the value calculated range / maxDataPoints on the frontend
-// queryInterval is shown on the Query Options Panel above the query editor
+// calculateRateInterval calculates the $__rate_interval value.
+// queryInterval is the final step value used for the Prometheus query.
 // requestedMinStep is the data source scrape interval (default 15s)
 // requestedMinStep can be changed by setting "Min Step" value in Options panel below the code editor
 func calculateRateInterval(
@@ -372,20 +357,25 @@ func calculateRateInterval(
 		return time.Duration(0)
 	}
 
-	rateInterval := time.Duration(int64(math.Max(float64(queryInterval+scrapeIntervalDuration), float64(4)*float64(scrapeIntervalDuration))))
-	return rateInterval
+	baseRateInterval := time.Duration(int64(math.Max(float64(queryInterval+scrapeIntervalDuration), float64(4)*float64(scrapeIntervalDuration))))
+	if queryInterval <= 0 {
+		return baseRateInterval
+	}
+
+	stepCount := int64(math.Ceil(float64(baseRateInterval) / float64(queryInterval)))
+	return time.Duration(stepCount) * queryInterval
 }
 
 // InterpolateVariables interpolates built-in variables
 // expr                         PromQL query
-// queryInterval                Requested interval in milliseconds. This value may be overridden by MinStep in query options
+// second argument              Deprecated requested interval. Built-in interval variables use calculatedStep.
 // calculatedStep               Calculated final step value. It was calculated in calculatePrometheusInterval
 // requestedMinStep             Requested minimum step value. QueryModel.interval
 // dsScrapeInterval             Data source scrape interval in the config
 // timeRange                    Requested time range for query
 func InterpolateVariables(
 	expr string,
-	queryInterval time.Duration,
+	_ time.Duration,
 	calculatedStep time.Duration,
 	requestedMinStep string,
 	dsScrapeInterval string,
@@ -396,7 +386,7 @@ func InterpolateVariables(
 
 	var rateInterval time.Duration
 	if requestedMinStep == varRateInterval || requestedMinStep == varRateIntervalAlt {
-		rateInterval = calculatedStep
+		requestedMinStep = dsScrapeInterval
 	} else {
 		if requestedMinStep == varInterval || requestedMinStep == varIntervalAlt {
 			requestedMinStep = calculatedStep.String()
@@ -404,8 +394,8 @@ func InterpolateVariables(
 		if requestedMinStep == "" {
 			requestedMinStep = dsScrapeInterval
 		}
-		rateInterval = calculateRateInterval(queryInterval, requestedMinStep)
 	}
+	rateInterval = calculateRateInterval(calculatedStep, requestedMinStep)
 
 	expr = strings.ReplaceAll(expr, varIntervalMs, strconv.FormatInt(int64(calculatedStep/time.Millisecond), 10))
 	expr = strings.ReplaceAll(expr, varInterval, gtime.FormatInterval(calculatedStep))

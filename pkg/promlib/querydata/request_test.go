@@ -465,6 +465,10 @@ type testContext struct {
 }
 
 func setup() (*testContext, error) {
+	return setupWithJSONData(json.RawMessage(`{"timeInterval": "15s"}`))
+}
+
+func setupWithJSONData(jsonData json.RawMessage) (*testContext, error) {
 	httpProvider := &fakeHttpClientProvider{
 		opts: httpclient.Options{
 			Timeouts: &httpclient.DefaultTimeoutOptions,
@@ -480,7 +484,7 @@ func setup() (*testContext, error) {
 	}
 	settings := backend.DataSourceInstanceSettings{
 		URL:      "http://localhost:9090",
-		JSONData: json.RawMessage(`{"timeInterval": "15s"}`),
+		JSONData: jsonData,
 	}
 
 	opts, err := client.CreateTransportOptions(context.Background(), settings, log.New())
