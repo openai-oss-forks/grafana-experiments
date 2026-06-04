@@ -580,9 +580,9 @@ export function msRangeToTimeString(rangeMs: number): string {
   return formattedH + formattedM + formattedS || 'less than 1sec';
 }
 
-export const defaultDatadogMinimumStep = '1m';
+export const defaultMinimumStep = '1m';
 
-export function calculateDatadogIntervalMs(rangeMs: number): number {
+export function calculateTimeRangeIntervalMs(rangeMs: number): number {
   const minute = 60 * 1000;
   const hour = 60 * minute;
   const day = 24 * hour;
@@ -615,14 +615,14 @@ export function calculateInterval(
   range: TimeRange,
   _resolution: number,
   lowLimitInterval?: string,
-  minimumStep = defaultDatadogMinimumStep
+  minimumStep = defaultMinimumStep
 ): IntervalValues {
   let lowLimitMs = intervalToMs(minimumStep);
   if (lowLimitInterval) {
     lowLimitMs = Math.max(lowLimitMs, intervalToMs(lowLimitInterval));
   }
 
-  let intervalMs = calculateDatadogIntervalMs(range.to.valueOf() - range.from.valueOf());
+  let intervalMs = calculateTimeRangeIntervalMs(range.to.valueOf() - range.from.valueOf());
   if (lowLimitMs > intervalMs) {
     intervalMs = lowLimitMs;
   }

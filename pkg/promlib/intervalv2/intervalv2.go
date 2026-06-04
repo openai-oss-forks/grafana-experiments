@@ -47,7 +47,7 @@ func NewCalculator(opts ...CalculatorOptions) *intervalCalculator {
 }
 
 func (ic *intervalCalculator) Calculate(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval {
-	calculatedInterval := calculateDatadogInterval(timerange.To.Sub(timerange.From))
+	calculatedInterval := calculateTimeRangeInterval(timerange.To.Sub(timerange.From))
 
 	if calculatedInterval < minInterval {
 		calculatedInterval = minInterval
@@ -68,7 +68,7 @@ func (ic *intervalCalculator) CalculateSafeInterval(timerange backend.TimeRange,
 	return Interval{Text: gtime.FormatInterval(rounded), Value: rounded}
 }
 
-func calculateDatadogInterval(timerange time.Duration) time.Duration {
+func calculateTimeRangeInterval(timerange time.Duration) time.Duration {
 	switch {
 	case timerange <= 5*time.Minute:
 		return time.Second

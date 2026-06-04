@@ -52,7 +52,7 @@ func TestIntervalCalculator_CalculateWithMinimumStep(t *testing.T) {
 	assert.Equal(t, "10m", interval.Text)
 }
 
-func TestCalculateDatadogInterval(t *testing.T) {
+func TestCalculateTimeRangeInterval(t *testing.T) {
 	testCases := []struct {
 		name      string
 		timeRange time.Duration
@@ -72,7 +72,7 @@ func TestCalculateDatadogInterval(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expected, calculateDatadogInterval(tc.timeRange))
+			assert.Equal(t, tc.expected, calculateTimeRangeInterval(tc.timeRange))
 		})
 	}
 }

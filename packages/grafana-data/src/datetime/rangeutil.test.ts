@@ -5,7 +5,7 @@ import * as featureToggles from '../utils/featureToggles';
 
 import { dateTime } from './moment_wrapper';
 import {
-  calculateDatadogIntervalMs,
+  calculateTimeRangeIntervalMs,
   calculateInterval,
   convertRawToRange,
   describeInterval,
@@ -264,7 +264,7 @@ describe('Range Utils', () => {
     });
   });
 
-  describe('calculateDatadogIntervalMs', () => {
+  describe('calculateTimeRangeIntervalMs', () => {
     const minute = 60 * 1000;
     const hour = 60 * minute;
     const day = 24 * hour;
@@ -280,8 +280,8 @@ describe('Range Utils', () => {
       [3 * day, hour],
       [7 * day, hour],
       [30 * day, 4 * hour],
-    ])('uses Datadog line/API interval for %dms range', (rangeMs, expected) => {
-      expect(calculateDatadogIntervalMs(rangeMs)).toEqual(expected);
+    ])('uses fixed time-range interval for %dms range', (rangeMs, expected) => {
+      expect(calculateTimeRangeIntervalMs(rangeMs)).toEqual(expected);
     });
   });
 
@@ -298,13 +298,13 @@ describe('Range Utils', () => {
       };
     };
 
-    it('clamps short Datadog intervals to the default minimum step', () => {
+    it('clamps short fixed intervals to the default minimum step', () => {
       expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000).interval).toEqual('1m');
       expect(calculateInterval(rangeFor(30 * 60 * 1000), 1000).interval).toEqual('1m');
       expect(calculateInterval(rangeFor(60 * 60 * 1000), 1000).interval).toEqual('1m');
     });
 
-    it('clamps after deriving the raw Datadog interval', () => {
+    it('clamps after deriving the raw fixed interval', () => {
       expect(calculateInterval(rangeFor(24 * 60 * 60 * 1000), 1000, '10m').interval).toEqual('10m');
       expect(calculateInterval(rangeFor(2 * 24 * 60 * 60 * 1000), 1000, '1m').interval).toEqual('10m');
     });
