@@ -141,7 +141,12 @@ func (s *QueryData) handleQuery(ctx context.Context, bq backend.DataQuery, fromA
 
 func (s *QueryData) fetch(traceCtx context.Context, client *client.Client, q *models.Query) *backend.DataResponse {
 	logger := s.log.FromContext(traceCtx)
-	logger.Debug("Sending query", "start", q.Start, "end", q.End, "step", q.Step, "query", q.Expr)
+	if q.RangeQuery || q.ExemplarQuery {
+		tr := q.TimeRange()
+		logger.Debug("Sending query", "start", tr.Start, "end", tr.End, "step", tr.Step, "query", q.Expr)
+	} else {
+		logger.Debug("Sending query", "time", q.End, "query", q.Expr)
+	}
 
 	dr := &backend.DataResponse{
 		Frames: data.Frames{},

@@ -7,10 +7,10 @@
 //          1
 //      ],
 //      "custom": {
-//          "calculatedMinStep": 1000,
+//          "calculatedMinStep": 60000,
 //          "resultType": "matrix"
 //      },
-//      "executedQueryString": "Expr: histogram_quantile(0.95, sum(rate(tns_request_duration_seconds_bucket[4s])) by (le))\nStep: 1s"
+//      "executedQueryString": "Expr: histogram_quantile(0.95, sum(rate(tns_request_duration_seconds_bucket[2m0s])) by (le))\nStep: 1m0s"
 //  }
 //  Name: 
 //  Dimensions: 2 Fields by 301 Rows
@@ -45,10 +45,10 @@
             1
           ],
           "custom": {
-            "calculatedMinStep": 1000,
+            "calculatedMinStep": 60000,
             "resultType": "matrix"
           },
-          "executedQueryString": "Expr: histogram_quantile(0.95, sum(rate(tns_request_duration_seconds_bucket[4s])) by (le))\nStep: 1s"
+          "executedQueryString": "Expr: histogram_quantile(0.95, sum(rate(tns_request_duration_seconds_bucket[2m0s])) by (le))\nStep: 1m0s"
         },
         "fields": [
           {
@@ -58,7 +58,7 @@
               "frame": "time.Time"
             },
             "config": {
-              "interval": 1000
+              "interval": 60000
             }
           },
           {
@@ -69,7 +69,7 @@
             },
             "labels": {},
             "config": {
-              "displayNameFromDS": "histogram_quantile(0.95, sum(rate(tns_request_duration_seconds_bucket[4s])) by (le))"
+              "displayNameFromDS": "histogram_quantile(0.95, sum(rate(tns_request_duration_seconds_bucket[2m0s])) by (le))"
             }
           }
         ]

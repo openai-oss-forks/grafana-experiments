@@ -7,10 +7,10 @@
 //          1
 //      ],
 //      "custom": {
-//          "calculatedMinStep": 1000,
+//          "calculatedMinStep": 60000,
 //          "resultType": "matrix"
 //      },
-//      "executedQueryString": "Expr: \nStep: 1s"
+//      "executedQueryString": "Expr: \nStep: 1m0s"
 //  }
 //  Name: 
 //  Dimensions: 2 Fields by 3 Rows
@@ -61,10 +61,10 @@
             1
           ],
           "custom": {
-            "calculatedMinStep": 1000,
+            "calculatedMinStep": 60000,
             "resultType": "matrix"
           },
-          "executedQueryString": "Expr: \nStep: 1s"
+          "executedQueryString": "Expr: \nStep: 1m0s"
         },
         "fields": [
           {
@@ -74,7 +74,7 @@
               "frame": "time.Time"
             },
             "config": {
-              "interval": 1000
+              "interval": 60000
             }
           },
           {
@@ -130,7 +130,7 @@
               "frame": "time.Time"
             },
             "config": {
-              "interval": 1000
+              "interval": 60000
             }
           },
           {

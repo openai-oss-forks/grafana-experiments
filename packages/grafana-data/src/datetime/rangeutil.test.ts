@@ -5,6 +5,8 @@ import * as featureToggles from '../utils/featureToggles';
 
 import { dateTime } from './moment_wrapper';
 import {
+  calculateDatadogIntervalMs,
+  calculateInterval,
   convertRawToRange,
   describeInterval,
   describeTimeRange,
@@ -259,6 +261,63 @@ describe('Range Utils', () => {
 
     it('rounds >6w to 1y', () => {
       expect(roundInterval(3628800000)).toEqual(31536000000);
+    });
+  });
+
+  describe('calculateDatadogIntervalMs', () => {
+    const minute = 60 * 1000;
+    const hour = 60 * minute;
+    const day = 24 * hour;
+
+    it.each([
+      [5 * minute, 1000],
+      [15 * minute, 5 * 1000],
+      [30 * minute, 10 * 1000],
+      [hour, 20 * 1000],
+      [4 * hour, minute],
+      [day, 5 * minute],
+      [2 * day, 10 * minute],
+      [3 * day, hour],
+      [7 * day, hour],
+      [30 * day, 4 * hour],
+    ])('uses Datadog line/API interval for %dms range', (rangeMs, expected) => {
+      expect(calculateDatadogIntervalMs(rangeMs)).toEqual(expected);
+    });
+  });
+
+  describe('calculateInterval', () => {
+    const rangeFor = (rangeMs: number): TimeRange => {
+      const from = dateTime('2026-01-01T00:00:00Z');
+      return {
+        from,
+        to: dateTime(from).add(rangeMs, 'milliseconds'),
+        raw: {
+          from,
+          to: dateTime(from).add(rangeMs, 'milliseconds'),
+        },
+      };
+    };
+
+    it('clamps short Datadog intervals to the default minimum step', () => {
+      expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000).interval).toEqual('1m');
+      expect(calculateInterval(rangeFor(30 * 60 * 1000), 1000).interval).toEqual('1m');
+      expect(calculateInterval(rangeFor(60 * 60 * 1000), 1000).interval).toEqual('1m');
+    });
+
+    it('clamps after deriving the raw Datadog interval', () => {
+      expect(calculateInterval(rangeFor(24 * 60 * 60 * 1000), 1000, '10m').interval).toEqual('10m');
+      expect(calculateInterval(rangeFor(2 * 24 * 60 * 60 * 1000), 1000, '1m').interval).toEqual('10m');
+    });
+
+    it('allows callers to provide a lower minimum step', () => {
+      expect(calculateInterval(rangeFor(15 * 60 * 1000), 1000, undefined, '1s').interval).toEqual('5s');
+    });
+
+    it('does not depend on max data points for automatic intervals', () => {
+      const range = rangeFor(7 * 24 * 60 * 60 * 1000);
+
+      expect(calculateInterval(range, 1000).interval).toEqual('1h');
+      expect(calculateInterval(range, 2000).interval).toEqual('1h');
     });
   });
 

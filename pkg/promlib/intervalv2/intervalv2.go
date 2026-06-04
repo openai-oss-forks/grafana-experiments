@@ -10,7 +10,8 @@ import (
 
 var (
 	DefaultRes         int64 = 1500
-	defaultMinInterval       = time.Millisecond * 1
+	DefaultMinimumStep       = time.Minute
+	defaultMinInterval       = DefaultMinimumStep
 )
 
 type Interval struct {
@@ -32,7 +33,7 @@ type CalculatorOptions struct {
 }
 
 func NewCalculator(opts ...CalculatorOptions) *intervalCalculator {
-	calc := &intervalCalculator{}
+	calc := &intervalCalculator{minInterval: defaultMinInterval}
 
 	for _, o := range opts {
 		if o.MinInterval == 0 {
@@ -46,22 +47,16 @@ func NewCalculator(opts ...CalculatorOptions) *intervalCalculator {
 }
 
 func (ic *intervalCalculator) Calculate(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval {
-	to := timerange.To.UnixNano()
-	from := timerange.From.UnixNano()
-	resolution := maxDataPoints
-	if resolution == 0 {
-		resolution = DefaultRes
-	}
-
-	calculatedInterval := time.Duration((to - from) / resolution)
+	calculatedInterval := calculateDatadogInterval(timerange.To.Sub(timerange.From))
 
 	if calculatedInterval < minInterval {
-		return Interval{Text: gtime.FormatInterval(minInterval), Value: minInterval}
+		calculatedInterval = minInterval
+	}
+	if calculatedInterval < ic.minInterval {
+		calculatedInterval = ic.minInterval
 	}
 
-	rounded := gtime.RoundInterval(calculatedInterval)
-
-	return Interval{Text: gtime.FormatInterval(rounded), Value: rounded}
+	return Interval{Text: gtime.FormatInterval(calculatedInterval), Value: calculatedInterval}
 }
 
 func (ic *intervalCalculator) CalculateSafeInterval(timerange backend.TimeRange, safeRes int64) Interval {
@@ -71,4 +66,33 @@ func (ic *intervalCalculator) CalculateSafeInterval(timerange backend.TimeRange,
 
 	rounded := gtime.RoundInterval(safeInterval)
 	return Interval{Text: gtime.FormatInterval(rounded), Value: rounded}
+}
+
+func calculateDatadogInterval(timerange time.Duration) time.Duration {
+	switch {
+	case timerange <= 5*time.Minute:
+		return time.Second
+	case timerange <= 15*time.Minute:
+		return 5 * time.Second
+	case timerange <= 30*time.Minute:
+		return 10 * time.Second
+	case timerange <= time.Hour:
+		return 20 * time.Second
+	case timerange <= 4*time.Hour:
+		return time.Minute
+	case timerange <= 24*time.Hour:
+		return 5 * time.Minute
+	case timerange <= 48*time.Hour:
+		return 10 * time.Minute
+	case timerange <= 7*24*time.Hour:
+		return time.Hour
+	case timerange <= 30*24*time.Hour:
+		return 4 * time.Hour
+	default:
+		interval := gtime.RoundInterval(timerange / time.Duration(DefaultRes))
+		if interval < 4*time.Hour {
+			return 4 * time.Hour
+		}
+		return interval
+	}
 }

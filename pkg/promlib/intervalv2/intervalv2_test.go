@@ -19,20 +19,60 @@ func TestIntervalCalculator_Calculate(t *testing.T) {
 		resolution int64
 		expected   string
 	}{
-		{"from 5m to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(5 * time.Minute)}, 0, "200ms"},
-		{"from 5m to now and 500 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(5 * time.Minute)}, 500, "500ms"},
-		{"from 15m to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, 0, "500ms"},
-		{"from 15m to now and 100 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, 100, "10s"},
-		{"from 30m to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(30 * time.Minute)}, 0, "1s"},
-		{"from 30m to now and 3000 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(30 * time.Minute)}, 3000, "500ms"},
-		{"from 1h to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(time.Hour)}, 0, "2s"},
-		{"from 1h to now and 1000 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(time.Hour)}, 1000, "5s"},
+		{"from 5m to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(5 * time.Minute)}, 0, "1m"},
+		{"from 5m to now and 500 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(5 * time.Minute)}, 500, "1m"},
+		{"from 15m to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, 0, "1m"},
+		{"from 15m to now and 100 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, 100, "1m"},
+		{"from 30m to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(30 * time.Minute)}, 0, "1m"},
+		{"from 30m to now and 3000 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(30 * time.Minute)}, 3000, "1m"},
+		{"from 1h to now and default resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(time.Hour)}, 0, "1m"},
+		{"from 1h to now and 1000 resolution", backend.TimeRange{From: timeNow, To: timeNow.Add(time.Hour)}, 1000, "1m"},
+		{"from 1d to now", backend.TimeRange{From: timeNow, To: timeNow.Add(24 * time.Hour)}, 1000, "5m"},
+		{"from 2d to now", backend.TimeRange{From: timeNow, To: timeNow.Add(48 * time.Hour)}, 1000, "10m"},
+		{"from 3d to now", backend.TimeRange{From: timeNow, To: timeNow.Add(72 * time.Hour)}, 1000, "1h"},
+		{"from 7d to now", backend.TimeRange{From: timeNow, To: timeNow.Add(7 * 24 * time.Hour)}, 1000, "1h"},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			interval := calculator.Calculate(tc.timeRange, time.Millisecond*1, tc.resolution)
 			assert.Equal(t, tc.expected, interval.Text)
+		})
+	}
+}
+
+func TestIntervalCalculator_CalculateWithMinimumStep(t *testing.T) {
+	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Second})
+	timeNow := time.Now()
+
+	interval := calculator.Calculate(backend.TimeRange{From: timeNow, To: timeNow.Add(15 * time.Minute)}, time.Millisecond, 1000)
+	assert.Equal(t, "5s", interval.Text)
+
+	interval = calculator.Calculate(backend.TimeRange{From: timeNow, To: timeNow.Add(24 * time.Hour)}, 10*time.Minute, 1000)
+	assert.Equal(t, "10m", interval.Text)
+}
+
+func TestCalculateDatadogInterval(t *testing.T) {
+	testCases := []struct {
+		name      string
+		timeRange time.Duration
+		expected  time.Duration
+	}{
+		{"5m", 5 * time.Minute, time.Second},
+		{"15m", 15 * time.Minute, 5 * time.Second},
+		{"30m", 30 * time.Minute, 10 * time.Second},
+		{"1h", time.Hour, 20 * time.Second},
+		{"4h", 4 * time.Hour, time.Minute},
+		{"1d", 24 * time.Hour, 5 * time.Minute},
+		{"2d", 48 * time.Hour, 10 * time.Minute},
+		{"3d", 72 * time.Hour, time.Hour},
+		{"7d", 7 * 24 * time.Hour, time.Hour},
+		{"30d", 30 * 24 * time.Hour, 4 * time.Hour},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, calculateDatadogInterval(tc.timeRange))
 		})
 	}
 }
