@@ -831,7 +831,7 @@ func TestLegacyIntervalBehaviorWhenTshirtSizeStepSizeDisabled(t *testing.T) {
 		require.Equal(t, time.Second, res.Step)
 	})
 
-	t.Run("rate interval is not rounded to the step grid", func(t *testing.T) {
+	t.Run("rate interval uses query interval and is not rounded to the step grid", func(t *testing.T) {
 		timeRange := backend.TimeRange{
 			From: now,
 			To:   now.Add(5 * time.Hour),
@@ -843,7 +843,22 @@ func TestLegacyIntervalBehaviorWhenTshirtSizeStepSizeDisabled(t *testing.T) {
 		res, err := models.Parse(context.Background(), log.New(), span, q, "1m", legacyIntervalCalculator, false)
 		require.NoError(t, err)
 		require.Equal(t, 5*time.Minute, res.Step)
-		require.Equal(t, "rate(rpc_durations_seconds_count[6m0s])", res.Expr)
+		require.Equal(t, "rate(rpc_durations_seconds_count[4m0s])", res.Expr)
+	})
+
+	t.Run("interval option rate interval remains final step", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(time.Hour),
+		}
+
+		q := mockQuery("rate(rpc_durations_seconds_count[$__rate_interval])", "$__rate_interval", 30000, &timeRange)
+		q.MaxDataPoints = 12384
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "30s", legacyIntervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, 2*time.Minute, res.Step)
+		require.Equal(t, "rate(rpc_durations_seconds_count[2m0s])", res.Expr)
 	})
 }
 

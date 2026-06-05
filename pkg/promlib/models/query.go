@@ -320,6 +320,10 @@ func calculatePrometheusInterval(
 	query backend.DataQuery,
 	intervalCalculator intervalv2.Calculator,
 ) (time.Duration, error) {
+	// Preserve the original query interval so the disabled feature path can exactly
+	// match legacy $__rate_interval handling.
+	originalQueryInterval := queryInterval
+
 	// If we are using variable for interval/step, we will replace it with calculated interval
 	if isVariableInterval(queryInterval) {
 		queryInterval = ""
@@ -335,6 +339,10 @@ func calculatePrometheusInterval(
 	adjustedInterval := safeInterval.Value
 	if calculatedInterval.Value > safeInterval.Value {
 		adjustedInterval = calculatedInterval.Value
+	}
+
+	if !intervalCalculator.TshirtSizeStepSizeEnabled() && (originalQueryInterval == varRateInterval || originalQueryInterval == varRateIntervalAlt) {
+		return calculateRateInterval(adjustedInterval, dsScrapeInterval, false), nil
 	}
 
 	queryIntervalFactor := intervalFactor
@@ -382,7 +390,7 @@ func calculateRateInterval(
 // timeRange                    Requested time range for query
 func InterpolateVariables(
 	expr string,
-	_ time.Duration,
+	queryInterval time.Duration,
 	calculatedStep time.Duration,
 	requestedMinStep string,
 	dsScrapeInterval string,
@@ -394,7 +402,11 @@ func InterpolateVariables(
 
 	var rateInterval time.Duration
 	if requestedMinStep == varRateInterval || requestedMinStep == varRateIntervalAlt {
-		requestedMinStep = dsScrapeInterval
+		if alignRateIntervalToStep {
+			requestedMinStep = dsScrapeInterval
+		} else {
+			rateInterval = calculatedStep
+		}
 	} else {
 		if requestedMinStep == varInterval || requestedMinStep == varIntervalAlt {
 			requestedMinStep = calculatedStep.String()
@@ -403,7 +415,13 @@ func InterpolateVariables(
 			requestedMinStep = dsScrapeInterval
 		}
 	}
-	rateInterval = calculateRateInterval(calculatedStep, requestedMinStep, alignRateIntervalToStep)
+	if rateInterval == 0 {
+		rateQueryInterval := queryInterval
+		if alignRateIntervalToStep {
+			rateQueryInterval = calculatedStep
+		}
+		rateInterval = calculateRateInterval(rateQueryInterval, requestedMinStep, alignRateIntervalToStep)
+	}
 
 	expr = strings.ReplaceAll(expr, varIntervalMs, strconv.FormatInt(int64(calculatedStep/time.Millisecond), 10))
 	expr = strings.ReplaceAll(expr, varInterval, gtime.FormatInterval(calculatedStep))
