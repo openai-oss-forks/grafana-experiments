@@ -48,6 +48,7 @@ export interface CompactPlotSource {
   readonly buffer: ArrayBuffer;
   readonly pointCount: number;
   readonly seriesCount: number;
+  release(): void;
   xAt(index: number): number;
   closestXIndex(value: number, from: number, to: number): number;
   yAt(seriesIndex: number, index: number): CompactPlotValue;
@@ -136,6 +137,16 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
 
   get seriesCount(): number {
     return this.data.series.length;
+  }
+
+  release(): void {
+    if (this.data.buffer.byteLength === 0) {
+      return;
+    }
+
+    structuredClone(this.data.buffer, { transfer: [this.data.buffer] });
+    this.rankCheckpoints.clear();
+    this.constantIndexes.clear();
   }
 
   xAt(index: number): number {

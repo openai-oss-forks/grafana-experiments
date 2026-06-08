@@ -68,20 +68,42 @@ describe('CompactRenderController', () => {
     expect(controller.extent(plot, 'y', 0, 2)).toEqual([0, 3]);
   });
 
-  test('releases controller ownership without invalidating response storage', () => {
+  test('releases superseded response storage after transferring controller ownership', () => {
     const first = createSource([[1, 2]], [CompactSeriesFlag.Linear]);
     const second = createSource([[3, 4]], [CompactSeriesFlag.Linear]);
     const controller = new CompactRenderController(first);
 
     controller.replaceSource(first, second);
     expect(getCompactRenderController(second)).toBe(controller);
-    expect(first.buffer.byteLength).toBeGreaterThan(0);
+    expect(first.buffer.byteLength).toBe(0);
     expect(second.buffer.byteLength).toBeGreaterThan(0);
     expect(() => controller.replaceSource(first, second)).toThrow('ownership mismatch');
     expect(() => controller.replaceSource(second, createSource([[5, 6]], [CompactSeriesFlag.Stack], 1))).toThrow(
       'stack topology'
     );
 
+    controller.destroy(second);
+  });
+
+  test('keeps shared response storage alive when replacing a source view', () => {
+    const first = createSource([[1, 2]], [CompactSeriesFlag.Linear]);
+    const release = jest.fn(first.release);
+    first.release = release;
+    const second: TestSource = {
+      ...first,
+      columns: {
+        ...first.columns,
+        visibility: new Uint8Array(first.columns.visibility),
+      },
+      visibilityState: { overrides: new Map() },
+    };
+    const controller = new CompactRenderController(first);
+
+    controller.replaceSource(first, second);
+
+    expect(release).not.toHaveBeenCalled();
+    expect(second.buffer.byteLength).toBeGreaterThan(0);
+    expect(getCompactRenderController(second)).toBe(controller);
     controller.destroy(second);
   });
 
@@ -597,6 +619,7 @@ function createVirtualSource(seriesCount: number, pointCount: number): TestSourc
     cursorMode: 'single',
     focusAlpha: 1,
     visibilityState: { overrides: new Map() },
+    release: () => structuredClone(samples.buffer, { transfer: [samples.buffer] }),
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
     yAt: (_series, index) => index,
@@ -660,6 +683,7 @@ function createSource(
     seriesIdentityAt: (seriesIndex) => `${identity}:${seriesIndex}`,
     seriesIdentityHashAt: (seriesIndex) => seriesIndex,
     visibilityState: { overrides: new Map() },
+    release: () => structuredClone(samples.buffer, { transfer: [samples.buffer] }),
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
     yAt: valueAt,

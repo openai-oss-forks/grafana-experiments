@@ -6,11 +6,14 @@ import { useGraphNGRenderVisibility } from 'app/core/components/GraphNG/GraphNGR
 import {
   DashboardPanelLazyLoader,
   DashboardPanelRenderSuspender,
+  FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY,
+  GRAPHNG_RETENTION_MARGIN_VIEWPORTS,
   MIN_GRAPHNG_PREWARM_MARGIN,
   OFFSCREEN_GRAPHNG_SUSPEND_DELAY,
 } from './DashboardPanelLazyLoader';
 
 let mockOnChange: (isInView: boolean) => void = () => {};
+let mockOnRetentionChange: (isInView: boolean) => void = () => {};
 
 jest.mock('@grafana/scenes', () => {
   const React = jest.requireActual('react');
@@ -36,7 +39,9 @@ describe('DashboardPanelLazyLoader', () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
+    let observerIndex = 0;
     jest.spyOn(global, 'IntersectionObserver').mockImplementation((callback, options) => {
+      const currentObserverIndex = observerIndex++;
       let target: Element = document.body;
       const observer: IntersectionObserver = {
         root: null,
@@ -49,7 +54,7 @@ describe('DashboardPanelLazyLoader', () => {
         takeRecords: jest.fn(() => []),
         unobserve: jest.fn(),
       };
-      mockOnChange = (isIntersecting: boolean) => {
+      const onChange = (isIntersecting: boolean) => {
         const rect = target.getBoundingClientRect();
         callback(
           [
@@ -66,6 +71,11 @@ describe('DashboardPanelLazyLoader', () => {
           observer
         );
       };
+      if (currentObserverIndex === 0) {
+        mockOnChange = onChange;
+      } else {
+        mockOnRetentionChange = onChange;
+      }
       return observer;
     });
     jest.clearAllMocks();
@@ -133,6 +143,11 @@ describe('DashboardPanelLazyLoader', () => {
     expect(IntersectionObserver).toHaveBeenCalledWith(expect.any(Function), {
       rootMargin: `${Math.max(window.innerHeight, MIN_GRAPHNG_PREWARM_MARGIN)}px 0px`,
     });
+    expect(IntersectionObserver).toHaveBeenCalledWith(expect.any(Function), {
+      rootMargin: `${
+        Math.max(window.innerHeight, MIN_GRAPHNG_PREWARM_MARGIN) * GRAPHNG_RETENTION_MARGIN_VIEWPORTS
+      }px 0px`,
+    });
   });
 
   test('tracks deferred panel data visibility with the GraphNG prewarm margin', () => {
@@ -150,7 +165,7 @@ describe('DashboardPanelLazyLoader', () => {
     expect(onRenderMarginChange).toHaveBeenLastCalledWith(true);
   });
 
-  test('shares one prewarm observer across dashboard panels', () => {
+  test('shares the prewarm and retention observers across dashboard panels', () => {
     render(
       <>
         <DashboardPanelLazyLoader>
@@ -162,7 +177,29 @@ describe('DashboardPanelLazyLoader', () => {
       </>
     );
 
-    expect(IntersectionObserver).toHaveBeenCalledTimes(1);
+    expect(IntersectionObserver).toHaveBeenCalledTimes(2);
+  });
+
+  test('suspends far-away GraphNG quickly and prewarms it before reentry', () => {
+    render(
+      <DashboardPanelLazyLoader>
+        <PanelLifecycleProbe />
+      </DashboardPanelLazyLoader>
+    );
+
+    act(() => mockOnChange(false));
+    act(() => mockOnRetentionChange(false));
+    act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY - 1));
+    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
+
+    act(() => jest.advanceTimersByTime(1));
+    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'false');
+
+    act(() => mockOnRetentionChange(true));
+    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'false');
+
+    act(() => mockOnChange(true));
+    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
   });
 
   test('keeps GraphNG active when offscreen suspension is disabled', () => {

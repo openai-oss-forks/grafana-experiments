@@ -291,6 +291,7 @@ function mockCompactSource(values: number[]): CompactRenderSource {
     cursorMode: 'single',
     focusAlpha: 1,
     visibilityState: { overrides: new Map() },
+    release: () => structuredClone(buffer, { transfer: [buffer] }),
     xAt: (index) => 1000 + index * 1000,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round((value - 1000) / 1000))),
     yAt: (_seriesIndex, index) => values[index],

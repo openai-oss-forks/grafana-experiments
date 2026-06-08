@@ -44,6 +44,7 @@ describe('compact binary rendering pipeline', () => {
     await flushCommit();
 
     expect(secondPlan.source.buffer).toBe(secondBuffer);
+    expect(firstBuffer.byteLength).toBe(0);
     expect(plot.compactSource).toBe(secondPlan.source);
     expect(plot.compactSource?.buffer).not.toBe(firstBuffer);
 

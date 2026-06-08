@@ -4,12 +4,20 @@ import { LazyLoader } from '@grafana/scenes';
 import { GraphNGRenderVisibilityProvider } from 'app/core/components/GraphNG/GraphNGRenderVisibility';
 
 export const OFFSCREEN_GRAPHNG_SUSPEND_DELAY = 60_000;
+export const FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY = 1_000;
 export const MIN_GRAPHNG_PREWARM_MARGIN = 800;
+export const GRAPHNG_RETENTION_MARGIN_VIEWPORTS = 4;
 
 const graphNGVisibilityCallbacks = new Map<Element, (isIntersecting: boolean) => void>();
+const graphNGRetentionCallbacks = new Map<Element, (isIntersecting: boolean) => void>();
 let graphNGVisibilityObserver: IntersectionObserver | undefined;
+let graphNGRetentionObserver: IntersectionObserver | undefined;
 
-function observeGraphNGVisibility(element: Element, callback: (isIntersecting: boolean) => void): () => void {
+function observeGraphNGVisibility(
+  element: Element,
+  visibilityCallback: (isIntersecting: boolean) => void,
+  retentionCallback: (isIntersecting: boolean) => void
+): () => void {
   if (!graphNGVisibilityObserver) {
     graphNGVisibilityObserver = new IntersectionObserver(
       (entries) => {
@@ -20,16 +28,36 @@ function observeGraphNGVisibility(element: Element, callback: (isIntersecting: b
       { rootMargin: `${Math.max(window.innerHeight, MIN_GRAPHNG_PREWARM_MARGIN)}px 0px` }
     );
   }
+  if (!graphNGRetentionObserver) {
+    graphNGRetentionObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          graphNGRetentionCallbacks.get(entry.target)?.(entry.isIntersecting);
+        }
+      },
+      {
+        rootMargin: `${Math.max(window.innerHeight, MIN_GRAPHNG_PREWARM_MARGIN) * GRAPHNG_RETENTION_MARGIN_VIEWPORTS}px 0px`,
+      }
+    );
+  }
 
-  graphNGVisibilityCallbacks.set(element, callback);
+  graphNGVisibilityCallbacks.set(element, visibilityCallback);
+  graphNGRetentionCallbacks.set(element, retentionCallback);
   graphNGVisibilityObserver.observe(element);
+  graphNGRetentionObserver.observe(element);
 
   return () => {
     graphNGVisibilityObserver?.unobserve(element);
+    graphNGRetentionObserver?.unobserve(element);
     graphNGVisibilityCallbacks.delete(element);
+    graphNGRetentionCallbacks.delete(element);
     if (graphNGVisibilityCallbacks.size === 0) {
       graphNGVisibilityObserver?.disconnect();
       graphNGVisibilityObserver = undefined;
+    }
+    if (graphNGRetentionCallbacks.size === 0) {
+      graphNGRetentionObserver?.disconnect();
+      graphNGRetentionObserver = undefined;
     }
   };
 }
@@ -59,6 +87,8 @@ function useGraphNGRenderSuspension(
   const suspensionEnabled = useRef(suspendGraphNGOffscreen);
   const wrapper = useRef<HTMLDivElement | null>(null);
   const onRenderMarginChangeRef = useRef(onRenderMarginChange);
+  const isWithinRetentionMargin = useRef(true);
+  const rendererActive = useRef(true);
   onRenderMarginChangeRef.current = onRenderMarginChange;
 
   const clearSuspendTimer = useCallback(() => {
@@ -70,29 +100,37 @@ function useGraphNGRenderSuspension(
 
   useEffect(() => clearSuspendTimer, [clearSuspendTimer]);
 
-  const updateRendererActivity = useCallback(
-    (inView: boolean) => {
-      clearSuspendTimer();
+  const setRendererActive = useCallback((active: boolean) => {
+    rendererActive.current = active;
+    setGraphNGRendererActive(active);
+  }, []);
 
-      if (inView || !suspensionEnabled.current) {
-        setGraphNGRendererActive(true);
+  const updateRendererActivity = useCallback(() => {
+    clearSuspendTimer();
+
+    if (isWithinRenderMargin.current || !suspensionEnabled.current) {
+      setRendererActive(true);
+      return;
+    }
+    if (!rendererActive.current) {
+      return;
+    }
+
+    const delay = isWithinRetentionMargin.current
+      ? OFFSCREEN_GRAPHNG_SUSPEND_DELAY
+      : FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY;
+    suspendTimer.current = window.setTimeout(() => {
+      suspendTimer.current = undefined;
+      if (wrapper.current?.contains(document.activeElement)) {
         return;
       }
-
-      suspendTimer.current = window.setTimeout(() => {
-        suspendTimer.current = undefined;
-        if (wrapper.current?.contains(document.activeElement)) {
-          return;
-        }
-        setGraphNGRendererActive(false);
-      }, OFFSCREEN_GRAPHNG_SUSPEND_DELAY);
-    },
-    [clearSuspendTimer]
-  );
+      setRendererActive(false);
+    }, delay);
+  }, [clearSuspendTimer, setRendererActive]);
 
   useEffect(() => {
     suspensionEnabled.current = suspendGraphNGOffscreen;
-    updateRendererActivity(isWithinRenderMargin.current);
+    updateRendererActivity();
   }, [suspendGraphNGOffscreen, updateRendererActivity]);
 
   const setWrapperRef = useCallback(
@@ -113,11 +151,18 @@ function useGraphNGRenderSuspension(
       return;
     }
 
-    return observeGraphNGVisibility(element, (isIntersecting) => {
-      isWithinRenderMargin.current = isIntersecting;
-      onRenderMarginChangeRef.current?.(isIntersecting);
-      updateRendererActivity(isIntersecting);
-    });
+    return observeGraphNGVisibility(
+      element,
+      (isIntersecting) => {
+        isWithinRenderMargin.current = isIntersecting;
+        onRenderMarginChangeRef.current?.(isIntersecting);
+        updateRendererActivity();
+      },
+      (isIntersecting) => {
+        isWithinRetentionMargin.current = isIntersecting;
+        updateRendererActivity();
+      }
+    );
   }, [updateRendererActivity]);
 
   const onBlurCapture = useCallback(() => {
@@ -125,15 +170,15 @@ function useGraphNGRenderSuspension(
       if (!isWithinRenderMargin.current) {
         onRenderMarginChangeRef.current?.(false);
       }
-      updateRendererActivity(isWithinRenderMargin.current);
+      updateRendererActivity();
     }, 0);
   }, [updateRendererActivity]);
 
   const onFocusCapture = useCallback(() => {
     clearSuspendTimer();
     onRenderMarginChangeRef.current?.(true);
-    setGraphNGRendererActive(true);
-  }, [clearSuspendTimer]);
+    setRendererActive(true);
+  }, [clearSuspendTimer, setRendererActive]);
 
   return { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture };
 }

@@ -467,7 +467,7 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
  	/** sets the limits of a scale & redraws (used for zooming) */
  	setScale(scaleKey: string, limits: { min: number; max: number }): void;
  
-@@ -167,6 +192,55 @@ declare class uPlot {
+@@ -167,6 +192,56 @@ declare class uPlot {
  export = uPlot;
  
  declare namespace uPlot {
@@ -491,6 +491,7 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 +		readonly buffer: ArrayBuffer;
 +		readonly pointCount: number;
 +		readonly seriesCount: number;
++		release(): void;
 +		xAt(index: number): number;
 +		closestXIndex(value: number, from: number, to: number): number;
 +		yAt(seriesIndex: number, index: number): CompactPlotValue;

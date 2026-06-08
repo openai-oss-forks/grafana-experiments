@@ -39,6 +39,7 @@ export interface CompactPlotSource {
   readonly buffer: ArrayBuffer;
   readonly pointCount: number;
   readonly seriesCount: number;
+  release(): void;
   xAt(index: number): number;
   closestXIndex(value: number, from: number, to: number): number;
   yAt(seriesIndex: number, index: number): CompactPlotValue;

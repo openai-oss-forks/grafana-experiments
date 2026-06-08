@@ -291,6 +291,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.gradientCache.length = 0;
     this.ensureCursorScratch();
     controllers.set(nextSource, this);
+    if (previousSource.buffer !== nextSource.buffer) {
+      previousSource.release();
+    }
   }
 
   destroy(source: uPlot.CompactPlotSource): void {

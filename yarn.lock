@@ -35309,8 +35309,8 @@ __metadata:
 
 "uplot@patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch":
   version: 1.6.32
-  resolution: "uplot@patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch::version=1.6.32&hash=cd56cd"
-  checksum: 10/900c9f68721c2ebce843b594d36e8b6f203bb975ed1efd644f82536751d60d7e14b9ca2b638de631d50c96d0f24960926836c1092188f39a84d7da728399b423
+  resolution: "uplot@patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch::version=1.6.32&hash=a41bb7"
+  checksum: 10/f68e9f7a56fa59b75ea20c1ae5e352c4737a4ddfb0c5537a06a1a039cc4500e19ae8bcf352f05ec663a560291a49d95a36bbe28ba9dc33e70bc3bb76a9a548a3
   languageName: node
   linkType: hard
 

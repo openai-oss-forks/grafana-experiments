@@ -46,6 +46,36 @@ export async function createDashboardFixture({ scenario: scenarioName, dashboard
     : createBuiltInDashboard(scenarioName, pointCount);
 }
 
+export async function createFullDashboardFixture(filePath, pointCount) {
+  const exported = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  const sourceDashboard = exported.dashboard ?? exported;
+  const dashboard = structuredClone(sourceDashboard);
+  const sourcePanels = flattenPanels(sourceDashboard.panels ?? []);
+
+  dashboard.id = null;
+  dashboard.uid = DASHBOARD_UID;
+  dashboard.title = `Full replay: ${sourceDashboard.title}`;
+  dashboard.version = 0;
+  dashboard.refresh = '';
+  dashboard.templating = { list: createConstantVariables(sourceDashboard.templating?.list) };
+  dashboard.annotations = { list: [] };
+  dashboard.panels = rewriteFullDashboardPanels(sourceDashboard.panels ?? [], pointCount);
+
+  const replayPanels = flattenPanels(dashboard.panels);
+  return {
+    dashboard,
+    source: {
+      kind: 'full-dashboard-export',
+      filePath,
+      originalDashboardUid: sourceDashboard.uid,
+      originalPanelCount: sourcePanels.length,
+      replayPanelCount: replayPanels.length,
+      omittedPanelCount: sourcePanels.length - replayPanels.length,
+      replayTimeSeriesPanelCount: replayPanels.filter((panel) => panel.type === 'timeseries').length,
+    },
+  };
+}
+
 function createBuiltInDashboard(scenarioName, pointCount) {
   const scenario = SCENARIOS[scenarioName];
   if (!scenario) {
@@ -92,6 +122,32 @@ async function createDashboardFromExport(filePath, panelId, pointCount) {
       originalPanelTitle: sourcePanel.title,
     },
   };
+}
+
+function rewriteFullDashboardPanels(panels, pointCount) {
+  const rewritten = [];
+  for (const sourcePanel of panels) {
+    if (!isReplayablePanel(sourcePanel)) {
+      continue;
+    }
+
+    const panel = structuredClone(sourcePanel);
+    panel.datasource = rewriteDatasource(panel.datasource);
+    panel.targets = (panel.targets ?? []).map((query) => ({
+      ...query,
+      datasource: rewriteDatasource(query.datasource),
+      maxDataPoints: query.maxDataPoints ?? pointCount,
+    }));
+    if (Array.isArray(panel.panels)) {
+      panel.panels = rewriteFullDashboardPanels(panel.panels, pointCount);
+    }
+    rewritten.push(panel);
+  }
+  return rewritten;
+}
+
+function isReplayablePanel(panel) {
+  return panel.type === 'row' || panel.type === 'text' || panel.type === 'timeseries' || panel.type === 'table';
 }
 
 function createPanel(scenario, pointCount) {
