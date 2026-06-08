@@ -17,6 +17,7 @@ import (
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/datasources"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
+	"github.com/grafana/grafana/pkg/services/query"
 	"github.com/grafana/grafana/pkg/util/errhttp"
 	"github.com/grafana/grafana/pkg/web"
 )
@@ -39,6 +40,10 @@ func (hs *HTTPServer) getDSQueryEndpoint() web.Handler {
 		// rewrite requests from /ds/query to the new query service
 		namespaceMapper := request.GetNamespaceMapper(hs.Cfg)
 		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get(compactQueryDataHeader) == compactQueryDataVersion {
+				http.Error(w, "compact-v1 is not supported by the query-service rewrite", http.StatusNotAcceptable)
+				return
+			}
 			user, err := identity.GetRequester(r.Context())
 			if err != nil || user == nil {
 				errhttp.Write(r.Context(), fmt.Errorf("no user"), w)
@@ -67,9 +72,15 @@ func (hs *HTTPServer) getDSQueryEndpoint() web.Handler {
 // 403: forbiddenError
 // 500: internalServerError
 func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Response {
+	c.Resp.Header().Set("Vary", compactQueryDataHeader+", Accept-Encoding")
+
 	reqDTO := dtos.MetricRequest{}
 	if err := web.Bind(c.Req, &reqDTO); err != nil {
 		return response.Error(http.StatusBadRequest, "bad request data", err)
+	}
+	if c.Req.Header.Get(compactQueryDataHeader) == compactQueryDataVersion && !isCompactDashboardQuery(c.Req, reqDTO) {
+		err := errors.New("compact-v1 is restricted to Prometheus dashboard time-series panels")
+		return response.Error(http.StatusNotAcceptable, err.Error(), err)
 	}
 
 	handleTimeInQuery := c.Req.Header.Get("X-Query-V2") == "true"
@@ -87,7 +98,44 @@ func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Respon
 	if err != nil {
 		return hs.handleQueryMetricsError(err)
 	}
+	if c.Req.Header.Get(compactQueryDataHeader) == compactQueryDataVersion {
+		compactResponse, err := newCompactQueryDataResponse(resp, newCompactQueryRequests(reqDTO, handleTimeInQuery))
+		if errors.Is(err, errCompactQueryDataUnsupported) {
+			return hs.toJsonStreamingResponse(c.Req.Context(), resp)
+		}
+		if errors.Is(err, errCompactQueryDataTooLarge) {
+			return response.Error(http.StatusRequestEntityTooLarge, err.Error(), err)
+		}
+		if err != nil {
+			return response.Error(http.StatusInternalServerError, "Compact query response encoding failed", err)
+		}
+		return compactQueryDataStreamingResponse{body: compactResponse}
+	}
 	return hs.toJsonStreamingResponse(c.Req.Context(), resp)
+}
+
+func isCompactDashboardQuery(req *http.Request, request dtos.MetricRequest) bool {
+	if req.Header.Get(query.HeaderDashboardUID) == "" ||
+		req.Header.Get(query.HeaderPanelPluginId) != "timeseries" ||
+		req.Header.Get("X-Plugin-Id") != "prometheus" ||
+		len(request.Queries) == 0 {
+		return false
+	}
+	for _, target := range request.Queries {
+		if target.Get("datasource").Get("type").MustString() != "prometheus" ||
+			target.Get("instant").MustBool(false) ||
+			target.Get("exemplar").MustBool(false) {
+			return false
+		}
+		if rangeValue, ok := target.CheckGet("range"); ok && !rangeValue.MustBool() {
+			return false
+		}
+		format := target.Get("format").MustString()
+		if format != "" && format != "time_series" {
+			return false
+		}
+	}
+	return true
 }
 
 func (hs *HTTPServer) toJsonStreamingResponse(ctx context.Context, qdr *backend.QueryDataResponse) response.Response {

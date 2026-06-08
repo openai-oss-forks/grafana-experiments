@@ -147,6 +147,17 @@ export function isReducerID(id: string): id is ReducerID {
   return Object.keys(ReducerID).includes(id);
 }
 
+/** @internal */
+export function isCompactTimeSeriesReducerSupported(reducer: ReducerID): boolean {
+  return (
+    reducer !== ReducerID.distinctCount &&
+    reducer !== ReducerID.median &&
+    reducer !== ReducerID.allValues &&
+    reducer !== ReducerID.uniqueValues &&
+    !/^p\d+$/.test(reducer)
+  );
+}
+
 // Internal function
 type FieldReducer = (field: Field, ignoreNulls: boolean, nullAsZero: boolean) => FieldCalcs;
 

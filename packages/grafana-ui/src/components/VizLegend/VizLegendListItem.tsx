@@ -2,7 +2,7 @@ import { css, cx } from '@emotion/css';
 import { useCallback } from 'react';
 import * as React from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { DisplayValue, GrafanaTheme2 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 
 import { useStyles2 } from '../../themes/ThemeContext';
@@ -24,6 +24,7 @@ export interface Props<T> {
     event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>
   ) => void;
   readonly?: boolean;
+  displayValues?: DisplayValue[];
 }
 
 /**
@@ -36,6 +37,7 @@ export const VizLegendListItem = <T = unknown,>({
   onLabelMouseOut,
   className,
   readonly,
+  displayValues,
 }: Props<T>) => {
   const styles = useStyles2(getStyles);
 
@@ -91,7 +93,8 @@ export const VizLegendListItem = <T = unknown,>({
         {item.label}
       </button>
 
-      {item.getDisplayValues && <VizLegendStatsList stats={item.getDisplayValues()} />}
+      {displayValues && <VizLegendStatsList stats={displayValues} />}
+      {!displayValues && item.getDisplayValues && <VizLegendStatsList stats={item.getDisplayValues()} />}
     </div>
   );
 };

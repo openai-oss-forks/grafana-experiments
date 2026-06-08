@@ -35,6 +35,7 @@ import {
   getDefaultVizPanel,
   getLibraryPanelBehavior,
   getPanelIdForVizPanel,
+  getQueryRunnerFor,
 } from '../utils/utils';
 
 import { DataProviderSharer } from './PanelDataPane/DataProviderSharer';
@@ -94,6 +95,18 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private _activationHandler() {
     const panel = this.state.panelRef.resolve();
     const dashboard = getDashboardSceneFor(this);
+    const queryRunner = getQueryRunnerFor(panel);
+
+    if (panel.state.$data && !(panel.state.$data instanceof SceneDataTransformer)) {
+      const dataProvider = panel.state.$data;
+      dataProvider.clearParent();
+      panel.setState({
+        $data: new SceneDataTransformer({
+          $data: dataProvider,
+          transformations: [],
+        }),
+      });
+    }
 
     // Clear any panel selection when entering panel edit mode.
     // Need to clear selection here since selection is activated when panel edit mode is entered through the panel actions menu. This causes sidebar panel editor to be open when exiting panel edit mode
@@ -112,10 +125,25 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     );
 
     const deactivateParents = activateSceneObjectAndParentTree(panel);
+    if (
+      queryRunner &&
+      (queryRunner.state.data?.compactSeries ||
+        queryRunner.state.data?.request?.preferredQueryResultFormat === 'compact-v1')
+    ) {
+      queryRunner.cancelQuery();
+      queryRunner.runQueries();
+    }
 
     this.waitForPlugin();
 
     return () => {
+      const dataProvider = panel.state.$data;
+      if (dataProvider instanceof SceneDataTransformer && dataProvider.state.transformations.length === 0) {
+        const sourceData = dataProvider.state.$data;
+        sourceData?.clearParent();
+        panel.setState({ $data: sourceData });
+      }
+
       this.commitChanges();
 
       if (deactivateParents) {

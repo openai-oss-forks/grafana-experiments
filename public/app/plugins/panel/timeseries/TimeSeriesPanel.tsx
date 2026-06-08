@@ -10,7 +10,7 @@ import {
   useDataLinksContext,
   FieldType,
 } from '@grafana/data';
-import { config, PanelDataErrorView } from '@grafana/runtime';
+import { config, getPluginImportUtils, PanelDataErrorView } from '@grafana/runtime';
 import { TooltipDisplayMode, VizOrientation } from '@grafana/schema';
 import {
   EventBusPlugin,
@@ -18,13 +18,16 @@ import {
   TooltipPlugin2,
   XAxisInteractionAreaPlugin,
   usePanelContext,
+  useTheme2,
 } from '@grafana/ui';
 import { FILTER_OUT_OPERATOR, TimeRange2, TooltipHoverMode } from '@grafana/ui/internal';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
 
+import { CompactTooltipPlugin } from './CompactTooltipPlugin';
 import { TimeSeriesTooltip } from './TimeSeriesTooltip';
 import { Options } from './panelcfg.gen';
 import { AnnotationsPlugin2 } from './plugins/AnnotationsPlugin2';
+import { CompactOutsideRangePlugin } from './plugins/CompactOutsideRangePlugin';
 import { ExemplarsPlugin, getVisibleLabels } from './plugins/ExemplarsPlugin';
 import { OutsideRangePlugin } from './plugins/OutsideRangePlugin';
 import { ThresholdControlsPlugin } from './plugins/ThresholdControlsPlugin';
@@ -60,13 +63,18 @@ export const TimeSeriesPanel = ({
   } = usePanelContext();
 
   const { dataLinkPostProcessor } = useDataLinksContext();
+  const theme = useTheme2();
 
   const userCanExecuteActions = useMemo(() => canExecuteActions?.() ?? false, [canExecuteActions]);
+  const hasCompactSeries = Boolean(data.compactSeries);
   // Vertical orientation is not available for users through config.
   // It is simplified version of horizontal time series panel and it does not support all plugins.
   const isVerticallyOriented = options.orientation === VizOrientation.Vertical;
   const { frames, compareDiffMs } = useMemo(() => {
-    let frames = prepareGraphableFields(data.series, config.theme2, timeRange);
+    if (data.compactSeries) {
+      return { frames: [] };
+    }
+    let frames = prepareGraphableFields(data.series, theme, timeRange);
     if (frames != null) {
       let compareDiffMs: number[] = [0];
 
@@ -94,7 +102,26 @@ export const TimeSeriesPanel = ({
     }
 
     return { frames };
-  }, [data.series, timeRange]);
+  }, [data.compactSeries, data.series, theme, timeRange]);
+
+  const compactFieldConfig = useMemo(() => {
+    if (!hasCompactSeries) {
+      return undefined;
+    }
+    const plugin = getPluginImportUtils().getPanelPluginFromCache('timeseries');
+    if (!plugin) {
+      throw new Error('Timeseries panel plugin is not loaded');
+    }
+    return {
+      fieldConfig,
+      fieldConfigRegistry: plugin.fieldConfigRegistry,
+      replaceVariables,
+      theme,
+      timeZone,
+      dataLinkPostProcessor,
+      cursorMode: options.tooltip.mode,
+    };
+  }, [dataLinkPostProcessor, fieldConfig, hasCompactSeries, options.tooltip.mode, replaceVariables, theme, timeZone]);
 
   const timezones = useMemo(() => getTimezones(options.timezone, timeZone), [options.timezone, timeZone]);
   const suggestions = useMemo(() => {
@@ -112,7 +139,7 @@ export const TimeSeriesPanel = ({
   const [newAnnotationRange, setNewAnnotationRange] = useState<TimeRange2 | null>(null);
   const cursorSync = sync?.() ?? DashboardCursorSync.Off;
 
-  if (!frames || suggestions) {
+  if ((!frames && !data.compactSeries) || suggestions) {
     return (
       <PanelDataErrorView
         panelId={id}
@@ -128,7 +155,9 @@ export const TimeSeriesPanel = ({
 
   return (
     <TimeSeries
-      frames={frames}
+      frames={frames ?? []}
+      compactSeries={data.compactSeries}
+      compactFieldConfig={compactFieldConfig}
       structureRev={data.structureRev}
       timeRange={timeRange}
       timeZone={timezones}
@@ -140,8 +169,69 @@ export const TimeSeriesPanel = ({
       dataLinkPostProcessor={dataLinkPostProcessor}
       cursorSync={cursorSync}
       annotationLanes={options.annotations?.multiLane ? getXAnnotationFrames(data.annotations).length : undefined}
+      compactChildren={(uplotConfig, plan) => (
+        <>
+          {!options.disableKeyboardEvents && <KeyboardPlugin config={uplotConfig} />}
+          {cursorSync !== DashboardCursorSync.Off && (
+            <EventBusPlugin config={uplotConfig} eventBus={eventBus} compact />
+          )}
+          <XAxisInteractionAreaPlugin config={uplotConfig} queryZoom={onChangeTimeRange} />
+          {options.tooltip.mode !== TooltipDisplayMode.None && (
+            <CompactTooltipPlugin
+              config={uplotConfig}
+              plan={plan}
+              mode={options.tooltip.mode}
+              sortOrder={options.tooltip.sort}
+              hideZeros={options.tooltip.hideZeros}
+              maxHeight={options.tooltip.maxHeight}
+              maxWidth={options.tooltip.maxWidth}
+              syncMode={cursorSync}
+              syncScope={eventsScope}
+              timeZone={timeZone}
+              queryZoom={onChangeTimeRange}
+              onAnnotationRange={
+                enableAnnotationCreation
+                  ? (range) => {
+                      setNewAnnotationRange(range);
+                    }
+                  : undefined
+              }
+            />
+          )}
+          {!isVerticallyOriented && (
+            <>
+              <AnnotationsPlugin2
+                replaceVariables={replaceVariables}
+                multiLane={options.annotations?.multiLane}
+                annotations={data.annotations ?? []}
+                config={uplotConfig}
+                timeZone={timeZone}
+                newRange={newAnnotationRange}
+                setNewRange={setNewAnnotationRange}
+              />
+              <CompactOutsideRangePlugin config={uplotConfig} plan={plan} onChangeTimeRange={onChangeTimeRange} />
+              {data.annotations && (
+                <ExemplarsPlugin
+                  config={uplotConfig}
+                  exemplars={data.annotations}
+                  timeZone={timeZone}
+                  maxHeight={options.tooltip.maxHeight}
+                  maxWidth={options.tooltip.maxWidth}
+                />
+              )}
+              {((canEditThresholds && onThresholdsChange) || showThresholds) && (
+                <ThresholdControlsPlugin
+                  config={uplotConfig}
+                  fieldConfig={fieldConfig}
+                  onThresholdsChange={canEditThresholds ? onThresholdsChange : undefined}
+                />
+              )}
+            </>
+          )}
+        </>
+      )}
     >
-      {(uplotConfig, alignedFrame) => {
+      {(uplotConfig, alignedFrame, sourceFrames) => {
         return (
           <>
             {!options.disableKeyboardEvents && <KeyboardPlugin config={uplotConfig} />}
@@ -228,7 +318,7 @@ export const TimeSeriesPanel = ({
                 <OutsideRangePlugin config={uplotConfig} onChangeTimeRange={onChangeTimeRange} />
                 {data.annotations && (
                   <ExemplarsPlugin
-                    visibleSeries={getVisibleLabels(uplotConfig, frames)}
+                    visibleSeries={getVisibleLabels(uplotConfig, sourceFrames)}
                     config={uplotConfig}
                     exemplars={data.annotations}
                     timeZone={timeZone}

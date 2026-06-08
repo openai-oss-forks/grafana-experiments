@@ -1,6 +1,13 @@
 import { of } from 'rxjs';
 
-import { DataQueryRequest, DataSourceApi, LoadingState, PanelPlugin } from '@grafana/data';
+import {
+  COMPACT_TIME_SERIES_FORMAT,
+  DataQueryRequest,
+  DataSourceApi,
+  getDefaultTimeRange,
+  LoadingState,
+  PanelPlugin,
+} from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
 import { config } from '@grafana/runtime';
 import {
@@ -116,6 +123,53 @@ describe('PanelEditor', () => {
   });
 
   describe('Entering panel edit', () => {
+    it('reruns compact dashboard data so the editor receives legacy frames', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries: {
+            kind: 'compact-response-view',
+            format: COMPACT_TIME_SERIES_FORMAT,
+            buffer: new ArrayBuffer(0),
+            metadata: {
+              getLabel: () => undefined,
+              forEachLabel: () => undefined,
+              materializeLabels: () => undefined,
+            },
+            decodeStats: {
+              responseBytes: 0,
+              axisCount: 0,
+              resultCount: 0,
+              stringCount: 0,
+              stringBytes: 0,
+              seriesCount: 0,
+            },
+            axes: [],
+            series: [],
+          },
+        },
+      });
+      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+
+      expect(runQueries).toHaveBeenCalled();
+      expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
+    });
+
     it('should clear edit pane selection', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
 

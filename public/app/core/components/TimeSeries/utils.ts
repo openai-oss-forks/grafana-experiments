@@ -4,14 +4,17 @@ import uPlot from 'uplot';
 import {
   DataFrame,
   FieldConfig,
+  FieldConfigTarget,
   FieldType,
   formattedValueToString,
   getFieldColorModeForField,
+  getFieldColorMode,
   getFieldSeriesColor,
   getFieldDisplayName,
   getDisplayProcessor,
   FieldColorModeId,
   DecimalCount,
+  Field,
 } from '@grafana/data';
 // eslint-disable-next-line import/order
 import {
@@ -27,7 +30,6 @@ import {
   AxisColorMode,
   GraphGradientMode,
   VizOrientation,
-  ScaleDistributionConfig,
 } from '@grafana/schema';
 
 // unit lookup needed to determine if we want power-of-2 or power-of-10 axis ticks
@@ -69,9 +71,13 @@ import {
   getStackingGroups,
   preparePlotData2,
   AxisProps,
+  ScaleProps,
+  StackingGroup,
+  installCompactRenderer,
 } from '@grafana/ui/internal';
 
 import { ANNOTATION_LANE_SIZE } from '../../../plugins/panel/timeseries/plugins/utils';
+import { CompactNativeRenderPlan } from '../GraphNG/compactNativePlan';
 
 // See UPlotAxisBuilder.ts::calculateAxisSize for default axis size calculation
 export const UPLOT_DEFAULT_AXIS_SIZE = 17;
@@ -86,34 +92,198 @@ const defaultConfig: GraphFieldConfig = {
   showValues: false,
 };
 
-export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
-  frame,
-  theme,
-  timeZones,
-  getTimeRange,
-  allFrames,
-  renderers,
-  tweakScale = (opts) => opts,
-  tweakAxis = (opts) => opts,
-  hoverProximity,
-  orientation = VizOrientation.Horizontal,
-  xAxisConfig,
-}) => {
+type TimeSeriesConfigField = FieldConfigTarget<GraphFieldConfig>;
+type TimeSeriesFieldOrigin = NonNullable<NonNullable<Field['state']>['origin']>;
+
+interface TimeSeriesConfigSource {
+  fieldCount: number;
+  getField(fieldIndex: number): TimeSeriesConfigField | undefined;
+  getFieldOrigin(fieldIndex: number): TimeSeriesFieldOrigin | undefined;
+  getLegacyField(fieldIndex: number): Field | undefined;
+  getDisplayName(fieldIndex: number): string;
+  getSeriesColor(fieldIndex: number): ReturnType<typeof getFieldSeriesColor>;
+  getStackingGroups(): StackingGroup[];
+  setPrepData(builder: UPlotConfigBuilder): void;
+  getDynamicSeriesColor(fieldIndex: number): ((seriesIdx: number) => string | undefined) | undefined;
+}
+
+export const preparePlotConfigBuilder: UPlotConfigPrepFn = (options) => {
+  const { frame, allFrames, theme } = options;
+  let alignedFrame: DataFrame | undefined;
+  const source: TimeSeriesConfigSource = {
+    fieldCount: frame.fields.length,
+    getField: (fieldIndex) => frame.fields[fieldIndex],
+    getFieldOrigin: (fieldIndex) => frame.fields[fieldIndex]?.state?.origin,
+    getLegacyField: (fieldIndex) => frame.fields[fieldIndex],
+    getDisplayName: (fieldIndex) => {
+      const field = frame.fields[fieldIndex];
+      const origin = field.state?.origin;
+      if (origin) {
+        const originFrame = allFrames[origin.frameIndex];
+        const originField = originFrame?.fields[origin.fieldIndex];
+        return getFieldDisplayName(originField ?? field, originFrame ?? frame, allFrames);
+      }
+      return getFieldDisplayName(field, frame, allFrames);
+    },
+    getSeriesColor: (fieldIndex) => getFieldSeriesColor(frame.fields[fieldIndex], theme),
+    getStackingGroups: () => getStackingGroups(frame),
+    setPrepData: (builder) => {
+      builder.setPrepData((frames) => {
+        alignedFrame = frames[0];
+        return preparePlotData2(frames[0], builder.getStackingGroups());
+      });
+    },
+    getDynamicSeriesColor: (fieldIndex) => {
+      const field = frame.fields[fieldIndex];
+      if (getFieldColorModeForField(field).id !== FieldColorModeId.Thresholds) {
+        return undefined;
+      }
+      return (seriesIdx) =>
+        alignedFrame ? getFieldSeriesColor(alignedFrame.fields[seriesIdx], theme).color : undefined;
+    },
+  };
+  return preparePlotConfigBuilderCore(options, source);
+};
+
+export function prepareCompactPlotConfigBuilder(options: {
+  plan: CompactNativeRenderPlan;
+  theme: Parameters<UPlotConfigPrepFn>[0]['theme'];
+  timeZones: Parameters<UPlotConfigPrepFn>[0]['timeZones'];
+  getTimeRange: Parameters<UPlotConfigPrepFn>[0]['getTimeRange'];
+  hoverProximity?: number;
+  orientation?: VizOrientation;
+  xAxisConfig?: Pick<AxisProps, 'size' | 'gap' | 'ticks'>;
+}) {
+  const {
+    plan,
+    theme,
+    timeZones,
+    getTimeRange,
+    hoverProximity,
+    orientation = VizOrientation.Horizontal,
+    xAxisConfig,
+  } = options;
+  if (orientation === VizOrientation.Vertical) {
+    throw new Error('Compact rendering supports horizontal time-series orientation only');
+  }
+
+  const builder = new UPlotConfigBuilder(timeZones[0]);
+  builder.addScale({
+    scaleKey: 'x',
+    orientation: ScaleOrientation.Horizontal,
+    direction: ScaleDirection.Right,
+    isTime: true,
+    range: () => {
+      const state = builder.getState();
+      if (state.isPanning) {
+        return [state.min, state.max];
+      }
+      const range = getTimeRange();
+      return [range.from.valueOf(), range.to.valueOf()];
+    },
+  });
+
+  const filterTicks: uPlot.Axis.Filter | undefined =
+    timeZones.length > 1 ? (_u, splits) => splits.map((value, index) => (index < 2 ? null : value)) : undefined;
+  for (const timeZone of timeZones) {
+    builder.addAxis({
+      scaleKey: 'x',
+      isTime: true,
+      placement: AxisPlacement.Bottom,
+      show: true,
+      timeZone,
+      theme,
+      grid: { show: timeZone === timeZones[0] },
+      filter: filterTicks,
+      ...xAxisConfig,
+    });
+  }
+
+  installCompactRenderer(builder, plan.source);
+  const configuredScales = new Uint8Array(plan.source.scales.length);
+  for (let seriesIndex = 0; seriesIndex < plan.seriesCount; seriesIndex++) {
+    const scaleId = plan.source.columns.scaleIds[seriesIndex];
+    if (configuredScales[scaleId] !== 0) {
+      continue;
+    }
+    configuredScales[scaleId] = 1;
+    const config = plan.getScale(seriesIndex).config;
+    const custom = config.custom ?? {};
+    const scale = plan.source.scales[scaleId];
+    const display = getDisplayProcessor({
+      field: { name: 'Value', type: FieldType.number, config },
+      theme,
+      timeZone: timeZones[0],
+    });
+    builder.addAxis({
+      scaleKey: scale.key,
+      label: custom.axisLabel,
+      size: custom.axisWidth,
+      placement: custom.axisPlacement ?? AxisPlacement.Auto,
+      formatValue: (value, decimals) => formattedValueToString(display(value, decimals)),
+      theme,
+      grid: { show: custom.axisGridShow },
+      decimals: config.decimals,
+      distr: custom.scaleDistribution?.type,
+      color: scale.axisColor,
+      ticks: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
+      border: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
+    });
+
+    if (custom.thresholdsStyle && config.thresholds) {
+      const thresholdDisplay = custom.thresholdsStyle.mode ?? GraphThresholdsStyleMode.Off;
+      if (thresholdDisplay !== GraphThresholdsStyleMode.Off) {
+        builder.addThresholds({
+          config: custom.thresholdsStyle,
+          thresholds: config.thresholds,
+          scaleKey: scale.key,
+          theme,
+          hardMin: config.min,
+          hardMax: config.max,
+          softMin: custom.axisSoftMin,
+          softMax: custom.axisSoftMax,
+        });
+      }
+    }
+  }
+
+  builder.scaleKeys = ['x', plan.source.scales[0]?.key ?? ''];
+  builder.setCursor({ focus: { prox: hoverProximity ?? 30 } });
+  return builder;
+}
+
+function preparePlotConfigBuilderCore(
+  {
+    theme,
+    timeZones,
+    getTimeRange,
+    renderers,
+    tweakScale = (opts) => opts,
+    tweakAxis = (opts) => opts,
+    hoverProximity,
+    orientation = VizOrientation.Horizontal,
+    xAxisConfig,
+  }: {
+    theme: Parameters<UPlotConfigPrepFn>[0]['theme'];
+    timeZones: Parameters<UPlotConfigPrepFn>[0]['timeZones'];
+    getTimeRange: Parameters<UPlotConfigPrepFn>[0]['getTimeRange'];
+    renderers?: Parameters<UPlotConfigPrepFn>[0]['renderers'];
+    tweakScale?: Parameters<UPlotConfigPrepFn>[0]['tweakScale'];
+    tweakAxis?: Parameters<UPlotConfigPrepFn>[0]['tweakAxis'];
+    hoverProximity?: number;
+    orientation?: VizOrientation;
+    xAxisConfig?: Pick<AxisProps, 'size' | 'gap' | 'ticks'>;
+  },
+  source: TimeSeriesConfigSource
+) {
   // we want the Auto and Horizontal orientation to default to Horizontal
   const isHorizontal = orientation !== VizOrientation.Vertical;
   const builder = new UPlotConfigBuilder(timeZones[0]);
 
-  let alignedFrame: DataFrame;
-
-  builder.setPrepData((frames) => {
-    // cache alignedFrame
-    alignedFrame = frames[0];
-
-    return preparePlotData2(frames[0], builder.getStackingGroups());
-  });
+  source.setPrepData(builder);
 
   // X is the first field in the aligned frame
-  const xField = frame.fields[0];
+  const xField = source.getField(0);
   if (!xField) {
     return builder; // empty frame with no options
   }
@@ -214,7 +384,7 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
     }
   } else {
     let custom = xField.config.custom;
-    let scaleDistr: ScaleDistributionConfig = { ...custom?.scaleDistribution };
+    const scaleDistr = custom?.scaleDistribution;
 
     builder.addScale({
       scaleKey: xScaleKey,
@@ -249,8 +419,11 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
 
   let indexByName: Map<string, number> | undefined;
 
-  for (let i = 1; i < frame.fields.length; i++) {
-    const field = frame.fields[i];
+  for (let i = 1; i < source.fieldCount; i++) {
+    const field = source.getField(i);
+    if (!field) {
+      continue;
+    }
 
     const config: FieldConfig<GraphFieldConfig> = {
       ...field.config,
@@ -280,43 +453,40 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
       });
     }
     const scaleKey = buildScaleKey(config, field.type);
-    const colorMode = getFieldColorModeForField(field);
-    const scaleColor = getFieldSeriesColor(field, theme);
+    const colorMode = getFieldColorMode(field.config.color?.mode);
+    const scaleColor = source.getSeriesColor(i);
     const seriesColor = scaleColor.color;
 
     // The builder will manage unique scaleKeys and combine where appropriate
-    builder.addScale(
-      tweakScale(
-        {
-          scaleKey,
-          orientation: isHorizontal ? ScaleOrientation.Vertical : ScaleOrientation.Horizontal,
-          direction: isHorizontal ? ScaleDirection.Up : ScaleDirection.Right,
-          distribution: customConfig.scaleDistribution?.type,
-          log: customConfig.scaleDistribution?.log,
-          linearThreshold: customConfig.scaleDistribution?.linearThreshold,
-          min: field.config.min,
-          max: field.config.max,
-          softMin: customConfig.axisSoftMin,
-          softMax: customConfig.axisSoftMax,
-          centeredZero: customConfig.axisCenteredZero,
-          stackingMode: customConfig.stacking?.mode,
-          range:
-            field.type === FieldType.enum
-              ? (u: uPlot, dataMin: number, dataMax: number) => {
-                  // this is the exhaustive enum (stable)
-                  let len = field.config.type!.enum!.text!.length;
+    const scaleOptions: ScaleProps = {
+      scaleKey,
+      orientation: isHorizontal ? ScaleOrientation.Vertical : ScaleOrientation.Horizontal,
+      direction: isHorizontal ? ScaleDirection.Up : ScaleDirection.Right,
+      distribution: customConfig.scaleDistribution?.type,
+      log: customConfig.scaleDistribution?.log,
+      linearThreshold: customConfig.scaleDistribution?.linearThreshold,
+      min: field.config.min,
+      max: field.config.max,
+      softMin: customConfig.axisSoftMin,
+      softMax: customConfig.axisSoftMax,
+      centeredZero: customConfig.axisCenteredZero,
+      stackingMode: customConfig.stacking?.mode,
+      range:
+        field.type === FieldType.enum
+          ? (u: uPlot, dataMin: number, dataMax: number) => {
+              // this is the exhaustive enum (stable)
+              let len = field.config.type!.enum!.text!.length;
 
-                  return [-1, len];
+              return [-1, len];
 
-                  // these are only values that are present
-                  // return [dataMin - 1, dataMax + 1]
-                }
-              : undefined,
-          decimals: field.config.decimals,
-        },
-        field
-      )
-    );
+              // these are only values that are present
+              // return [dataMin - 1, dataMax + 1]
+            }
+          : undefined,
+      decimals: field.config.decimals,
+    };
+    const legacyField = source.getLegacyField(i);
+    builder.addScale(legacyField ? tweakScale(scaleOptions, legacyField) : scaleOptions);
 
     if (!yScaleKey) {
       yScaleKey = scaleKey;
@@ -364,26 +534,22 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
         values = text;
       }
 
-      builder.addAxis(
-        tweakAxis(
-          {
-            scaleKey,
-            label: customConfig.axisLabel,
-            size: customConfig.axisWidth,
-            placement: isHorizontal ? (customConfig.axisPlacement ?? AxisPlacement.Auto) : AxisPlacement.Bottom,
-            formatValue: (v, decimals) => formattedValueToString(fmt(v, decimals)),
-            theme,
-            grid: { show: customConfig.axisGridShow },
-            decimals: field.config.decimals,
-            distr: customConfig.scaleDistribution?.type,
-            splits,
-            values,
-            incrs,
-            ...axisDisplayOptions,
-          },
-          field
-        )
-      );
+      const axisOptions: AxisProps = {
+        scaleKey,
+        label: customConfig.axisLabel,
+        size: customConfig.axisWidth,
+        placement: isHorizontal ? (customConfig.axisPlacement ?? AxisPlacement.Auto) : AxisPlacement.Bottom,
+        formatValue: (v, decimals) => formattedValueToString(fmt(v, decimals)),
+        theme,
+        grid: { show: customConfig.axisGridShow },
+        decimals: field.config.decimals,
+        distr: customConfig.scaleDistribution?.type,
+        splits,
+        values,
+        incrs,
+        ...axisDisplayOptions,
+      };
+      builder.addAxis(legacyField ? tweakAxis(axisOptions, legacyField) : axisOptions);
     }
 
     const showPoints =
@@ -464,19 +630,13 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
     }
 
     let { fillOpacity } = customConfig;
+    const dataFrameFieldIndex = source.getFieldOrigin(i);
 
     let pathBuilder: uPlot.Series.PathBuilder | null = null;
     let pointsBuilder: uPlot.Series.Points.Show | null = null;
 
-    if (field.state?.origin) {
-      if (!indexByName) {
-        indexByName = getNamesToFieldIndex(frame, allFrames);
-      }
-
-      const originFrame = allFrames[field.state.origin.frameIndex];
-      const originField = originFrame?.fields[field.state.origin.fieldIndex];
-
-      const dispName = getFieldDisplayName(originField ?? field, originFrame, allFrames);
+    if (dataFrameFieldIndex) {
+      const dispName = source.getDisplayName(i);
 
       // disable default renderers
       if (customRenderedFields.indexOf(dispName) >= 0) {
@@ -514,16 +674,17 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
       }
 
       if (customConfig.fillBelowTo) {
-        const fillBelowToField = frame.fields.find(
-          (f) =>
-            customConfig.fillBelowTo === f.name ||
-            customConfig.fillBelowTo === f.config?.displayNameFromDS ||
-            customConfig.fillBelowTo === getFieldDisplayName(f, frame, allFrames)
+        indexByName ??= getConfigNamesToFieldIndex(source);
+        const fillBelowToIndex = findFieldIndex(
+          source,
+          (candidate, fieldIndex) =>
+            customConfig.fillBelowTo === candidate.name ||
+            customConfig.fillBelowTo === candidate.config?.displayNameFromDS ||
+            customConfig.fillBelowTo === source.getDisplayName(fieldIndex)
         );
 
-        const fillBelowDispName = fillBelowToField
-          ? getFieldDisplayName(fillBelowToField, frame, allFrames)
-          : customConfig.fillBelowTo;
+        const fillBelowDispName =
+          fillBelowToIndex >= 0 ? source.getDisplayName(fillBelowToIndex) : customConfig.fillBelowTo;
 
         const t = indexByName.get(dispName);
         const b = indexByName.get(fillBelowDispName);
@@ -542,11 +703,7 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
       }
     }
 
-    let dynamicSeriesColor: ((seriesIdx: number) => string | undefined) | undefined = undefined;
-
-    if (colorMode.id === FieldColorModeId.Thresholds) {
-      dynamicSeriesColor = (seriesIdx) => getFieldSeriesColor(alignedFrame.fields[seriesIdx], theme).color;
-    }
+    const dynamicSeriesColor = source.getDynamicSeriesColor(i);
 
     builder.addSeries({
       pathBuilder,
@@ -576,7 +733,7 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
       softMin: customConfig.axisSoftMin,
       softMax: customConfig.axisSoftMax,
       // The following properties are not used in the uPlot config, but are utilized as transport for legend config
-      dataFrameFieldIndex: field.state?.origin,
+      dataFrameFieldIndex,
       showValues: customConfig.showValues,
     });
 
@@ -598,20 +755,18 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
     }
   }
 
-  let stackingGroups = getStackingGroups(frame);
+  let stackingGroups = source.getStackingGroups();
 
   builder.setStackingGroups(stackingGroups);
 
-  const mightShowValues = frame.fields.some((field, i) => {
-    if (i === 0) {
+  const mightShowValues = someField(source, (field, index) => {
+    if (index === 0) {
       return false;
     }
-
     const customConfig = field.config.custom ?? {};
-
-    return (
+    return Boolean(
       customConfig.showValues &&
-      (customConfig.drawStyle === GraphDrawStyle.Points || customConfig.showPoints !== VisibilityMode.Never)
+        (customConfig.drawStyle === GraphDrawStyle.Points || customConfig.showPoints !== VisibilityMode.Never)
     );
   });
 
@@ -639,7 +794,10 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
 
       for (let seriesIdx = 1; seriesIdx < u.data.length; seriesIdx++) {
         const series = u.series[seriesIdx];
-        const field = frame.fields[seriesIdx];
+        const field = source.getField(seriesIdx);
+        if (!field) {
+          continue;
+        }
 
         if (
           field.config.custom?.showValues &&
@@ -678,7 +836,7 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
   // hook up custom/composite renderers
   renderers?.forEach((r) => {
     if (!indexByName) {
-      indexByName = getNamesToFieldIndex(frame, allFrames);
+      indexByName = getConfigNamesToFieldIndex(source);
     }
     let fieldIndices: Record<string, number> = {};
 
@@ -723,20 +881,37 @@ export const preparePlotConfigBuilder: UPlotConfigPrepFn = ({
   builder.setCursor(cursor);
 
   return builder;
-};
+}
 
-function getNamesToFieldIndex(frame: DataFrame, allFrames: DataFrame[]): Map<string, number> {
+function getConfigNamesToFieldIndex(source: TimeSeriesConfigSource): Map<string, number> {
   const originNames = new Map<string, number>();
-  frame.fields.forEach((field, i) => {
-    const origin = field.state?.origin;
-    if (origin) {
-      const origField = allFrames[origin.frameIndex]?.fields[origin.fieldIndex];
-      if (origField) {
-        originNames.set(getFieldDisplayName(origField, allFrames[origin.frameIndex], allFrames), i);
-      }
+  for (let i = 0; i < source.fieldCount; i++) {
+    const field = source.getField(i);
+    if (field && source.getFieldOrigin(i)) {
+      originNames.set(source.getDisplayName(i), i);
     }
-  });
+  }
   return originNames;
+}
+
+function findFieldIndex(
+  source: TimeSeriesConfigSource,
+  predicate: (field: TimeSeriesConfigField, index: number) => boolean
+): number {
+  for (let index = 0; index < source.fieldCount; index++) {
+    const field = source.getField(index);
+    if (field && predicate(field, index)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function someField(
+  source: TimeSeriesConfigSource,
+  predicate: (field: TimeSeriesConfigField, index: number) => boolean
+): boolean {
+  return findFieldIndex(source, predicate) !== -1;
 }
 
 export function getXAxisConfig(lanes = 1): Pick<AxisProps, 'size' | 'gap' | 'ticks'> | undefined {

@@ -1,6 +1,9 @@
 import { dateTime } from '../datetime/moment_wrapper';
-import { TimeSeries, TableData } from '../types/data';
+import { CompactTimeSeriesData } from '../types/compactTimeSeries';
+import { LoadingState, TimeSeries, TableData } from '../types/data';
 import { FieldType, DataFrameDTO, Field } from '../types/dataFrame';
+import { PanelData } from '../types/panel';
+import { getDefaultTimeRange } from '../types/time';
 
 import { ArrayDataFrame } from './ArrayDataFrame';
 import {
@@ -11,11 +14,38 @@ import {
   guessFieldTypes,
   isDataFrame,
   isTableData,
+  preProcessPanelData,
   reverseDataFrame,
   sortDataFrame,
   toDataFrame,
   toLegacyResponseData,
 } from './processDataFrame';
+
+describe('preProcessPanelData compact ownership', () => {
+  const compactSeries = {} as CompactTimeSeriesData;
+  const previous: PanelData = {
+    state: LoadingState.Done,
+    series: [],
+    compactSeries,
+    timeRange: getDefaultTimeRange(),
+  };
+
+  it('keeps the previous compact response during an empty loading event', () => {
+    const result = preProcessPanelData(
+      { state: LoadingState.Loading, series: [], timeRange: getDefaultTimeRange() },
+      previous
+    );
+
+    expect(result.compactSeries).toBe(compactSeries);
+    expect(result.state).toBe(LoadingState.Loading);
+  });
+
+  it.each([LoadingState.Done, LoadingState.Error])('clears compact data for a terminal %s response', (state) => {
+    const result = preProcessPanelData({ state, series: [], timeRange: getDefaultTimeRange() }, previous);
+
+    expect(result.compactSeries).toBeUndefined();
+  });
+});
 
 describe('toDataFrame', () => {
   it('converts timeseries to series', () => {

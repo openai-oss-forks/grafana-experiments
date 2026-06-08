@@ -101,9 +101,13 @@ export function applyFieldOverrides(options: ApplyFieldOverrideOptions): DataFra
 
   return options.data.map((originalFrame, index) => {
     // Need to define this new frame here as it's passed to the getLinkSupplier function inside the fields loop
-    const newFrame: DataFrame = { ...originalFrame };
+    const newFrame: DataFrame = options.mutateData ? originalFrame : { ...originalFrame };
     // Copy fields
     newFrame.fields = newFrame.fields.map((field) => {
+      if (options.mutateData) {
+        field.state ??= {};
+        return field;
+      }
       return {
         ...field,
         config: cloneDeep(field.config),
@@ -129,6 +133,7 @@ export function applyFieldOverrides(options: ApplyFieldOverrideOptions): DataFra
 
       const context = {
         field: field,
+        target: field,
         data: options.data!,
         dataFrameIndex: index,
         replaceVariables: options.replaceVariables,
@@ -296,15 +301,16 @@ function calculateRange(
 function cachingDisplayProcessor(disp: DisplayProcessor, maxCacheSize = 2500): DisplayProcessor {
   type dispCache = Map<unknown, DisplayValue>;
   // decimals -> cache mapping, -1 is unspecified decimals
-  const caches = new Map<number, dispCache>();
-
-  // pre-init caches for up to 15 decimals
-  for (let i = -1; i <= 15; i++) {
-    caches.set(i, new Map());
-  }
+  let caches: Map<number, dispCache> | undefined;
 
   return (value: unknown, decimals?: DecimalCount) => {
-    let cache = caches.get(decimals ?? -1)!;
+    const decimalsKey = decimals ?? -1;
+    caches ??= new Map();
+    let cache = caches.get(decimalsKey);
+    if (!cache) {
+      cache = new Map();
+      caches.set(decimalsKey, cache);
+    }
 
     let v = cache.get(value);
 
@@ -421,7 +427,10 @@ function processFieldConfigValue(
       return;
     }
 
-    if (item && item.shouldApply(context.field!)) {
+    const applies = context.field
+      ? item.shouldApply(context.field)
+      : Reflect.apply(item.shouldApply, item, [context.target]);
+    if (item && applies) {
       const val = item.process(get(source, item.path), context, item.settings);
       if (val !== undefined && val !== null) {
         set(destination, item.path, val);

@@ -203,16 +203,17 @@ export function createPanelDataProvider(panelKind: PanelKind): SceneDataProvider
     $behaviors: [new DashboardDatasourceBehaviour({})],
   });
 
-  // Wrap inner data provider in a data transformer
-  return new SceneDataTransformer({
-    $data: dataProvider,
-    transformations: panel.data.spec.transformations.map((t) => {
-      return {
-        ...t.spec,
-        topic: transformDataTopic(t.spec.topic),
-      };
-    }),
+  const transformations = panel.data.spec.transformations.map((t) => {
+    return {
+      ...t.spec,
+      topic: transformDataTopic(t.spec.topic),
+    };
   });
+  if (transformations.length === 0) {
+    return dataProvider;
+  }
+
+  return new SceneDataTransformer({ $data: dataProvider, transformations });
 }
 
 /**

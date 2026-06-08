@@ -1,4 +1,6 @@
-import { generateUniqueTitle } from './utils';
+import { contextSrv } from 'app/core/services/context_srv';
+
+import { generateUniqueTitle, getIsLazy, shouldSuspendGraphNGOffscreen } from './utils';
 
 describe('generateUniqueTitle', () => {
   it('should return the original title if it is not in the existing titles', () => {
@@ -46,5 +48,27 @@ describe('generateUniqueTitle', () => {
     const title = 'My Title';
     const existingTitles = new Set<string>();
     expect(generateUniqueTitle(title, existingTitles)).toBe(title);
+  });
+});
+
+describe('dashboard panel loading policy', () => {
+  const originalAuthenticatedBy = contextSrv.user.authenticatedBy;
+
+  afterEach(() => {
+    contextSrv.user.authenticatedBy = originalAuthenticatedBy;
+  });
+
+  it('mounts preloaded panels immediately but still allows offscreen GraphNG suspension', () => {
+    contextSrv.user.authenticatedBy = 'password';
+
+    expect(getIsLazy(true)).toBe(false);
+    expect(shouldSuspendGraphNGOffscreen()).toBe(true);
+  });
+
+  it('disables lazy loading and offscreen suspension for image rendering', () => {
+    contextSrv.user.authenticatedBy = 'render';
+
+    expect(getIsLazy(false)).toBe(false);
+    expect(shouldSuspendGraphNGOffscreen()).toBe(false);
   });
 });

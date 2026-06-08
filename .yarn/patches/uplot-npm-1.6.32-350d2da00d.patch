@@ -1,0 +1,944 @@
+diff --git a/dist/uPlot.cjs.js b/dist/uPlot.cjs.js
+index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072e593f68c 100644
+--- a/dist/uPlot.cjs.js
++++ b/dist/uPlot.cjs.js
+@@ -2907,11 +2907,15 @@ function syncFontSize(axis) {
+ 	}
+ }
+ 
+-function uPlot(opts, data, then) {
++function uPlot(opts, data, then, compactSource, compactController) {
+ 	const self = {
+ 		mode: ifNull(opts.mode, 1),
+ 	};
+ 
++	const compact = compactSource != null;
++	self.compactSource = compactSource;
++	self.compactController = compactController;
++
+ 	const mode = self.mode;
+ 
+ 	function getHPos(val, scale, dim, off) {
+@@ -2932,6 +2936,7 @@ function uPlot(opts, data, then) {
+ 	self.valToPosV = getVPos;
+ 
+ 	let ready = false;
++	let destroyed = false;
+ 	self.status = 0;
+ 
+ 	const root = self.root = placeDiv(UPLOT);
+@@ -2978,6 +2983,7 @@ function uPlot(opts, data, then) {
+-	const series  = self.series = mode == 1 ?
+-		setDefaults(opts.series || [], xSeriesOpts, ySeriesOpts, false) :
+-		setDefaults2(opts.series || [null], xySeriesOpts);
++	const series  = self.series = mode == 1 ?
++		setDefaults(opts.series || [], xSeriesOpts, ySeriesOpts, false) :
++		setDefaults2(opts.series || [null], xySeriesOpts);
++	const transientSeries = series.filter(s => s.retainPaths === false);
+-	const axes    = self.axes   = setDefaults(opts.axes   || [], xAxisOpts,   yAxisOpts,    true);
+-	const scales  = self.scales = {};
+-	const bands   = self.bands  = opts.bands || [];
++	const axes    = self.axes   = setDefaults(opts.axes   || [], xAxisOpts,   yAxisOpts,    true);
++	const scales  = self.scales = {};
++	const bands   = self.bands  = opts.bands || [];
+@@ -2989,6 +2995,9 @@ function uPlot(opts, data, then) {
+ 
+ 	const xScaleKey = mode == 2 ? series[1].facets[0].scale : series[0].scale;
+ 
++	if (compact && (mode != 1 || xScaleKey == null))
++		throw new Error("Compact plots require aligned X data");
++
+ 	const drawOrderMap = {
+ 		axes: drawAxesGrid,
+ 		series: drawSeries,
+@@ -3826,9 +3835,43 @@ function uPlot(opts, data, then) {
+ 
+ 	let data0 = null;
+ 
++	const xAt = index => compactSource == null ? data0[index] : compactSource.xAt(index);
++	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data0, lo, hi) : compactSource.closestXIndex(value, lo, hi);
++
++	function validateCompactSource(source) {
++		if (source == null || source.kind != "compact-v1" || !(source.buffer instanceof ArrayBuffer) ||
++			!isInt(source.pointCount) || source.pointCount < 0 || !isInt(source.seriesCount) || source.seriesCount < 0)
++			throw new Error("Invalid compact plot source");
++		for (let method of ["xAt", "closestXIndex", "yAt", "scan", "prepareBufferScan", "extent", "nearestPresent"]) {
++			if (!isFn(source[method]))
++				throw new Error("Compact plot source is missing " + method + "()");
++		}
++		if (source.pointCount > 0) {
++			let first = source.xAt(0);
++			let last = source.xAt(source.pointCount - 1);
++			if (!isFinite(first) || !isFinite(last) || last < first)
++				throw new Error("Compact X bounds must be finite and ordered");
++		}
++	}
++
++	function validateCompactController(controller) {
++		if (controller == null)
++			throw new Error("Compact plots require a render controller");
++		for (let method of ["replaceSource", "destroy", "extent", "draw", "setSeries", "updateCursor"]) {
++			if (!isFn(controller[method]))
++				throw new Error("Compact render controller is missing " + method + "()");
++		}
++	}
++
++	if (compact)
++		validateCompactController(compactController);
++
+ 	let viaAutoScaleX = false;
+ 
+ 	function setData(_data, _resetScales) {
++		if (compact)
++			throw new Error("Compact plots must be updated with setCompactData()");
++
+ 		data = _data == null ? [] : _data;
+ 
+ 		self.data = self._data = data;
+@@ -3896,6 +3939,37 @@ function uPlot(opts, data, then) {
+ 
+ 	self.setData = setData;
+ 
++	function setCompactData(source, _resetScales) {
++		if (!compact)
++			throw new Error("setCompactData() requires compact plot initialization");
++		validateCompactSource(source);
++		if (compactController != null && compactSource !== source)
++			compactController.replaceSource(compactSource, source);
++		compactSource = self.compactSource = source;
++		focusedSeries = null;
++		self.compactCursor = null;
++		self.data = self._data = data = [[]];
++		data0 = null;
++		dataLen = source.pointCount;
++		resetYSeries(true);
++		fire("setData");
++		if (_resetScales !== false) {
++			let xsc = scaleX;
++			if (xsc.auto(self, viaAutoScaleX))
++				autoScaleX();
++			else
++				_setScale(xScaleKey, xsc.min, xsc.max);
++			shouldSetCursor = shouldSetCursor || cursor.left >= 0;
++			shouldSetLegend = true;
++			commit();
++		}
++	}
++
++	self.setCompactData = setCompactData;
++	self.getX = xAt;
++	self.getValue = (seriesIndex, index) => seriesIndex == 0 ? xAt(index) : compactSource?.yAt(seriesIndex - 1, index);
++	self.compactCursor = null;
++
+ 	function autoScaleX() {
+ 		viaAutoScaleX = true;
+ 
+@@ -3906,8 +3980,8 @@ function uPlot(opts, data, then) {
+ 				i0 = idxs[0] = 0;
+ 				i1 = idxs[1] = dataLen - 1;
+ 
+-				_min = data[0][i0];
+-				_max = data[0][i1];
++				_min = xAt(i0);
++				_max = xAt(i1);
+ 
+ 				if (xScaleDistr == 2) {
+ 					_min = i0;
+@@ -4057,20 +4131,20 @@ function uPlot(opts, data, then) {
+ 						wsc.min = minMax[0];
+ 						wsc.max = minMax[1];
+ 
+-						i0 = closestIdx(wsc.min, data[0]);
+-						i1 = closestIdx(wsc.max, data[0]);
++						i0 = closestX(wsc.min);
++						i1 = closestX(wsc.max);
+ 
+ 						// don't try to contract same or adjacent idxs
+ 						if (i1 - i0 > 1) {
+ 							// closest indices can be outside of view
+-							if (data[0][i0] < wsc.min)
++							if (xAt(i0) < wsc.min)
+ 								i0++;
+-							if (data[0][i1] > wsc.max)
++							if (xAt(i1) > wsc.max)
+ 								i1--;
+ 						}
+ 
+-						s.min = data0[i0];
+-						s.max = data0[i1];
++						s.min = xAt(i0);
++						s.max = xAt(i1);
+ 					}
+ 					else if (s.show && s.auto)
+ 						accScale(wsc, psc, s, data[i], s.sorted);
+@@ -4102,6 +4176,18 @@ function uPlot(opts, data, then) {
+ 				}
+ 			});
+ 
++			if (compactController != null) {
++				for (let k in wipScales) {
++					let wsc = wipScales[k];
++					let psc = pendScales[k];
++					if (k != xScaleKey && wsc.from == null && (psc == null || psc.min == null)) {
++						let minMax = compactController.extent(self, k, i0, i1);
++						wsc.min = minMax[0] == null ? inf : minMax[0];
++						wsc.max = minMax[1] == null ? -inf : minMax[1];
++					}
++				}
++			}
++
+ 			// range independent scales
+ 			for (let k in wipScales) {
+ 				let wsc = wipScales[k];
+@@ -4199,6 +4285,15 @@ function uPlot(opts, data, then) {
+ 
+ 	function drawSeries() {
+ 		if (dataLen > 0) {
++			if (compactController != null) {
++				let progressiveDraw = compactController.draw(self, i0, i1);
++				if (progressiveDraw == null)
++					fire("drawSeries", -1);
++				else
++					progressiveDraw.then(completed => completed && !destroyed && fire("drawSeries", -1));
++				return progressiveDraw;
++			}
++
+ 			let shouldAlpha = series.some(s => s._focus) && ctxAlpha != focus.alpha;
+ 
+ 			if (shouldAlpha)
+@@ -4209,23 +4304,16 @@ function uPlot(opts, data, then) {
+ 					cacheStrokeFill(i, false);
+ 					cacheStrokeFill(i, true);
+ 
+-					if (s._paths == null) {
+-						let _ctxAlpha = ctxAlpha;
+-
+-						if (ctxAlpha != s.alpha)
+-							ctx.globalAlpha = ctxAlpha = s.alpha;
+-
+-						let _idxs = mode == 2 ? [0, data[i][0].length - 1] : getOuterIdxs(data[i]);
+-						s._paths = s.paths(self, i, _idxs[0], _idxs[1]);
+-
+-						if (ctxAlpha != _ctxAlpha)
+-							ctx.globalAlpha = ctxAlpha = _ctxAlpha;
+-					}
++					if (s.retainPaths !== false && s._paths == null)
++						buildSeriesPath(s, i);
+ 				}
+ 			});
+ 
+ 			series.forEach((s, i) => {
+ 				if (i > 0 && s.show) {
++					if (s._paths == null)
++						buildSeriesPath(s, i);
++
+ 					let _ctxAlpha = ctxAlpha;
+ 
+ 					if (ctxAlpha != s.alpha)
+@@ -4257,6 +4345,19 @@ function uPlot(opts, data, then) {
+ 		}
+ 	}
+ 
++	function buildSeriesPath(s, i) {
++		let _ctxAlpha = ctxAlpha;
++
++		if (ctxAlpha != s.alpha)
++			ctx.globalAlpha = ctxAlpha = s.alpha;
++
++		let _idxs = mode == 2 ? [0, data[i][0].length - 1] : getOuterIdxs(data[i]);
++		s._paths = s.paths(self, i, _idxs[0], _idxs[1]);
++
++		if (ctxAlpha != _ctxAlpha)
++			ctx.globalAlpha = ctxAlpha = _ctxAlpha;
++	}
++
+ 	function cacheStrokeFill(si, _points) {
+ 		let s = _points ? series[si].points : series[si];
+ 
+@@ -4779,6 +4880,8 @@ function uPlot(opts, data, then) {
+ 	self.batch = batch;
+ 
+ 	function _commit() {
++		if (destroyed)
++			return;
+ 	//	log("_commit()", arguments);
+ 
+ 		if (shouldSetScales) {
+@@ -4887,8 +4990,22 @@ function uPlot(opts, data, then) {
+-		if (fullWidCss > 0 && fullHgtCss > 0) {
+-			ctx.clearRect(0, 0, can.width, can.height);
++		if (fullWidCss > 0 && fullHgtCss > 0) {
++			ctx.clearRect(0, 0, can.width, can.height);
+ 			fire("drawClear");
+-			drawOrder.forEach(fn => fn());
+-			fire("draw");
++			let progressiveDraw = null;
++			drawOrder.forEach(fn => {
++				let drawResult = fn();
++				if (drawResult != null)
++					progressiveDraw = drawResult;
++			});
++			if (progressiveDraw == null)
++				fire("draw");
++			else
++				progressiveDraw.then(completed => completed && !destroyed && fire("draw"));
++			transientSeries.forEach(s => {
++				if (s.retainPaths === false) {
++					s._paths = null;
++					s.points._paths = null;
++				}
++			});
+ 		}
+ 
+ 		if (select.show && shouldSetSelect) {
+@@ -5066,6 +5183,24 @@ function uPlot(opts, data, then) {
+ 
+ 	function setSeries(i, opts, _fire, _pub) {
+ 	//	log("setSeries()", arguments);
++		if (compactController != null) {
++			if (i != null && (!isInt(i) || i < 1 || i > compactSource.seriesCount))
++				throw new RangeError("Compact series index is out of range");
++			let changed = compactController.setSeries(i == null ? null : i - 1, opts);
++			if (opts.focus != null)
++				focusedSeries = opts.focus && i != null ? i : null;
++			if (changed && opts.show != null) {
++				for (let key in scales) {
++					if (key != xScaleKey)
++						_setScale(key, null, null);
++				}
++			}
++			if (changed)
++				commit();
++			_fire !== false && fire("setSeries", i, opts);
++			_pub && pubSync("setSeries", self, i, opts);
++			return;
++		}
+ 
+ 		if (opts.focus != null)
+ 			setFocus(i);
+@@ -5200,10 +5335,10 @@ function uPlot(opts, data, then) {
+ 
+ 	function closestIdxFromXpos(pos, can) {
+ 		let v = posToVal(pos, xScaleKey, can);
+-		return closestIdx(v, data[0], i0, i1);
++		return closestX(v, i0, i1);
+ 	}
+ 
+-	self.valToIdx = val => closestIdx(val, data[0]);
++	self.valToIdx = val => closestX(val);
+ 	self.posToIdx = closestIdxFromXpos;
+ 	self.posToVal = posToVal;
+ 	self.valToPos = (val, scale, can) => (
+@@ -5330,6 +5465,7 @@ function uPlot(opts, data, then) {
+ 		// if cursor hidden, hide points & clear legend vals
+ 		if (mouseLeft1 < 0 || dataLen == 0 || noDataInRange) {
+ 			idx = cursor.idx = null;
++			self.compactCursor = compactController?.updateCursor(self, null, 0) || null;
+ 
+ 			for (let i = 0; i < series.length; i++) {
+ 				let pt = cursorPts[i];
+@@ -5352,8 +5488,8 @@ function uPlot(opts, data, then) {
+ 			if (mode == 1) {
+ 				mouseXPos = scaleX.ori == 0 ? mouseLeft1 : mouseTop1;
+ 				valAtPosX = posToVal(mouseXPos, xScaleKey);
+-				idx = cursor.idx = closestIdx(valAtPosX, data[0], i0, i1);
+-				xPos = valToPosX(data[0][idx], scaleX, xDim, 0);
++				idx = cursor.idx = closestX(valAtPosX, i0, i1);
++				xPos = valToPosX(xAt(idx), scaleX, xDim, 0);
+ 			}
+ 
+ 			// closest pt values
+@@ -5478,6 +5614,21 @@ function uPlot(opts, data, then) {
+ 				}
+ 			}
+ 
++			if (compactController != null) {
++				let compactCursor = compactController.updateCursor(self, idx, scaleX.ori == 1 ? mouseLeft1 : mouseTop1);
++				self.compactCursor = compactCursor;
++				if (compactCursor != null) {
++					closestDist = compactCursor.distance;
++					closestSeries = compactCursor.seriesIndex + 1;
++					_ptLft = compactCursor.left;
++					_ptTop = compactCursor.top;
++					_ptWid = _ptHgt = compactCursor.size;
++					_ptFill = compactCursor.fill;
++					_ptStroke = compactCursor.stroke;
++					_centered = true;
++				}
++			}
++
+ 			// if only using single hover point (at cursorPts[0])
+ 			// we have trigger styling at last visible series (once closestSeries is settled)
+ 			if (cursorOnePt) {
+@@ -6061,12 +6212,17 @@ function uPlot(opts, data, then) {
+ 	self.pub = pub;
+ 
+ 	function destroy() {
++		destroyed = true;
+ 		sync.unsub(self);
+ 		cursorPlots.delete(self);
+ 		mouseListeners.clear();
+ 		off(dppxchange, win, syncPxRatio);
+ 		root.remove();
+ 		legendTable?.remove(); // in case mounted outside of root
++		if (compactController != null)
++			compactController.destroy(compactSource);
++		compactSource = self.compactSource = null;
++		compactController = self.compactController = null;
+ 		fire("destroy");
+ 	}
+ 
+@@ -6075,7 +6231,10 @@ function uPlot(opts, data, then) {
+ 	function _init() {
+ 		fire("init", opts, data);
+ 
+-		setData(data || opts.data, false);
++		if (compact)
++			setCompactData(compactSource, false);
++		else
++			setData(data || opts.data, false);
+ 
+ 		if (pendScales[xScaleKey])
+ 			setScale(xScaleKey, pendScales[xScaleKey]);
+@@ -6114,6 +6273,16 @@ uPlot.rangeAsinh = rangeAsinh;
+ uPlot.orient   = orient;
+ uPlot.pxRatio = pxRatio;
+ 
++uPlot.compact = (opts, source, controller, then) => {
++	if (controller == null)
++		throw new Error("Compact plots require a render controller");
++	let compactOpts = assign({}, opts);
++	compactOpts.series = [compactOpts.series?.[0] || {}];
++	compactOpts.cursor = assign({}, compactOpts.cursor);
++	compactOpts.cursor.points = assign({}, compactOpts.cursor.points, {one: true});
++	return new uPlot(compactOpts, [[]], then, source, controller);
++};
++
+ {
+ 	uPlot.join = join;
+ }
+diff --git a/dist/uPlot.d.ts b/dist/uPlot.d.ts
+index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751e7b0ee53 100644
+--- a/dist/uPlot.d.ts
++++ b/dist/uPlot.d.ts
+@@ -6,6 +6,14 @@ declare class uPlot {
+ 		targ?: HTMLElement | ((self: uPlot, init: Function) => void)
+ 	);
+ 
++	/** creates a chart whose X values remain owned by a compact binary source */
++	static compact(
++		opts: uPlot.Options,
++		source: uPlot.CompactPlotSource,
++		controller: uPlot.CompactRenderController | null,
++		targ?: HTMLElement | ((self: uPlot, init: Function) => void)
++	): uPlot;
++
+ 	/** chart container */
+ 	readonly root: HTMLElement;
+ 
+@@ -55,6 +63,10 @@ declare class uPlot {
+ 	/** current data */
+ 	readonly data: uPlot.AlignedData;
+ 
++	/** buffer-backed source used by compact plots, null after destroy */
++	readonly compactSource?: uPlot.CompactPlotSource | null;
++	readonly compactController?: uPlot.CompactRenderController | null;
++
+ 	/** .u-over dom element */
+ 	readonly over: HTMLDivElement;
+ 
+@@ -73,6 +85,19 @@ declare class uPlot {
+ 	/** sets the chart data & redraws. (default resetScales = true) */
+ 	setData(data: uPlot.AlignedData, resetScales?: boolean): void;
+ 
++	/** replaces a compact plot's source without materializing X or Y arrays */
++	setCompactData?(source: uPlot.CompactPlotSource, resetScales?: boolean): void;
++
++	/** reads X from legacy or compact storage */
++	getX?(index: number): number;
++
++	/** reads X or Y from legacy or compact storage */
++	getValue?(seriesIndex: number, index: number): number | null | undefined;
++
++	compactSource?: uPlot.CompactPlotSource | null;
++	compactController?: uPlot.CompactRenderController | null;
++	compactCursor?: uPlot.CompactCursorState | null;
++
+ 	/** sets the limits of a scale & redraws (used for zooming) */
+ 	setScale(scaleKey: string, limits: { min: number; max: number }): void;
+ 
+@@ -167,6 +192,55 @@ declare class uPlot {
+ export = uPlot;
+ 
+ declare namespace uPlot {
++	type CompactPlotValue = number | null | undefined;
++	type CompactPointVisitor = (index: number, value: CompactPlotValue) => void;
++	type CompactScaleMode = 'all' | 'positive';
++
++	interface CompactBufferScan {
++		axisStart: number;
++		axisStep: number;
++		valuesByteOffset: number;
++		presenceByteOffset: number;
++		presenceByteLength: number;
++		packedIndex: number;
++		valueMultiplier: 1 | -1;
++		missingValue: CompactPlotValue;
++	}
++
++	interface CompactPlotSource {
++		readonly kind: 'compact-v1';
++		readonly buffer: ArrayBuffer;
++		readonly pointCount: number;
++		readonly seriesCount: number;
++		xAt(index: number): number;
++		closestXIndex(value: number, from: number, to: number): number;
++		yAt(seriesIndex: number, index: number): CompactPlotValue;
++		scan(seriesIndex: number, from: number, to: number, visitor: CompactPointVisitor): void;
++		prepareBufferScan(seriesIndex: number, from: number, target: CompactBufferScan): boolean;
++		extent(seriesIndex: number, from: number, to: number, mode?: CompactScaleMode): [number | null, number | null];
++		nearestPresent(seriesIndex: number, index: number, bias: -1 | 0 | 1): number | null;
++	}
++
++	interface CompactCursorState {
++		seriesIndex: number;
++		dataIndex: number;
++		distance: number;
++		left: number;
++		top: number;
++		size: number;
++		fill: string;
++		stroke: string;
++	}
++
++	interface CompactRenderController {
++		replaceSource(oldSource: CompactPlotSource, nextSource: CompactPlotSource): void;
++		destroy(source: CompactPlotSource): void;
++		extent(plot: uPlot, scaleKey: string, from: number, to: number): [number | null, number | null];
++		draw(plot: uPlot, from: number, to: number): void | Promise<boolean>;
++		setSeries(seriesIndex: number | null, options: {show?: boolean; focus?: boolean}): boolean;
++		updateCursor(plot: uPlot, index: number | null, mouseY: number): CompactCursorState | null;
++	}
++
+ 	type OrientCallback = (
+ 		series: Series,
+ 		dataX: number[],
+diff --git a/dist/uPlot.esm.js b/dist/uPlot.esm.js
+index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442dd37dde0 100644
+--- a/dist/uPlot.esm.js
++++ b/dist/uPlot.esm.js
+@@ -2905,11 +2905,15 @@ function syncFontSize(axis) {
+ 	}
+ }
+ 
+-function uPlot(opts, data, then) {
++function uPlot(opts, data, then, compactSource, compactController) {
+ 	const self = {
+ 		mode: ifNull(opts.mode, 1),
+ 	};
+ 
++	const compact = compactSource != null;
++	self.compactSource = compactSource;
++	self.compactController = compactController;
++
+ 	const mode = self.mode;
+ 
+ 	function getHPos(val, scale, dim, off) {
+@@ -2930,6 +2934,7 @@ function uPlot(opts, data, then) {
+ 	self.valToPosV = getVPos;
+ 
+ 	let ready = false;
++	let destroyed = false;
+ 	self.status = 0;
+ 
+ 	const root = self.root = placeDiv(UPLOT);
+@@ -2976,6 +2981,7 @@ function uPlot(opts, data, then) {
+-	const series  = self.series = mode == 1 ?
+-		setDefaults(opts.series || [], xSeriesOpts, ySeriesOpts, false) :
+-		setDefaults2(opts.series || [null], xySeriesOpts);
++	const series  = self.series = mode == 1 ?
++		setDefaults(opts.series || [], xSeriesOpts, ySeriesOpts, false) :
++		setDefaults2(opts.series || [null], xySeriesOpts);
++	const transientSeries = series.filter(s => s.retainPaths === false);
+-	const axes    = self.axes   = setDefaults(opts.axes   || [], xAxisOpts,   yAxisOpts,    true);
+-	const scales  = self.scales = {};
+-	const bands   = self.bands  = opts.bands || [];
++	const axes    = self.axes   = setDefaults(opts.axes   || [], xAxisOpts,   yAxisOpts,    true);
++	const scales  = self.scales = {};
++	const bands   = self.bands  = opts.bands || [];
+@@ -2987,6 +2993,9 @@ function uPlot(opts, data, then) {
+ 
+ 	const xScaleKey = mode == 2 ? series[1].facets[0].scale : series[0].scale;
+ 
++	if (compact && (mode != 1 || xScaleKey == null))
++		throw new Error("Compact plots require aligned X data");
++
+ 	const drawOrderMap = {
+ 		axes: drawAxesGrid,
+ 		series: drawSeries,
+@@ -3824,9 +3833,43 @@ function uPlot(opts, data, then) {
+ 
+ 	let data0 = null;
+ 
++	const xAt = index => compactSource == null ? data0[index] : compactSource.xAt(index);
++	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data0, lo, hi) : compactSource.closestXIndex(value, lo, hi);
++
++	function validateCompactSource(source) {
++		if (source == null || source.kind != "compact-v1" || !(source.buffer instanceof ArrayBuffer) ||
++			!isInt(source.pointCount) || source.pointCount < 0 || !isInt(source.seriesCount) || source.seriesCount < 0)
++			throw new Error("Invalid compact plot source");
++		for (let method of ["xAt", "closestXIndex", "yAt", "scan", "prepareBufferScan", "extent", "nearestPresent"]) {
++			if (!isFn(source[method]))
++				throw new Error("Compact plot source is missing " + method + "()");
++		}
++		if (source.pointCount > 0) {
++			let first = source.xAt(0);
++			let last = source.xAt(source.pointCount - 1);
++			if (!isFinite(first) || !isFinite(last) || last < first)
++				throw new Error("Compact X bounds must be finite and ordered");
++		}
++	}
++
++	function validateCompactController(controller) {
++		if (controller == null)
++			throw new Error("Compact plots require a render controller");
++		for (let method of ["replaceSource", "destroy", "extent", "draw", "setSeries", "updateCursor"]) {
++			if (!isFn(controller[method]))
++				throw new Error("Compact render controller is missing " + method + "()");
++		}
++	}
++
++	if (compact)
++		validateCompactController(compactController);
++
+ 	let viaAutoScaleX = false;
+ 
+ 	function setData(_data, _resetScales) {
++		if (compact)
++			throw new Error("Compact plots must be updated with setCompactData()");
++
+ 		data = _data == null ? [] : _data;
+ 
+ 		self.data = self._data = data;
+@@ -3894,6 +3937,37 @@ function uPlot(opts, data, then) {
+ 
+ 	self.setData = setData;
+ 
++	function setCompactData(source, _resetScales) {
++		if (!compact)
++			throw new Error("setCompactData() requires compact plot initialization");
++		validateCompactSource(source);
++		if (compactController != null && compactSource !== source)
++			compactController.replaceSource(compactSource, source);
++		compactSource = self.compactSource = source;
++		focusedSeries = null;
++		self.compactCursor = null;
++		self.data = self._data = data = [[]];
++		data0 = null;
++		dataLen = source.pointCount;
++		resetYSeries(true);
++		fire("setData");
++		if (_resetScales !== false) {
++			let xsc = scaleX;
++			if (xsc.auto(self, viaAutoScaleX))
++				autoScaleX();
++			else
++				_setScale(xScaleKey, xsc.min, xsc.max);
++			shouldSetCursor = shouldSetCursor || cursor.left >= 0;
++			shouldSetLegend = true;
++			commit();
++		}
++	}
++
++	self.setCompactData = setCompactData;
++	self.getX = xAt;
++	self.getValue = (seriesIndex, index) => seriesIndex == 0 ? xAt(index) : compactSource?.yAt(seriesIndex - 1, index);
++	self.compactCursor = null;
++
+ 	function autoScaleX() {
+ 		viaAutoScaleX = true;
+ 
+@@ -3904,8 +3978,8 @@ function uPlot(opts, data, then) {
+ 				i0 = idxs[0] = 0;
+ 				i1 = idxs[1] = dataLen - 1;
+ 
+-				_min = data[0][i0];
+-				_max = data[0][i1];
++				_min = xAt(i0);
++				_max = xAt(i1);
+ 
+ 				if (xScaleDistr == 2) {
+ 					_min = i0;
+@@ -4055,20 +4129,20 @@ function uPlot(opts, data, then) {
+ 						wsc.min = minMax[0];
+ 						wsc.max = minMax[1];
+ 
+-						i0 = closestIdx(wsc.min, data[0]);
+-						i1 = closestIdx(wsc.max, data[0]);
++						i0 = closestX(wsc.min);
++						i1 = closestX(wsc.max);
+ 
+ 						// don't try to contract same or adjacent idxs
+ 						if (i1 - i0 > 1) {
+ 							// closest indices can be outside of view
+-							if (data[0][i0] < wsc.min)
++							if (xAt(i0) < wsc.min)
+ 								i0++;
+-							if (data[0][i1] > wsc.max)
++							if (xAt(i1) > wsc.max)
+ 								i1--;
+ 						}
+ 
+-						s.min = data0[i0];
+-						s.max = data0[i1];
++						s.min = xAt(i0);
++						s.max = xAt(i1);
+ 					}
+ 					else if (s.show && s.auto)
+ 						accScale(wsc, psc, s, data[i], s.sorted);
+@@ -4100,6 +4174,18 @@ function uPlot(opts, data, then) {
+ 				}
+ 			});
+ 
++			if (compactController != null) {
++				for (let k in wipScales) {
++					let wsc = wipScales[k];
++					let psc = pendScales[k];
++					if (k != xScaleKey && wsc.from == null && (psc == null || psc.min == null)) {
++						let minMax = compactController.extent(self, k, i0, i1);
++						wsc.min = minMax[0] == null ? inf : minMax[0];
++						wsc.max = minMax[1] == null ? -inf : minMax[1];
++					}
++				}
++			}
++
+ 			// range independent scales
+ 			for (let k in wipScales) {
+ 				let wsc = wipScales[k];
+@@ -4197,6 +4283,15 @@ function uPlot(opts, data, then) {
+ 
+ 	function drawSeries() {
+ 		if (dataLen > 0) {
++			if (compactController != null) {
++				let progressiveDraw = compactController.draw(self, i0, i1);
++				if (progressiveDraw == null)
++					fire("drawSeries", -1);
++				else
++					progressiveDraw.then(completed => completed && !destroyed && fire("drawSeries", -1));
++				return progressiveDraw;
++			}
++
+ 			let shouldAlpha = series.some(s => s._focus) && ctxAlpha != focus.alpha;
+ 
+ 			if (shouldAlpha)
+@@ -4207,23 +4302,16 @@ function uPlot(opts, data, then) {
+ 					cacheStrokeFill(i, false);
+ 					cacheStrokeFill(i, true);
+ 
+-					if (s._paths == null) {
+-						let _ctxAlpha = ctxAlpha;
+-
+-						if (ctxAlpha != s.alpha)
+-							ctx.globalAlpha = ctxAlpha = s.alpha;
+-
+-						let _idxs = mode == 2 ? [0, data[i][0].length - 1] : getOuterIdxs(data[i]);
+-						s._paths = s.paths(self, i, _idxs[0], _idxs[1]);
+-
+-						if (ctxAlpha != _ctxAlpha)
+-							ctx.globalAlpha = ctxAlpha = _ctxAlpha;
+-					}
++					if (s.retainPaths !== false && s._paths == null)
++						buildSeriesPath(s, i);
+ 				}
+ 			});
+ 
+ 			series.forEach((s, i) => {
+ 				if (i > 0 && s.show) {
++					if (s._paths == null)
++						buildSeriesPath(s, i);
++
+ 					let _ctxAlpha = ctxAlpha;
+ 
+ 					if (ctxAlpha != s.alpha)
+@@ -4255,6 +4343,19 @@ function uPlot(opts, data, then) {
+ 		}
+ 	}
+ 
++	function buildSeriesPath(s, i) {
++		let _ctxAlpha = ctxAlpha;
++
++		if (ctxAlpha != s.alpha)
++			ctx.globalAlpha = ctxAlpha = s.alpha;
++
++		let _idxs = mode == 2 ? [0, data[i][0].length - 1] : getOuterIdxs(data[i]);
++		s._paths = s.paths(self, i, _idxs[0], _idxs[1]);
++
++		if (ctxAlpha != _ctxAlpha)
++			ctx.globalAlpha = ctxAlpha = _ctxAlpha;
++	}
++
+ 	function cacheStrokeFill(si, _points) {
+ 		let s = _points ? series[si].points : series[si];
+ 
+@@ -4777,6 +4878,8 @@ function uPlot(opts, data, then) {
+ 	self.batch = batch;
+ 
+ 	function _commit() {
++		if (destroyed)
++			return;
+ 	//	log("_commit()", arguments);
+ 
+ 		if (shouldSetScales) {
+@@ -4885,8 +4988,22 @@ function uPlot(opts, data, then) {
+-		if (fullWidCss > 0 && fullHgtCss > 0) {
+-			ctx.clearRect(0, 0, can.width, can.height);
++		if (fullWidCss > 0 && fullHgtCss > 0) {
++			ctx.clearRect(0, 0, can.width, can.height);
+ 			fire("drawClear");
+-			drawOrder.forEach(fn => fn());
+-			fire("draw");
++			let progressiveDraw = null;
++			drawOrder.forEach(fn => {
++				let drawResult = fn();
++				if (drawResult != null)
++					progressiveDraw = drawResult;
++			});
++			if (progressiveDraw == null)
++				fire("draw");
++			else
++				progressiveDraw.then(completed => completed && !destroyed && fire("draw"));
++			transientSeries.forEach(s => {
++				if (s.retainPaths === false) {
++					s._paths = null;
++					s.points._paths = null;
++				}
++			});
+ 		}
+ 
+ 		if (select.show && shouldSetSelect) {
+@@ -5064,6 +5181,24 @@ function uPlot(opts, data, then) {
+ 
+ 	function setSeries(i, opts, _fire, _pub) {
+ 	//	log("setSeries()", arguments);
++		if (compactController != null) {
++			if (i != null && (!isInt(i) || i < 1 || i > compactSource.seriesCount))
++				throw new RangeError("Compact series index is out of range");
++			let changed = compactController.setSeries(i == null ? null : i - 1, opts);
++			if (opts.focus != null)
++				focusedSeries = opts.focus && i != null ? i : null;
++			if (changed && opts.show != null) {
++				for (let key in scales) {
++					if (key != xScaleKey)
++						_setScale(key, null, null);
++				}
++			}
++			if (changed)
++				commit();
++			_fire !== false && fire("setSeries", i, opts);
++			_pub && pubSync("setSeries", self, i, opts);
++			return;
++		}
+ 
+ 		if (opts.focus != null)
+ 			setFocus(i);
+@@ -5198,10 +5333,10 @@ function uPlot(opts, data, then) {
+ 
+ 	function closestIdxFromXpos(pos, can) {
+ 		let v = posToVal(pos, xScaleKey, can);
+-		return closestIdx(v, data[0], i0, i1);
++		return closestX(v, i0, i1);
+ 	}
+ 
+-	self.valToIdx = val => closestIdx(val, data[0]);
++	self.valToIdx = val => closestX(val);
+ 	self.posToIdx = closestIdxFromXpos;
+ 	self.posToVal = posToVal;
+ 	self.valToPos = (val, scale, can) => (
+@@ -5328,6 +5463,7 @@ function uPlot(opts, data, then) {
+ 		// if cursor hidden, hide points & clear legend vals
+ 		if (mouseLeft1 < 0 || dataLen == 0 || noDataInRange) {
+ 			idx = cursor.idx = null;
++			self.compactCursor = compactController?.updateCursor(self, null, 0) || null;
+ 
+ 			for (let i = 0; i < series.length; i++) {
+ 				let pt = cursorPts[i];
+@@ -5350,8 +5486,8 @@ function uPlot(opts, data, then) {
+ 			if (mode == 1) {
+ 				mouseXPos = scaleX.ori == 0 ? mouseLeft1 : mouseTop1;
+ 				valAtPosX = posToVal(mouseXPos, xScaleKey);
+-				idx = cursor.idx = closestIdx(valAtPosX, data[0], i0, i1);
+-				xPos = valToPosX(data[0][idx], scaleX, xDim, 0);
++				idx = cursor.idx = closestX(valAtPosX, i0, i1);
++				xPos = valToPosX(xAt(idx), scaleX, xDim, 0);
+ 			}
+ 
+ 			// closest pt values
+@@ -5476,6 +5612,21 @@ function uPlot(opts, data, then) {
+ 				}
+ 			}
+ 
++			if (compactController != null) {
++				let compactCursor = compactController.updateCursor(self, idx, scaleX.ori == 1 ? mouseLeft1 : mouseTop1);
++				self.compactCursor = compactCursor;
++				if (compactCursor != null) {
++					closestDist = compactCursor.distance;
++					closestSeries = compactCursor.seriesIndex + 1;
++					_ptLft = compactCursor.left;
++					_ptTop = compactCursor.top;
++					_ptWid = _ptHgt = compactCursor.size;
++					_ptFill = compactCursor.fill;
++					_ptStroke = compactCursor.stroke;
++					_centered = true;
++				}
++			}
++
+ 			// if only using single hover point (at cursorPts[0])
+ 			// we have trigger styling at last visible series (once closestSeries is settled)
+ 			if (cursorOnePt) {
+@@ -6059,12 +6210,17 @@ function uPlot(opts, data, then) {
+ 	self.pub = pub;
+ 
+ 	function destroy() {
++		destroyed = true;
+ 		sync.unsub(self);
+ 		cursorPlots.delete(self);
+ 		mouseListeners.clear();
+ 		off(dppxchange, win, syncPxRatio);
+ 		root.remove();
+ 		legendTable?.remove(); // in case mounted outside of root
++		if (compactController != null)
++			compactController.destroy(compactSource);
++		compactSource = self.compactSource = null;
++		compactController = self.compactController = null;
+ 		fire("destroy");
+ 	}
+ 
+@@ -6073,7 +6229,10 @@ function uPlot(opts, data, then) {
+ 	function _init() {
+ 		fire("init", opts, data);
+ 
+-		setData(data || opts.data, false);
++		if (compact)
++			setCompactData(compactSource, false);
++		else
++			setData(data || opts.data, false);
+ 
+ 		if (pendScales[xScaleKey])
+ 			setScale(xScaleKey, pendScales[xScaleKey]);
+@@ -6112,6 +6271,16 @@ uPlot.rangeAsinh = rangeAsinh;
+ uPlot.orient   = orient;
+ uPlot.pxRatio = pxRatio;
+ 
++uPlot.compact = (opts, source, controller, then) => {
++	if (controller == null)
++		throw new Error("Compact plots require a render controller");
++	let compactOpts = assign({}, opts);
++	compactOpts.series = [compactOpts.series?.[0] || {}];
++	compactOpts.cursor = assign({}, compactOpts.cursor);
++	compactOpts.cursor.points = assign({}, compactOpts.cursor.points, {one: true});
++	return new uPlot(compactOpts, [[]], then, source, controller);
++};
++
+ {
+ 	uPlot.join = join;
+ }

@@ -14,7 +14,7 @@ import { t } from '@grafana/i18n';
 import { getContrastRatio } from '../themes/colorManipulator';
 import { GrafanaTheme2 } from '../themes/types';
 import { reduceField } from '../transformations/fieldReducer';
-import { Field } from '../types/dataFrame';
+import { Field, FieldConfigTarget } from '../types/dataFrame';
 import { FALLBACK_COLOR, FieldColorModeId } from '../types/fieldColor';
 import { Threshold } from '../types/thresholds';
 import { Registry, RegistryItem } from '../utils/Registry';
@@ -284,7 +284,7 @@ export class FieldColorSchemeMode implements FieldColorMode {
     return this.interpolator;
   }
 
-  getCalculator(field: Field, theme: GrafanaTheme2) {
+  getCalculator(field: FieldConfigTarget, theme: GrafanaTheme2) {
     const colors = this.getColors(theme);
 
     if (this.isByValue) {
@@ -311,11 +311,17 @@ export class FieldColorSchemeMode implements FieldColorMode {
 }
 
 /** @beta */
-export function getFieldColorModeForField(field: Field): FieldColorMode {
+export function getFieldColorModeForField(field: FieldConfigTarget): FieldColorMode {
   return (
     fieldColorModeRegistry.getIfExists(field.config.color?.mode) ??
     fieldColorModeRegistry.get(FieldColorModeId.Thresholds)
   );
+}
+
+/** @internal */
+export function getFieldColorCalculator(field: FieldConfigTarget, theme: GrafanaTheme2): FieldValueColorCalculator {
+  const mode = getFieldColorModeForField(field);
+  return Reflect.apply(mode.getCalculator, mode, [field, theme]);
 }
 
 /** @beta */
@@ -351,13 +357,13 @@ export function getColorByStringHash(colors: string[], string: string) {
   return colors[Math.abs(stringHash(string)) % colors.length];
 }
 
-function getFixedColor(field: Field, theme: GrafanaTheme2) {
+function getFixedColor(field: FieldConfigTarget, theme: GrafanaTheme2) {
   return () => {
     return theme.visualization.getColorByName(field.config.color?.fixedColor ?? FALLBACK_COLOR);
   };
 }
 
-function getShadedColor(field: Field, theme: GrafanaTheme2) {
+function getShadedColor(field: FieldConfigTarget, theme: GrafanaTheme2) {
   return () => {
     const baseColorString: string = theme.visualization.getColorByName(
       field.config.color?.fixedColor ?? FALLBACK_COLOR

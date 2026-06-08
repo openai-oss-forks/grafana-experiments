@@ -1,6 +1,8 @@
 import { Observable, Subscriber, Subscription } from 'rxjs';
 
 import {
+  COMPACT_TIME_SERIES_FORMAT,
+  CompactTimeSeriesData,
   CoreApp,
   DataFrame,
   DataQueryRequest,
@@ -204,6 +206,22 @@ describe('runRequest', () => {
 
     it('should have loading state Done', () => {
       expect(ctx.results[2].state).toEqual(LoadingState.Done);
+    });
+  });
+
+  runRequestScenario('When JSON replaces a compact response for the same query', (ctx) => {
+    const compactSeries = compactData(new ArrayBuffer(8));
+
+    ctx.setup(() => {
+      ctx.start();
+      ctx.emitPacket({ data: [], compactSeries, key: 'A' });
+      ctx.emitPacket({ data: [{ name: 'JSON' } as DataFrame], key: 'A' });
+    });
+
+    it('clears the replaced compact response', () => {
+      expect(ctx.results[0].compactSeries).toBe(compactSeries);
+      expect(ctx.results[1].compactSeries).toBeUndefined();
+      expect(ctx.results[1].series).toEqual([{ name: 'JSON' }]);
     });
   });
 
@@ -412,6 +430,41 @@ describe('runRequest', () => {
     });
   });
 });
+
+function compactData(buffer: ArrayBuffer): CompactTimeSeriesData {
+  return {
+    kind: 'compact-response-view',
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer,
+    metadata: {
+      getLabel: () => undefined,
+      forEachLabel: () => undefined,
+      materializeLabels: () => undefined,
+    },
+    decodeStats: {
+      responseBytes: buffer.byteLength,
+      axisCount: 1,
+      resultCount: 1,
+      stringCount: 0,
+      stringBytes: 0,
+      seriesCount: 1,
+    },
+    axes: [{ start: 0, step: 1, count: 1 }],
+    series: [
+      {
+        refId: 'A',
+        valueName: 'Value',
+        axisId: 0,
+        labelRecordsOffset: 0,
+        labelCount: 0,
+        presenceByteOffset: 0,
+        presenceByteLength: 0,
+        presentCount: 1,
+        valuesByteOffset: 0,
+      },
+    ],
+  };
+}
 
 describe('callQueryMethodWithMigration', () => {
   let request: DataQueryRequest<TestQuery>;

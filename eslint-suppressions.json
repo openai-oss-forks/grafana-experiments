@@ -73,7 +73,7 @@
   },
   "packages/grafana-data/src/field/displayProcessor.ts": {
     "@typescript-eslint/consistent-type-assertions": {
-      "count": 3
+      "count": 2
     }
   },
   "packages/grafana-data/src/field/overrides/processors.ts": {
@@ -488,11 +488,6 @@
   },
   "packages/grafana-runtime/src/utils/DataSourceWithBackend.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 1
-    }
-  },
-  "packages/grafana-runtime/src/utils/queryResponse.ts": {
-    "@typescript-eslint/consistent-type-assertions": {
       "count": 1
     }
   },
@@ -1007,11 +1002,8 @@
     }
   },
   "public/app/core/components/GraphNG/GraphNG.tsx": {
-    "@typescript-eslint/consistent-type-assertions": {
-      "count": 4
-    },
     "@typescript-eslint/no-explicit-any": {
-      "count": 2
+      "count": 1
     },
     "react-prefer-function-component/react-prefer-function-component": {
       "count": 1

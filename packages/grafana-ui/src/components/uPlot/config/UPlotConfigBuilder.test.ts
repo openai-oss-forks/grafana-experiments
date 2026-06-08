@@ -557,6 +557,31 @@ describe('UPlotConfigBuilder', () => {
     expect(builder.getConfig().series[1].fill).toBeInstanceOf(Function);
   });
 
+  it('forwards the path retention policy to uPlot', () => {
+    const builder = new UPlotConfigBuilder();
+    builder.addSeries({
+      drawStyle: GraphDrawStyle.Line,
+      scaleKey: 'scale-x',
+      retainPaths: false,
+      theme: darkTheme,
+    });
+
+    expect(Reflect.get(builder.getConfig().series[1], 'retainPaths')).toBe(false);
+  });
+
+  it('uses a transparent cursor point when a compact color provider has no value', () => {
+    const builder = new UPlotConfigBuilder();
+    builder.setPointColorProvider(() => undefined);
+    const stroke = builder.getConfig().cursor?.points?.stroke;
+    const u = {
+      series: [{}, { points: { _stroke: () => undefined } }],
+      cursor: { idxs: [undefined, 0] },
+    };
+
+    expect(typeof stroke).toBe('function');
+    expect(typeof stroke === 'function' ? stroke(u as uPlot, 1) : undefined).toBe('transparent80');
+  });
+
   it('allows series configuration', () => {
     const builder = new UPlotConfigBuilder();
     builder.addSeries({

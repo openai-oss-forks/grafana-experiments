@@ -11,6 +11,18 @@
  */
 
 export { UPlotChart } from '../components/uPlot/Plot';
+export {
+  CompactRenderController,
+  CompactSeriesFlag,
+  getCompactRenderController,
+  installCompactRenderer,
+  isCompactRenderSource,
+  type CompactRenderColumns,
+  type CompactRenderSource,
+  type CompactScaleRecord,
+  type CompactStyleRecord,
+  type CompactVisibilityState,
+} from '../components/uPlot/compactRenderer';
 export { type AxisProps, UPLOT_AXIS_FONT_SIZE, timeUnitSize } from '../components/uPlot/config/UPlotAxisBuilder';
 export {
   type Renderers,

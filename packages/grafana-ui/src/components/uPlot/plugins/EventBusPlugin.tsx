@@ -18,12 +18,13 @@ interface EventBusPluginProps {
   config: UPlotConfigBuilder;
   eventBus: EventBus;
   frame?: DataFrame;
+  compact?: boolean;
 }
 
 /**
  * @alpha
  */
-export const EventBusPlugin = ({ config, eventBus, frame }: EventBusPluginProps) => {
+export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: EventBusPluginProps) => {
   const frameRef = useRef<DataFrame | undefined>(frame);
   frameRef.current = frame;
 
@@ -51,17 +52,20 @@ export const EventBusPlugin = ({ config, eventBus, frame }: EventBusPluginProps)
       let viaSync = u!.cursor.event == null;
 
       if (!viaSync) {
-        let dataIdx = u!.cursor.idxs!.find((v) => v != null);
+        let dataIdx = compact ? (u!.compactCursor?.dataIndex ?? u!.cursor.idx) : u!.cursor.idxs!.find((v) => v != null);
 
         if (dataIdx == null) {
           throttledClear();
         } else {
           let rowIdx = dataIdx;
-          let colIdx = closestSeriesIdx;
+          // DataFrame column zero is the X field, so compact Y indexes are offset by one.
+          let colIdx = compact
+            ? u!.compactCursor == null
+              ? null
+              : u!.compactCursor.seriesIndex + 1
+            : closestSeriesIdx;
 
-          let xData = u!.data[0] ?? u!.data[1][0];
-
-          payload.point.time = xData[rowIdx];
+          payload.point.time = compact ? u!.getX!(rowIdx) : (u!.data[0] ?? u!.data[1][0])[rowIdx];
           payload.rowIndex = rowIdx ?? undefined;
           payload.columnIndex = colIdx ?? undefined;
           payload.data = frameRef.current;

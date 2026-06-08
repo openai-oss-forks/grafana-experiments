@@ -12,7 +12,7 @@ import { getDataSourceWithInspector } from 'app/features/dashboard/components/In
 import { supportsDataQuery } from 'app/features/dashboard/components/PanelEditor/utils';
 import { InspectTab } from 'app/features/inspector/types';
 
-import { getDashboardSceneFor } from '../utils/utils';
+import { getDashboardSceneFor, getQueryRunnerFor } from '../utils/utils';
 
 import { HelpWizard } from './HelpWizard/HelpWizard';
 import { InspectDataTab } from './InspectDataTab';
@@ -39,6 +39,16 @@ export class PanelInspectDrawer extends SceneObjectBase<PanelInspectDrawerState>
   }
 
   private _activationHandler() {
+    const panel = this.state.panelRef.resolve();
+    const queryRunner = getQueryRunnerFor(panel);
+    if (
+      queryRunner &&
+      (queryRunner.state.data?.compactSeries ||
+        queryRunner.state.data?.request?.preferredQueryResultFormat === 'compact-v1')
+    ) {
+      queryRunner.cancelQuery();
+      queryRunner.runQueries();
+    }
     this.buildTabs(0);
   }
 

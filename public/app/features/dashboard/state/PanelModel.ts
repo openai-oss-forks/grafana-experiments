@@ -582,8 +582,13 @@ export class PanelModel implements DataConfigSource, IPanelModel {
 
     const sourceQueryRunner = this.getQueryRunner();
 
-    // Copy last query result
-    clone.getQueryRunner().useLastResultFrom(sourceQueryRunner);
+    // Editor queries are JSON-only. Reusing compact dashboard data would cross the admission boundary.
+    if (
+      sourceQueryRunner.getLastRequest()?.preferredQueryResultFormat !== 'compact-v1' &&
+      !sourceQueryRunner.getLastResult()?.compactSeries
+    ) {
+      clone.getQueryRunner().useLastResultFrom(sourceQueryRunner);
+    }
 
     return clone;
   }

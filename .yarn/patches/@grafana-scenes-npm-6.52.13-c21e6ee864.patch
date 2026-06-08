@@ -1,0 +1,88 @@
+diff --git a/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js b/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
+index a08e6f4cb91f4714d649a39bd7d8ca166bcfd351..6b1400d4fc6436ce3f011f8a503fe084c3a40e49 100644
+--- a/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
++++ b/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
+@@ -114,8 +114,8 @@ class SceneDataTransformer extends SceneObjectBase {
+     if (data === this._prevDataFromSource) {
+       return true;
+     }
+-    const { series, annotations } = this._prevDataFromSource;
+-    if (data.series === series && data.annotations === annotations) {
++    const { series, annotations, compactSeries } = this._prevDataFromSource;
++    if (data.series === series && data.annotations === annotations && data.compactSeries === compactSeries) {
+       if (this.state.data && data.state !== this.state.data.state) {
+         this.setState({ data: { ...this.state.data, state: data.state } });
+       }
+diff --git a/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js b/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js
+index e67aed0ac602d179795ee9efb4c6f10eef8b83c7..95e0233bf34fc29d1f0f963972e9dd41c64a2ffe 100644
+--- a/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js
++++ b/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js
+@@ -54,11 +54,15 @@ class VariableDependencyConfig {
+   }
+   getNames() {
+     const prevState = this._state;
+-    const newState = this._state = this._sceneObject.state;
+-    const noPreviousState = !prevState;
+-    const stateDiffers = newState !== prevState;
+-    const shouldScanForDependencies = noPreviousState || stateDiffers && (!this._statePaths || this._statePaths.some((path) => path === "*" || newState[path] !== prevState[path]));
+-    if (shouldScanForDependencies) {
++    const newState = this._sceneObject.state;
++    const tracksFullState = !this._statePaths || this._statePaths.includes("*");
++    const stateDiffers = !prevState || (tracksFullState
++      ? newState !== prevState
++      : this._statePaths.some((path) => newState[path] !== prevState[path]));
++    if (stateDiffers) {
++      this._state = tracksFullState
++        ? newState
++        : Object.fromEntries(this._statePaths.map((path) => [path, newState[path]]));
+       this.scanStateForDependencies(newState);
+     }
+     return this._dependencies;
+@@ -72,6 +76,7 @@ class VariableDependencyConfig {
+   }
+   setPaths(paths) {
+     this._statePaths = paths;
++    this._state = void 0;
+   }
+   scanStateForDependencies(state) {
+     this._dependencies.clear();
+diff --git a/dist/index.js b/dist/index.js
+index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e951732f6b6 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -8730,8 +8730,8 @@ class SceneDataTransformer extends SceneObjectBase {
+     if (data === this._prevDataFromSource) {
+       return true;
+     }
+-    const { series, annotations } = this._prevDataFromSource;
+-    if (data.series === series && data.annotations === annotations) {
++    const { series, annotations, compactSeries } = this._prevDataFromSource;
++    if (data.series === series && data.annotations === annotations && data.compactSeries === compactSeries) {
+       if (this.state.data && data.state !== this.state.data.state) {
+         this.setState({ data: { ...this.state.data, state: data.state } });
+       }
+@@ -10099,11 +10099,11 @@ class VariableDependencyConfig {
+   }
+   getNames() {
+     const prevState = this._state;
+-    const newState = this._state = this._sceneObject.state;
+-    const noPreviousState = !prevState;
+-    const stateDiffers = newState !== prevState;
+-    const shouldScanForDependencies = noPreviousState || stateDiffers && (!this._statePaths || this._statePaths.some((path) => path === "*" || newState[path] !== prevState[path]));
+-    if (shouldScanForDependencies) {
++    const newState = this._sceneObject.state;
++    const tracksFullState = !this._statePaths || this._statePaths.includes("*");
++    const stateDiffers = !prevState || (tracksFullState ? newState !== prevState : this._statePaths.some((path) => newState[path] !== prevState[path]));
++    if (stateDiffers) {
++      this._state = tracksFullState ? newState : Object.fromEntries(this._statePaths.map((path) => [path, newState[path]]));
+       this.scanStateForDependencies(newState);
+     }
+     return this._dependencies;
+@@ -10117,6 +10117,7 @@ class VariableDependencyConfig {
+   }
+   setPaths(paths) {
+     this._statePaths = paths;
++    this._state = void 0;
+   }
+   scanStateForDependencies(state) {
+     this._dependencies.clear();

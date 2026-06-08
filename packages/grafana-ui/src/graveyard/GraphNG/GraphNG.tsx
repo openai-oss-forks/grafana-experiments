@@ -265,7 +265,7 @@ export class GraphNG extends Component<GraphNGProps, GraphNGState> {
             data={alignedData!}
             width={vizWidth}
             height={vizHeight}
-            plotRef={(u) => ((this.plotInstance as React.MutableRefObject<uPlot>).current = u)}
+            plotRef={(u) => ((this.plotInstance as React.MutableRefObject<uPlot | null>).current = u)}
           >
             {children ? children(config, alignedFrame) : null}
           </UPlotChart>

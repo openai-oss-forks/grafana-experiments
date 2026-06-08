@@ -37,7 +37,7 @@ export const displayNameOverrideProcessor = (
   settings?: StringFieldConfigSettings
 ) => {
   // clear the cached display name
-  delete context.field?.state?.displayName;
+  delete context.target?.state?.displayName;
   return stringOverrideProcessor(value, context, settings);
 };
 
@@ -118,7 +118,7 @@ export const stringOverrideProcessor = (
     return value;
   }
   if (settings && settings.expandTemplateVars && context.replaceVariables && typeof value === 'string') {
-    return context.replaceVariables(value, context.field!.state!.scopedVars);
+    return context.replaceVariables(value, context.target?.state?.scopedVars);
   }
   return `${value}`;
 };

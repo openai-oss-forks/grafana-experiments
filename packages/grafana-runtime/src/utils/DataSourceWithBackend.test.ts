@@ -23,6 +23,7 @@ import {
   toStreamingDataResponse,
 } from './DataSourceWithBackend';
 import { publicDashboardQueryHandler } from './publicDashboardQueryHandler';
+import { QUERY_DATA_COMPACT_HEADER, QUERY_DATA_COMPACT_VERSION } from './queryResponse';
 
 interface MyQuery extends DataQuery {
   filters?: AdHocVariableFilter[];
@@ -30,6 +31,8 @@ interface MyQuery extends DataQuery {
 }
 
 class MyDataSource extends DataSourceWithBackend<MyQuery, DataSourceJsonData> {
+  requestCompactResponses = false;
+
   constructor(instanceSettings: DataSourceInstanceSettings<DataSourceJsonData>) {
     super(instanceSettings);
   }
@@ -45,6 +48,10 @@ class MyDataSource extends DataSourceWithBackend<MyQuery, DataSourceJsonData> {
   async setValue(key: string, value: string) {
     await this.userStorage.setItem(key, value);
   }
+
+  protected shouldRequestCompactQueryResponse() {
+    return this.requestCompactResponses;
+  }
 }
 
 const mockDatasourceRequest = jest.fn<Promise<FetchResponse>, BackendSrvRequest[]>();
@@ -54,6 +61,22 @@ const backendSrv = {
     return of(mockDatasourceRequest(options));
   },
 } as unknown as BackendSrv;
+
+function compactQueryRequest(overrides: Partial<DataQueryRequest> = {}): DataQueryRequest {
+  return {
+    requestId: 'compact-test',
+    interval: '5s',
+    intervalMs: 5000,
+    maxDataPoints: 10,
+    range: getDefaultTimeRange(),
+    scopedVars: {},
+    targets: [{ refId: 'A' }],
+    timezone: 'utc',
+    app: '',
+    startTime: 0,
+    ...overrides,
+  };
+}
 
 jest.mock('../services', () => ({
   ...jest.requireActual('../services'),
@@ -225,6 +248,40 @@ describe('DataSourceWithBackend', () => {
         "url": "/api/ds/query?ds_type=dummy&requestId=request-123",
       }
     `);
+  });
+
+  test('requests compact query responses from the data query endpoint', () => {
+    const { mock, ds } = createMockDatasource();
+    ds.requestCompactResponses = true;
+    ds.query(
+      compactQueryRequest({
+        preferredQueryResultFormat: QUERY_DATA_COMPACT_VERSION,
+      })
+    );
+
+    expect(mock.calls[0][0].headers?.[QUERY_DATA_COMPACT_HEADER]).toBe(QUERY_DATA_COMPACT_VERSION);
+    expect(mock.calls[0][0].responseType).toBe('arraybuffer');
+  });
+
+  test('does not request compact responses without an explicit dashboard opt-in', () => {
+    const { mock, ds } = createMockDatasource();
+    ds.requestCompactResponses = true;
+    ds.query(compactQueryRequest());
+
+    expect(mock.calls[0][0].headers?.[QUERY_DATA_COMPACT_HEADER]).toBeUndefined();
+    expect(mock.calls[0][0].responseType).toBeUndefined();
+  });
+
+  test('does not retain a stale compact header on a non-compact request', () => {
+    const { mock, ds } = createMockDatasource();
+    ds.requestCompactResponses = true;
+    ds.query(
+      compactQueryRequest({
+        headers: { [QUERY_DATA_COMPACT_HEADER]: QUERY_DATA_COMPACT_VERSION },
+      })
+    );
+
+    expect(mock.calls[0][0].headers?.[QUERY_DATA_COMPACT_HEADER]).toBeUndefined();
   });
 
   test('correctly passes dashboard and panel headers', () => {

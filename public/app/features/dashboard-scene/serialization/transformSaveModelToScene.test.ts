@@ -670,9 +670,8 @@ describe('transformSaveModelToScene', () => {
       };
 
       const { vizPanel } = buildGridItemForTest(panel);
-      expect(vizPanel.state.$data).toBeInstanceOf(SceneDataTransformer);
-      expect(vizPanel.state.$data?.state.$data).toBeInstanceOf(SceneQueryRunner);
-      expect((vizPanel.state.$data?.state.$data as SceneQueryRunner).state.queries).toEqual(panel.targets);
+      expect(vizPanel.state.$data).toBeInstanceOf(SceneQueryRunner);
+      expect((vizPanel.state.$data as SceneQueryRunner).state.queries).toEqual(panel.targets);
     });
 
     it('should not set SceneQueryRunner for plugins with skipDataQuery', () => {

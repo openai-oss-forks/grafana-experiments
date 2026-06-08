@@ -136,6 +136,8 @@ export {
 export {
   getFieldColorModeForField,
   getFieldColorMode,
+  /** @internal */
+  getFieldColorCalculator,
   fieldColorModeRegistry,
   type FieldColorMode,
   getFieldSeriesColor,
@@ -146,6 +148,9 @@ export { FieldConfigOptionsRegistry } from './field/FieldConfigOptionsRegistry';
 export { sortThresholds, getActiveThreshold } from './field/thresholds';
 export {
   applyFieldOverrides,
+  setDynamicConfigValue,
+  setFieldConfigDefaults,
+  type FieldOverrideEnv,
   validateFieldConfig,
   applyRawFieldOverrides,
   useFieldOverrides,
@@ -282,6 +287,7 @@ export { MatcherID, FieldMatcherID, FrameMatcherID, ValueMatcherID } from './tra
 export {
   ReducerID,
   isReducerID,
+  isCompactTimeSeriesReducerSupported,
   type FieldReducerInfo,
   reduceField,
   fieldReducers,
@@ -699,6 +705,15 @@ export {
 export { CoreApp, type AppRootProps, type AppPluginMeta, AppPlugin, FeatureState } from './types/app';
 export { patchArrayVectorProrotypeMethods } from './types/vector';
 export {
+  COMPACT_TIME_SERIES_FORMAT,
+  type CompactTimeSeriesAxis,
+  type CompactTimeSeriesSeries,
+  type CompactTimeSeriesSeriesCollection,
+  type CompactTimeSeriesData,
+  type CompactTimeSeriesMetadata,
+  isCompactTimeSeriesSeriesCollection,
+} from './types/compactTimeSeries';
+export {
   type DynamicConfigValue,
   type ConfigOverrideRule,
   type SystemConfigOverrideRule,
@@ -875,6 +890,7 @@ export {
   type FieldTypeConfig,
   type EnumFieldConfig,
   type ValueLinkConfig,
+  type FieldConfigTarget,
   type Field,
   type FieldState,
   type NumericRange,

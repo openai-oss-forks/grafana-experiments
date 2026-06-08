@@ -599,13 +599,13 @@ describe('PanelModel', () => {
     });
 
     describe('destroy', () => {
-      it('Should still preserve last query result', () => {
+      it('Should release the last query result', () => {
         model.getQueryRunner().useLastResultFrom({
           getLastResult: () => ({}) as PanelData,
         } as PanelQueryRunner);
 
         model.destroy();
-        expect(model.getQueryRunner().getLastResult()).toBeDefined();
+        expect(model.getQueryRunner().getLastResult()).toBeUndefined();
       });
     });
 

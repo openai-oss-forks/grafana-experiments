@@ -2,10 +2,10 @@ import { isNumber } from 'lodash';
 
 import { GrafanaTheme2 } from '../themes/types';
 import { reduceField, ReducerID } from '../transformations/fieldReducer';
-import { Field, FieldConfig, FieldType, NumericRange } from '../types/dataFrame';
+import { Field, FieldConfig, FieldConfigTarget, FieldType, NumericRange } from '../types/dataFrame';
 import { Threshold } from '../types/thresholds';
 
-import { getFieldColorModeForField } from './fieldColor';
+import { getFieldColorCalculator, getFieldColorModeForField } from './fieldColor';
 import { getActiveThresholdForValue } from './thresholds';
 
 export interface ColorScaleValue {
@@ -16,14 +16,13 @@ export interface ColorScaleValue {
 
 export type ScaleCalculator = (value: number) => ColorScaleValue;
 
-export function getScaleCalculator(field: Field, theme: GrafanaTheme2): ScaleCalculator {
+export function getScaleCalculator(field: FieldConfigTarget, theme: GrafanaTheme2): ScaleCalculator {
   if (field.type === FieldType.boolean) {
     return getBooleanScaleCalculator(field, theme);
   }
 
-  const mode = getFieldColorModeForField(field);
-  const getColor = mode.getCalculator(field, theme);
-  const info = field.state?.range ?? getMinMaxAndDelta(field);
+  const getColor = getFieldColorCalculator(field, theme);
+  const info = field.state?.range ?? getTargetMinMaxAndDelta(field);
 
   return (value: number) => {
     let percent = 0;
@@ -46,7 +45,7 @@ export function getScaleCalculator(field: Field, theme: GrafanaTheme2): ScaleCal
   };
 }
 
-function getBooleanScaleCalculator(field: Field, theme: GrafanaTheme2): ScaleCalculator {
+function getBooleanScaleCalculator(field: FieldConfigTarget, theme: GrafanaTheme2): ScaleCalculator {
   const trueValue: ColorScaleValue = {
     color: theme.visualization.getColorByName('green'),
     percent: 1,
@@ -100,6 +99,19 @@ export function getMinMaxAndDelta(field: Field): NumericRange {
     max,
     delta: max! - min!,
   };
+}
+
+function getTargetMinMaxAndDelta(field: FieldConfigTarget): NumericRange {
+  if (isField(field)) {
+    return getMinMaxAndDelta(field);
+  }
+  const min = isNumber(field.config.min) ? field.config.min : 0;
+  const max = isNumber(field.config.max) ? field.config.max : 100;
+  return { min, max, delta: max - min };
+}
+
+function isField(field: FieldConfigTarget): field is Field {
+  return 'values' in field && Array.isArray(field.values);
 }
 
 /**

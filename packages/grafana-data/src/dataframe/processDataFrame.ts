@@ -557,10 +557,10 @@ export function getProcessedDataFrames(results?: DataQueryResponseData[]): DataF
  * This is to have panels not flicker temporarily with "no data" while loading
  */
 export function preProcessPanelData(data: PanelData, lastResult?: PanelData): PanelData {
-  const { series, annotations } = data;
+  const { series, annotations, compactSeries } = data;
 
   //  for loading states with no data, use last result
-  if (data.state === LoadingState.Loading && series.length === 0) {
+  if (data.state === LoadingState.Loading && series.length === 0 && !compactSeries) {
     if (!lastResult) {
       lastResult = data;
     }

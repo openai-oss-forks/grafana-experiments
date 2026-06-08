@@ -17,6 +17,7 @@ const initHook = (u: uPlot) => {
   let pressedKeys = new Set<string>();
   let dragStartX: number | null = null;
   let keysLastHandledAt: number | null = null;
+  let animationFrameId: number | null = null;
 
   if (!parentWithFocus) {
     return;
@@ -40,6 +41,7 @@ const initHook = (u: uPlot) => {
   };
 
   const handlePressedKeys = (time: number) => {
+    animationFrameId = null;
     const nothingPressed = pressedKeys.size === 0;
     if (nothingPressed || !u) {
       keysLastHandledAt = null;
@@ -86,7 +88,7 @@ const initHook = (u: uPlot) => {
     }
 
     keysLastHandledAt = time;
-    window.requestAnimationFrame(handlePressedKeys);
+    animationFrameId = window.requestAnimationFrame(handlePressedKeys);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -111,7 +113,7 @@ const initHook = (u: uPlot) => {
       dragStartX = e.key === ' ' && dragStartX === null ? u.cursor.left! : dragStartX;
 
       if (initiateAnimationLoop) {
-        window.requestAnimationFrame(handlePressedKeys);
+        animationFrameId = window.requestAnimationFrame(handlePressedKeys);
       }
     }
   };
@@ -158,6 +160,13 @@ const initHook = (u: uPlot) => {
   parentWithFocus.addEventListener('blur', onBlur);
 
   const onDestroy = () => {
+    if (animationFrameId !== null) {
+      window.cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+    }
+    pressedKeys.clear();
+    keysLastHandledAt = null;
+    dragStartX = null;
     parentWithFocus?.removeEventListener('keydown', onKeyDown);
     parentWithFocus?.removeEventListener('keyup', onKeyUp);
     parentWithFocus?.removeEventListener('focus', onFocus);

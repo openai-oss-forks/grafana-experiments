@@ -40,6 +40,20 @@ describe('MixedDatasource', () => {
   });
 
   describe('with no errors', () => {
+    it('does not forward compact response preferences to child datasources', async () => {
+      const ds = new MixedDatasource({} as DataSourceInstanceSettings);
+      const child = (await datasourceSrv.get('A')) as MockObservableDataSourceApi;
+      const querySpy = jest.spyOn(child, 'query');
+      const requestMixed = getQueryOptions({
+        preferredQueryResultFormat: 'compact-v1',
+        targets: [{ refId: 'QA', datasource: { uid: 'A' } }],
+      });
+
+      await lastValueFrom(ds.query(requestMixed));
+
+      expect(querySpy).toHaveBeenCalledWith(expect.objectContaining({ preferredQueryResultFormat: undefined }));
+    });
+
     it('direct query should return results', async () => {
       const ds = new MixedDatasource({} as DataSourceInstanceSettings);
       const requestMixed = getQueryOptions({

@@ -213,10 +213,32 @@ export const TooltipPlugin2 = ({
     let dataLinks: LinkModel[] = [];
     let adHocFilters: AdHocFilterModel[] = [];
 
-    // for onceClick link rendering during mousemoves we use these pre-generated first links or actions
+    // For one-click rendering during mousemoves, retain only the focused series link.
     // these will be wrong if the titles have interpolation using the hovered *value*
     // but this should be quite rare. we'll fix it if someone actually encounters this
-    let persistentLinks: LinkModel[][] = [];
+    let persistentLinkSeriesIdx: number | null = null;
+    let persistentLinkDataIdx: number | null = null;
+    let persistentLinks: LinkModel[] = [];
+    let shiftDragMouseUp: ((event: MouseEvent) => void) | undefined;
+    let zoomDragMouseUp: (() => void) | undefined;
+
+    const updatePersistentLink = () => {
+      const dataIdx = closestSeriesIdx == null ? null : seriesIdxs[closestSeriesIdx];
+      if (closestSeriesIdx === persistentLinkSeriesIdx && dataIdx === persistentLinkDataIdx) {
+        return;
+      }
+
+      persistentLinkSeriesIdx = closestSeriesIdx;
+      persistentLinkDataIdx = dataIdx;
+      persistentLinks = [];
+
+      if (closestSeriesIdx != null && dataIdx != null) {
+        const oneClickLink = getDataLinks(closestSeriesIdx, dataIdx).find((dataLink) => dataLink.oneClick === true);
+        if (oneClickLink) {
+          persistentLinks = [oneClickLink];
+        }
+      }
+    };
 
     let pendingRender = false;
     let pendingPinned = false;
@@ -292,7 +314,7 @@ export const TooltipPlugin2 = ({
                 dismiss,
                 selectedRange,
                 viaSync,
-                _isPinned ? dataLinks : closestSeriesIdx != null ? persistentLinks[closestSeriesIdx] : [],
+                _isPinned ? dataLinks : closestSeriesIdx === persistentLinkSeriesIdx ? persistentLinks : [],
                 _isPinned ? adHocFilters : []
               )
             : null,
@@ -336,13 +358,17 @@ export const TooltipPlugin2 = ({
               u.cursor.drag!.x = false;
               u.cursor.drag!.y = true;
 
-              let onUp = (e: MouseEvent) => {
+              if (shiftDragMouseUp) {
+                document.removeEventListener('mouseup', shiftDragMouseUp, true);
+              }
+              shiftDragMouseUp = () => {
                 u.cursor.drag!.x = true;
                 u.cursor.drag!.y = false;
-                document.removeEventListener('mouseup', onUp, true);
+                document.removeEventListener('mouseup', shiftDragMouseUp!, true);
+                shiftDragMouseUp = undefined;
               };
 
-              document.addEventListener('mouseup', onUp, true);
+              document.addEventListener('mouseup', shiftDragMouseUp, true);
             }
           },
           true
@@ -361,12 +387,16 @@ export const TooltipPlugin2 = ({
             if (e.button === 0) {
               u.over.classList.add('zoom-drag');
 
-              let onUp = () => {
+              if (zoomDragMouseUp) {
+                document.removeEventListener('mouseup', zoomDragMouseUp, true);
+              }
+              zoomDragMouseUp = () => {
                 u.over.classList.remove('zoom-drag');
-                document.removeEventListener('mouseup', onUp, true);
+                document.removeEventListener('mouseup', zoomDragMouseUp!, true);
+                zoomDragMouseUp = undefined;
               };
 
-              document.addEventListener('mouseup', onUp, true);
+              document.addEventListener('mouseup', zoomDragMouseUp, true);
             }
           },
           true
@@ -555,6 +585,9 @@ export const TooltipPlugin2 = ({
     config.addHook('setData', (u) => {
       yZoomed = false;
       yDrag = false;
+      persistentLinkSeriesIdx = null;
+      persistentLinkDataIdx = null;
+      persistentLinks = [];
 
       if (_isPinned) {
         dismiss();
@@ -566,6 +599,7 @@ export const TooltipPlugin2 = ({
     // TODO: we only need this for multi/all mode?
     config.addHook('setSeries', (u, seriesIdx) => {
       closestSeriesIdx = seriesIdx;
+      updatePersistentLink();
 
       viaSync = u.cursor.event == null;
       updateHovering();
@@ -574,23 +608,9 @@ export const TooltipPlugin2 = ({
 
     // fires on data value hovers/unhovers
     config.addHook('setLegend', (u) => {
-      seriesIdxs = _plot?.cursor!.idxs!.slice()!;
+      seriesIdxs = _plot?.cursor!.idxs!;
       _someSeriesIdx = seriesIdxs.some((v, i) => i > 0 && v != null);
-
-      if (persistentLinks.length === 0) {
-        persistentLinks = seriesIdxs.map((v, seriesIdx) => {
-          if (seriesIdx > 0) {
-            const links = getDataLinks(seriesIdx, seriesIdxs[seriesIdx]!);
-            const oneClickLink = links.find((dataLink) => dataLink.oneClick === true);
-
-            if (oneClickLink) {
-              return [oneClickLink];
-            }
-          }
-
-          return [];
-        });
-      }
+      updatePersistentLink();
 
       viaSync = u.cursor.event == null;
       let prevIsHovering = _isHovering;
@@ -702,6 +722,12 @@ export const TooltipPlugin2 = ({
       // in case this component unmounts while anchored (due to data auto-refresh + re-config)
       document.removeEventListener('mousedown', downEventOutside, true);
       document.removeEventListener('keydown', downEventOutside, true);
+      if (shiftDragMouseUp) {
+        document.removeEventListener('mouseup', shiftDragMouseUp, true);
+      }
+      if (zoomDragMouseUp) {
+        document.removeEventListener('mouseup', zoomDragMouseUp, true);
+      }
     };
   }, [config]);
 

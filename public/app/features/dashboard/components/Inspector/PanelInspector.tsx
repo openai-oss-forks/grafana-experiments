@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { connect, MapStateToProps } from 'react-redux';
 import { useLocation } from 'react-router-dom-v5-compat';
 
@@ -39,6 +39,17 @@ const PanelInspectorUnconnected = ({ panel, dashboard, plugin }: Props) => {
   const { data, isLoading, hasError } = usePanelLatestData(panel, dataOptions, false);
   const metaDs = useDatasourceMetadata(data);
   const tabs = useInspectTabs(panel, dashboard, plugin, hasError, metaDs);
+
+  useEffect(() => {
+    const queryRunner = panel.getQueryRunner();
+    if (
+      queryRunner.getLastRequest()?.preferredQueryResultFormat === 'compact-v1' ||
+      queryRunner.getLastResult()?.compactSeries
+    ) {
+      queryRunner.cancelQuery();
+      panel.refresh();
+    }
+  }, [panel]);
 
   const onClose = () => {
     locationService.partial({

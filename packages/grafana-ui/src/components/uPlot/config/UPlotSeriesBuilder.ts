@@ -50,6 +50,8 @@ export interface SeriesProps extends LineConfig, BarConfig, FillConfig, PointsCo
   theme: GrafanaTheme2;
   value?: uPlot.Series.Value;
   showValues?: boolean;
+  /** Release generated path geometry after each draw. */
+  retainPaths?: boolean;
 }
 
 export class UPlotSeriesBuilder extends PlotConfigBuilder<SeriesProps, Series> {
@@ -138,7 +140,7 @@ export class UPlotSeriesBuilder extends PlotConfigBuilder<SeriesProps, Series> {
       }
     }
 
-    return {
+    const config: Series = {
       scale: scaleKey,
       facets,
       spanGaps: typeof spanNulls === 'number' ? false : spanNulls,
@@ -149,6 +151,12 @@ export class UPlotSeriesBuilder extends PlotConfigBuilder<SeriesProps, Series> {
       ...lineConfig,
       ...pointsConfig,
     };
+
+    if (this.props.retainPaths !== undefined) {
+      Reflect.set(config, 'retainPaths', this.props.retainPaths);
+    }
+
+    return config;
   }
 
   private getLineColor(): Series.Stroke {
