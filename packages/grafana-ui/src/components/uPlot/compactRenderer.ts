@@ -641,9 +641,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       }
       let dataIndex = index;
       let rawValue = this.source.yAt(series, dataIndex);
-      if (rawValue === undefined) {
+      if (rawValue == null) {
         const nearest = this.source.nearestPresent(series, index, 0);
-        if (nearest == null || this.crossesSourceGap(series, index, nearest)) {
+        if (nearest == null) {
           continue;
         }
         dataIndex = nearest;
@@ -1461,14 +1461,6 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (this.cursorPercentTotals.length !== required) {
       this.cursorPercentTotals = new Float64Array(required);
     }
-  }
-
-  private crossesSourceGap(series: number, from: number, to: number): boolean {
-    let crossesGap = false;
-    this.source.scan(series, Math.min(from, to), Math.max(from, to), (_index, value) => {
-      crossesGap ||= value === null;
-    });
-    return crossesGap;
   }
 
   private isVisible(series: number): boolean {

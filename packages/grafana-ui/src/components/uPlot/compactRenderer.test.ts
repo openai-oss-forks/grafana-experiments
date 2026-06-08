@@ -200,7 +200,15 @@ describe('CompactRenderController', () => {
     expect(cursor).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
 
     controller.setSeries(1, { show: false });
-    expect(controller.updateCursor(plot, 1, 2)).toBeNull();
+    expect(controller.updateCursor(plot, 1, 2)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+  });
+
+  test('uses the nearest present sample when cursor focus lands on a series gap', () => {
+    const source = createSource([[1, null, 3]], [CompactSeriesFlag.Linear]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
   });
 
   test('resolves the nearest series for a local multi-series tooltip cursor', () => {

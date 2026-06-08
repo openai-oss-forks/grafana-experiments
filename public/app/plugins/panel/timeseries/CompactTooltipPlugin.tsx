@@ -1,13 +1,19 @@
-import { css } from '@emotion/css';
+import { css, cx } from '@emotion/css';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-import { dateTimeFormat, TimeZone } from '@grafana/data';
-import { t } from '@grafana/i18n';
+import { dateTimeFormat, formattedValueToString, getFieldColorMode, TimeZone } from '@grafana/data';
 import { DashboardCursorSync, SortOrder, TooltipDisplayMode } from '@grafana/schema';
-import { getPortalContainer, Icon, useStyles2 } from '@grafana/ui';
-import { VizTooltipRow } from '@grafana/ui/internal';
+import { getPortalContainer, useStyles2 } from '@grafana/ui';
+import {
+  CloseButton,
+  ColorIndicator,
+  ColorPlacement,
+  VizTooltipHeader,
+  VizTooltipRow,
+  VizTooltipWrapper,
+} from '@grafana/ui/internal';
 import { CompactNativeRenderPlan, CompactNativeSeriesFlag } from 'app/core/components/GraphNG/compactNativePlan';
 
 interface CompactTooltipPluginProps {
@@ -34,6 +40,10 @@ interface HoverState {
 }
 
 const ROW_HEIGHT = 24;
+const VIRTUALIZE_THRESHOLD = 200;
+const DEFAULT_VIRTUAL_HEIGHT = 400;
+const TOOLTIP_OFFSET = 10;
+const VIEWPORT_SCROLLBAR_WIDTH = 16;
 const MIN_ZOOM_DISTANCE = 5;
 
 export function CompactTooltipPlugin({
@@ -42,7 +52,7 @@ export function CompactTooltipPlugin({
   mode,
   sortOrder = SortOrder.None,
   hideZeros = false,
-  maxHeight = 400,
+  maxHeight,
   maxWidth,
   syncMode = DashboardCursorSync.Off,
   syncScope = 'global',
@@ -67,6 +77,7 @@ export function CompactTooltipPlugin({
   const filteredIndexesRef = useRef<Uint32Array>();
   const tooltipValueStorageRef = useRef<Float64Array>();
   const positionRef = useRef({ left: 0, top: 0 });
+  const sizeRef = useRef({ width: 0, height: 0 });
   const clearHover = useCallback(() => {
     hoverRef.current = null;
     setHover(null);
@@ -86,6 +97,7 @@ export function CompactTooltipPlugin({
   const styles = useStyles2(getStyles, maxWidth);
   const baseIndexes = useMemo(() => buildTooltipIndexes(plan), [plan]);
   const activeHover = hover?.source === plan.source ? hover : null;
+  const isTooltipVisible = activeHover != null;
   const hoverSource = activeHover?.source;
   const hoverCursorIndex = activeHover?.cursorIndex;
   const effectiveMode = activeHover?.viaSync ? TooltipDisplayMode.Multi : mode;
@@ -240,10 +252,10 @@ export function CompactTooltipPlugin({
         return;
       }
 
-      positionRef.current.left = plot.rect.left + plot.cursor.left + 10;
-      positionRef.current.top = plot.rect.top + (plot.cursor.top ?? 0) + 10;
+      positionRef.current.left = plot.rect.left + plot.cursor.left;
+      positionRef.current.top = plot.rect.top + (plot.cursor.top ?? 0);
       if (tooltipRef.current) {
-        tooltipRef.current.style.transform = getTooltipTransform(positionRef.current);
+        tooltipRef.current.style.transform = getTooltipTransform(positionRef.current, sizeRef.current);
       }
 
       const nextHover = {
@@ -289,6 +301,23 @@ export function CompactTooltipPlugin({
   }, [clearTooltip, plan.source]);
 
   useLayoutEffect(() => {
+    const tooltip = tooltipRef.current;
+    if (!tooltip) {
+      return;
+    }
+    const updateSizeAndPosition = () => {
+      const bounds = tooltip.getBoundingClientRect();
+      sizeRef.current.width = bounds.width;
+      sizeRef.current.height = bounds.height;
+      tooltip.style.transform = getTooltipTransform(positionRef.current, sizeRef.current);
+    };
+    updateSizeAndPosition();
+    const observer = new ResizeObserver(updateSizeAndPosition);
+    observer.observe(tooltip);
+    return () => observer.disconnect();
+  }, [isTooltipVisible]);
+
+  useLayoutEffect(() => {
     if (!pinned) {
       return;
     }
@@ -317,57 +346,71 @@ export function CompactTooltipPlugin({
     effectiveMode === TooltipDisplayMode.Single ? activeHover.focusedSeries : indexes.at(rowIndex);
   const valueIndex = effectiveMode === TooltipDisplayMode.Single ? activeHover.focusedIndex : activeHover.cursorIndex;
   const timestamp = plan.source.xAt(valueIndex);
+  const isVirtualized = rowCount > VIRTUALIZE_THRESHOLD;
+  const rowsStyle = isVirtualized
+    ? { height: maxHeight ?? DEFAULT_VIRTUAL_HEIGHT, overflowY: 'auto' as const }
+    : maxHeight != null
+      ? { maxHeight, overflowY: 'auto' as const }
+      : undefined;
+  const renderRow = (rowIndex: number, virtualStart?: number) => {
+    const seriesIndex = getSeriesIndex(rowIndex);
+    const value = resolveTooltipValue(plan.source, seriesIndex, valueIndex);
+    const display = plan.getDisplay(seriesIndex)(value);
+    const planStyle = plan.getStyle(seriesIndex);
+    const rendererStyle = plan.source.styles[plan.source.columns.styleIds[seriesIndex]];
+    const colorMode = getFieldColorMode(planStyle.config.color?.mode);
+    const isByValue = colorMode.isByValue;
+
+    return (
+      <div
+        key={seriesIndex}
+        ref={virtualStart == null ? undefined : virtualizer.measureElement}
+        className={virtualStart == null ? undefined : styles.virtualRow}
+        style={virtualStart == null ? undefined : { transform: `translateY(${virtualStart}px)` }}
+        data-index={rowIndex}
+        role="listitem"
+        aria-posinset={rowIndex + 1}
+        aria-setsize={rowCount}
+      >
+        <VizTooltipRow
+          label={plan.getDisplayName(seriesIndex)}
+          value={formattedValueToString(display)}
+          color={isByValue ? (display.color ?? rendererStyle.stroke) : rendererStyle.stroke}
+          colorIndicator={isByValue ? ColorIndicator.value : ColorIndicator.series}
+          colorPlacement={isByValue ? ColorPlacement.trailing : ColorPlacement.first}
+          isActive={seriesIndex === activeHover.focusedSeries}
+          isPinned={pinned}
+          lineStyle={planStyle.config.custom?.lineStyle}
+          isHiddenFromViz={plan.source.columns.visibility[seriesIndex] === 0}
+        />
+      </div>
+    );
+  };
 
   return createPortal(
     <div
       ref={tooltipRef}
-      className={styles.tooltip}
+      className={cx(styles.tooltip, pinned && styles.pinned)}
       style={{
-        transform: getTooltipTransform(positionRef.current),
+        transform: getTooltipTransform(positionRef.current, sizeRef.current),
         pointerEvents: pinned ? 'all' : 'none',
       }}
+      aria-live="polite"
+      aria-atomic="true"
     >
-      <div className={styles.header}>
-        <span>{dateTimeFormat(timestamp, { timeZone })}</span>
-        {pinned && (
-          <button
-            type="button"
-            className={styles.close}
-            aria-label={t('timeseries.compact-tooltip.close', 'Close tooltip')}
-            onClick={clearTooltip}
-          >
-            <Icon name="times" />
-          </button>
-        )}
-      </div>
-      <div ref={scrollRef} className={styles.rows} style={{ height: Math.min(maxHeight, rowCount * ROW_HEIGHT) }}>
-        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
-          {virtualizer.getVirtualItems().map((row) => {
-            const seriesIndex = getSeriesIndex(row.index);
-            const value = plan.source.yAt(seriesIndex, valueIndex);
-            const display = plan.getDisplay(seriesIndex)(value);
-            const style = plan.source.styles[plan.source.columns.styleIds[seriesIndex]];
-            return (
-              <div
-                key={seriesIndex}
-                ref={virtualizer.measureElement}
-                className={styles.row}
-                style={{ transform: `translateY(${row.start}px)` }}
-                data-index={row.index}
-              >
-                <VizTooltipRow
-                  label={plan.getDisplayName(seriesIndex)}
-                  value={display.text}
-                  color={display.color ?? style.stroke}
-                  isActive={seriesIndex === activeHover.focusedSeries}
-                  isPinned={pinned}
-                  isHiddenFromViz={plan.source.columns.visibility[seriesIndex] === 0}
-                />
-              </div>
-            );
-          })}
+      {pinned && <CloseButton onClick={clearTooltip} />}
+      <VizTooltipWrapper>
+        <VizTooltipHeader item={{ label: '', value: dateTimeFormat(timestamp, { timeZone }) }} isPinned={pinned} />
+        <div ref={scrollRef} className={styles.rows} style={rowsStyle} role="list">
+          {isVirtualized ? (
+            <div className={styles.virtualContent} style={{ height: virtualizer.getTotalSize() }}>
+              {virtualizer.getVirtualItems().map((row) => renderRow(row.index, row.start))}
+            </div>
+          ) : (
+            Array.from({ length: rowCount }, (_, rowIndex) => renderRow(rowIndex))
+          )}
         </div>
-      </div>
+      </VizTooltipWrapper>
     </div>,
     portal.current
   );
@@ -389,7 +432,7 @@ interface SortedTooltipIndexes extends CompactTooltipIndexes {
 
 export function filterTooltipIndexes(
   indexes: CompactTooltipIndexes,
-  source: Pick<CompactNativeRenderPlan['source'], 'seriesCount' | 'yAt'>,
+  source: Pick<CompactNativeRenderPlan['source'], 'seriesCount' | 'yAt' | 'nearestPresent'>,
   getStyle: CompactNativeRenderPlan['getStyle'],
   valueIndex: number,
   hideZeros: boolean,
@@ -402,13 +445,26 @@ export function filterTooltipIndexes(
   let length = 0;
   for (let index = 0; index < indexes.length; index++) {
     const seriesIndex = indexes.at(index);
-    const value = source.yAt(seriesIndex, valueIndex);
+    const value = resolveTooltipValue(source, seriesIndex, valueIndex);
     valueStorage[seriesIndex] = value ?? Number.NaN;
     if (shouldShowTooltipValue(value, getStyle(seriesIndex).config.noValue, hideZeros)) {
       storage[length++] = seriesIndex;
     }
   }
   return { storage, valueStorage, length, at: (index) => storage[index] };
+}
+
+export function resolveTooltipValue(
+  source: Pick<CompactNativeRenderPlan['source'], 'yAt' | 'nearestPresent'>,
+  seriesIndex: number,
+  valueIndex: number
+) {
+  const value = source.yAt(seriesIndex, valueIndex);
+  if (value != null) {
+    return value;
+  }
+  const nearestIndex = source.nearestPresent(seriesIndex, valueIndex, 0);
+  return nearestIndex == null ? value : source.yAt(seriesIndex, nearestIndex);
 }
 
 function shouldShowTooltipValue(value: number | null | undefined, noValue: unknown, hideZeros: boolean): boolean {
@@ -474,31 +530,57 @@ export function sortTooltipIndexes(
   return { storage, length: sorted.length, at: (index) => sorted[index] };
 }
 
-function getTooltipTransform(position: { left: number; top: number }): string {
-  return `translate(${position.left}px, ${position.top}px)`;
+export function getTooltipTransform(
+  position: { left: number; top: number },
+  size: { width: number; height: number },
+  viewport = {
+    width: window.innerWidth - VIEWPORT_SCROLLBAR_WIDTH,
+    height: window.innerHeight - VIEWPORT_SCROLLBAR_WIDTH,
+  }
+): string {
+  const placeLeft = position.left + size.width + TOOLTIP_OFFSET > viewport.width && position.left - size.width >= 0;
+  const placeAbove = position.top + size.height + TOOLTIP_OFFSET > viewport.height && position.top - size.height >= 0;
+  const shiftX = position.left + (placeLeft ? -TOOLTIP_OFFSET : TOOLTIP_OFFSET);
+  const shiftY = position.top + (placeAbove ? -TOOLTIP_OFFSET : TOOLTIP_OFFSET);
+  const reflectX = placeLeft ? ' translateX(-100%)' : '';
+  const reflectY = placeAbove ? ' translateY(-100%)' : '';
+  return `translateX(${shiftX}px)${reflectX} translateY(${shiftY}px)${reflectY}`;
 }
 
 const getStyles = (theme: import('@grafana/data').GrafanaTheme2, maxWidth?: number) => ({
   tooltip: css({
-    position: 'fixed',
-    left: 0,
     top: 0,
-    zIndex: 10000,
-    maxWidth,
-    minWidth: 240,
+    left: 0,
+    zIndex: theme.zIndex.tooltip,
+    whiteSpace: 'pre',
     background: theme.colors.background.elevated,
-    border: `1px solid ${theme.colors.border.weak}`,
     borderRadius: theme.shape.radius.default,
-    boxShadow: '0 4px 10px rgb(0 0 0 / 20%)',
-    pointerEvents: 'none',
+    position: 'fixed',
+    border: `1px solid ${theme.colors.border.weak}`,
+    boxShadow: theme.shadows.z2,
+    userSelect: 'text',
+    maxWidth: maxWidth ?? 'none',
   }),
-  header: css({ padding: '8px', fontWeight: 500, display: 'flex', justifyContent: 'space-between' }),
-  close: css({
-    border: 0,
-    background: 'transparent',
-    color: theme.colors.text.secondary,
-    cursor: 'pointer',
+  pinned: css({
+    boxShadow: theme.shadows.z3,
   }),
-  rows: css({ overflowY: 'auto', position: 'relative' }),
-  row: css({ position: 'absolute', left: 0, top: 0, width: '100%', minHeight: ROW_HEIGHT }),
+  rows: css({
+    display: 'flex',
+    flexDirection: 'column',
+    flex: 1,
+    gap: 2,
+    borderTop: `1px solid ${theme.colors.border.weak}`,
+    padding: theme.spacing(1),
+  }),
+  virtualContent: css({
+    position: 'relative',
+    width: '100%',
+  }),
+  virtualRow: css({
+    left: 0,
+    minHeight: ROW_HEIGHT,
+    position: 'absolute',
+    top: 0,
+    width: '100%',
+  }),
 });

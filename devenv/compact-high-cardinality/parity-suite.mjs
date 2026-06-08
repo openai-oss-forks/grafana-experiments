@@ -55,7 +55,11 @@ for (const panel of selected) {
   await runPanel(panel, jsonDir, 'compact-v1', 'json');
   const jsonReport = await readReport(jsonDir);
   const comparison = await comparePng(path.join(compactDir, 'chart.png'), path.join(jsonDir, 'chart.png'), panelDir);
-  const passed = comparison.mismatchRatio <= maxMismatchRatio;
+  const tooltipSampleParity = arraysEqual(
+    compactReport.interactions?.tooltip?.sampleRows,
+    jsonReport.interactions?.tooltip?.sampleRows
+  );
+  const passed = comparison.mismatchRatio <= maxMismatchRatio && tooltipSampleParity;
   results.push({
     panelId: panel.id,
     title: panel.title,
@@ -65,8 +69,9 @@ for (const panel of selected) {
     jsonPaintMs: initialPaint(jsonReport),
     compactHeapMB: initialHeap(compactReport),
     jsonHeapMB: initialHeap(jsonReport),
-    compactTooltipRows: compactReport.interactions?.tooltip?.rows,
-    jsonTooltipRows: jsonReport.interactions?.tooltip?.rows,
+    compactTooltipRows: compactReport.interactions?.tooltip?.totalRows,
+    jsonTooltipRows: jsonReport.interactions?.tooltip?.totalRows,
+    tooltipSampleParity,
     visualParity: passed ? 'passed' : 'failed',
     ...comparison,
   });
@@ -88,6 +93,15 @@ console.table(results);
 console.log(`Parity summary: ${summaryPath}`);
 if (failures.length > 0) {
   process.exitCode = 1;
+}
+
+function arraysEqual(left, right) {
+  return (
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 function runPanel(panel, panelOutput, expectedFormat, responseFormat) {

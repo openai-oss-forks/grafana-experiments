@@ -1,6 +1,6 @@
 import { type MouseEvent, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
-import { DisplayValue, fieldReducers, ReducerID } from '@grafana/data';
+import { DisplayValue, fieldReducers, isReducerID } from '@grafana/data';
 import { AxisPlacement, VizLegendOptions } from '@grafana/schema';
 import { VizLayout, VizLegend, VizLegendItem, VizLegendItemSource } from '@grafana/ui';
 import { UPlotConfigBuilder } from '@grafana/ui/internal';
@@ -38,18 +38,7 @@ export function CompactPlotLegend({
         return;
       }
       const append = event.ctrlKey || event.metaKey || event.shiftKey;
-      if (append) {
-        plot.setSeries(seriesIndex + 1, { show: plan.source.columns.visibility[seriesIndex] === 0 });
-      } else {
-        let isolated = plan.source.columns.visibility[seriesIndex] === 1;
-        for (let index = 0; isolated && index < plan.seriesCount; index++) {
-          isolated = index === seriesIndex || plan.source.columns.visibility[index] === 0;
-        }
-        plot.setSeries(null, { show: isolated });
-        if (!isolated) {
-          plot.setSeries(seriesIndex + 1, { show: true });
-        }
-      }
+      toggleCompactLegendSeries(plot, plan, seriesIndex, append);
       setVisibilityRevision((revision) => revision + 1);
     },
     [plan]
@@ -77,6 +66,41 @@ export function CompactPlotLegend({
       />
     </VizLayout.Legend>
   );
+}
+
+export function toggleCompactLegendSeries(
+  plot: import('uplot'),
+  plan: CompactNativeRenderPlan,
+  seriesIndex: number,
+  append: boolean
+) {
+  const label = plan.getDisplayName(seriesIndex);
+  if (append) {
+    const show = plan.source.columns.visibility[seriesIndex] === 0;
+    for (let index = 0; index < plan.seriesCount; index++) {
+      if (plan.getDisplayName(index) === label) {
+        plot.setSeries(index + 1, { show });
+      }
+    }
+    return;
+  }
+
+  let isolated = true;
+  for (let index = 0; index < plan.seriesCount; index++) {
+    const expectedVisibility = plan.getDisplayName(index) === label ? 1 : 0;
+    if (plan.source.columns.visibility[index] !== expectedVisibility) {
+      isolated = false;
+      break;
+    }
+  }
+  plot.setSeries(null, { show: isolated });
+  if (!isolated) {
+    for (let index = 0; index < plan.seriesCount; index++) {
+      if (plan.getDisplayName(index) === label) {
+        plot.setSeries(index + 1, { show: true });
+      }
+    }
+  }
 }
 
 function createLegendSource(
@@ -116,7 +140,7 @@ function createLegendSource(
     const display = plan.getDisplay(seriesIndex);
     return calcs.map((reducerId) => {
       const reducer = fieldReducers.get(reducerId);
-      const value = plan.reduce(seriesIndex, reducerId as ReducerID);
+      const value = reduce(plan, seriesIndex, reducerId);
       return { ...display(value), title: reducer.name, description: reducer.description };
     });
   };
@@ -165,7 +189,7 @@ function getDisplayValuesForSeries(plan: CompactNativeRenderPlan, calcs: string[
   return calcs.map((reducerId) => {
     const reducer = fieldReducers.get(reducerId);
     return {
-      ...display(plan.reduce(seriesIndex, reducerId as ReducerID)),
+      ...display(reduce(plan, seriesIndex, reducerId)),
       title: reducer.name,
       description: reducer.description,
     };
@@ -176,5 +200,12 @@ function getSortValue(plan: CompactNativeRenderPlan, calcs: string[], seriesInde
   if (sortBy === 'Name') {
     return plan.getDisplayName(seriesIndex);
   }
-  return calcs.includes(sortBy) ? Number(plan.reduce(seriesIndex, sortBy as ReducerID)) : undefined;
+  return calcs.includes(sortBy) ? Number(reduce(plan, seriesIndex, sortBy)) : undefined;
+}
+
+function reduce(plan: CompactNativeRenderPlan, seriesIndex: number, reducerId: string) {
+  if (!isReducerID(reducerId)) {
+    throw new Error(`Unsupported compact legend reducer: ${reducerId}`);
+  }
+  return plan.reduce(seriesIndex, reducerId);
 }

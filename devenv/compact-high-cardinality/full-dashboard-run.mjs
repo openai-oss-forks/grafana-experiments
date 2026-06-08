@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { chromium } from 'playwright';
 
-import { buildCompactResponse } from './compact-v1.mjs';
+import { buildCompactResponseFromGrafanaJson } from './compact-v1.mjs';
 import { createFullDashboardFixture, DASHBOARD_UID, DATASOURCE_UID } from './fixtures.mjs';
 import { buildJsonResponse } from './json-response.mjs';
 
@@ -107,6 +107,7 @@ await context.route('**/api/ds/query**', async (route) => {
     const startedAt = performance.now();
     const responseOptions = {
       refIds,
+      queries: requestBody.queries,
       seriesPerQuery: options.seriesPerQuery,
       pointCount: options.pointCount,
       from: Number(requestBody.from),
@@ -115,7 +116,8 @@ await context.route('**/api/ds/query**', async (route) => {
       gapEvery: 17,
       seed: stableSeed(headers['x-panel-id'], refIds, requestBody.from, requestBody.to),
     };
-    const response = compact ? buildCompactResponse(responseOptions) : buildJsonResponse(responseOptions);
+    const jsonResponse = buildJsonResponse(responseOptions);
+    const response = compact ? buildCompactResponseFromGrafanaJson(JSON.parse(jsonResponse), refIds) : jsonResponse;
     const generatedAt = performance.now();
     const responseBody = Buffer.from(response);
     const rawResponseBytes = responseBody.byteLength;

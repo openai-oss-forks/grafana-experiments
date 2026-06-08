@@ -173,6 +173,7 @@ await context.route('**/api/ds/query**', async (route) => {
         pointCount: options.pointCount,
         from: Number(requestBody.from),
         to: Number(requestBody.to),
+        queries: requestBody.queries,
         gappedSeriesEvery: options.gappedSeriesEvery,
         gapEvery: options.gapEvery,
         seed: options.seed + requestNumber - 1,
@@ -322,7 +323,14 @@ function buildCapturedResponse(capturedResponse, refIds, compact) {
 }
 
 function buildGeneratedResponse(responseOptions, compact) {
-  return compact ? buildCompactResponse(responseOptions) : buildJsonResponse(responseOptions);
+  if (!compact) {
+    return buildJsonResponse(responseOptions);
+  }
+  if (options.dashboardJson) {
+    const json = JSON.parse(buildJsonResponse(responseOptions));
+    return buildCompactResponseFromGrafanaJson(json, responseOptions.refIds);
+  }
+  return buildCompactResponse(responseOptions);
 }
 
 async function loadCapturedResponse(filePath) {
@@ -657,7 +665,7 @@ async function verifyPanelInteractions(page, responseFormat) {
     { timeout: 10_000 }
   );
   const hoverToTooltipMs = round(performance.now() - hoverStartedAt);
-  const tooltip = await page.evaluate((format) => {
+  const tooltip = await page.evaluate(async (format) => {
     const element =
       document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
       Array.from(document.body.querySelectorAll('div')).find((candidate) => {
@@ -667,18 +675,39 @@ async function verifyPanelInteractions(page, responseFormat) {
     const rows =
       format === 'compact-v1'
         ? Array.from(element?.querySelectorAll('[data-index]') ?? [])
-        : Array.from(element?.querySelectorAll('[data-testid="series-icon"]') ?? []).flatMap((icon) =>
-            icon.parentElement ? [icon.parentElement] : []
-          );
+        : Array.from(element?.querySelectorAll('[data-testid="series-icon"]') ?? []).flatMap((icon) => {
+            const row = icon.closest('tr') ?? icon.parentElement?.parentElement;
+            return row ? [row] : [];
+          });
     const bounds = rows.map((row) => row.getBoundingClientRect());
+    let totalRows = rows.length;
+    if (format === 'compact-v1') {
+      const scrollContainer = Array.from(element?.querySelectorAll('div') ?? []).find(
+        (candidate) => getComputedStyle(candidate).overflowY === 'auto'
+      );
+      if (scrollContainer) {
+        const previous = scrollContainer.scrollTop;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        const indexes = Array.from(element?.querySelectorAll('[data-index]') ?? [], (row) =>
+          Number(row.getAttribute('data-index'))
+        );
+        totalRows = indexes.length === 0 ? 0 : Math.max(...indexes) + 1;
+        scrollContainer.scrollTop = previous;
+      }
+    }
     return {
       visible: Boolean(element),
-      rows: rows.length,
+      totalRows,
+      mountedRows: rows.length,
+      sampleRows: rows.slice(0, 3).map((row) => row.textContent?.trim() ?? ''),
       textLength: element?.textContent?.length ?? 0,
       overlappingRows: bounds.some((rowBounds, index) => index > 0 && rowBounds.top < bounds[index - 1].bottom - 1),
     };
   }, responseFormat);
-  if (tooltip.rows === 0) {
+  if (tooltip.totalRows === 0) {
     throw new Error(`${responseFormat} tooltip is visible but has no series rows`);
   }
   if (responseFormat === 'compact-v1' && tooltip.overlappingRows) {
@@ -698,8 +727,24 @@ async function verifyPanelInteractions(page, responseFormat) {
     };
   }
   const firstLegendButton = legendButtons.nth(0);
-  const secondLegendButton = legendButtons.nth(1);
   await firstLegendButton.waitFor({ state: 'visible', timeout: 10_000 });
+  const firstLegendLabel = await firstLegendButton.getAttribute('title');
+  let secondLegendButton;
+  for (let index = 1; index < (await legendButtons.count()); index++) {
+    const candidate = legendButtons.nth(index);
+    if ((await candidate.getAttribute('title')) !== firstLegendLabel) {
+      secondLegendButton = candidate;
+      break;
+    }
+  }
+  if (!secondLegendButton) {
+    return {
+      hoverToTooltipMs,
+      tooltip,
+      repeatedHover,
+      legendToggleChangedState: null,
+    };
+  }
   await secondLegendButton.waitFor({ state: 'visible', timeout: 10_000 });
   const initialClass = await legendButtonState(secondLegendButton);
   await firstLegendButton.click();
@@ -991,7 +1036,7 @@ function printReport(report, reportPath) {
   }
   if (report.interactions) {
     console.log(
-      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms hoverP50=${report.interactions.repeatedHover.eventToSettledFrameMedianMs}ms hoverP95=${report.interactions.repeatedHover.eventToSettledFrameP95Ms}ms rows=${report.interactions.tooltip.rows} legendToggle=${report.interactions.legendToggleChangedState}`
+      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms hoverP50=${report.interactions.repeatedHover.eventToSettledFrameMedianMs}ms hoverP95=${report.interactions.repeatedHover.eventToSettledFrameP95Ms}ms rows=${report.interactions.tooltip.totalRows} mountedRows=${report.interactions.tooltip.mountedRows} legendToggle=${report.interactions.legendToggleChangedState}`
     );
   }
   if (report.error) {

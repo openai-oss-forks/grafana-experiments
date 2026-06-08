@@ -1,3 +1,5 @@
+import { generatedAxis, generatedValueAt } from './generated-series.mjs';
+
 const encoder = new TextEncoder();
 
 class BinaryWriter {
@@ -116,11 +118,9 @@ export function buildCompactResponse({
   writer.writeUint32(stringBytesLength);
   writer.writeUint64(0);
 
-  const safeFrom = Number.isSafeInteger(from) ? from : Date.now() - pointCount * 60_000;
-  const safeTo = Number.isSafeInteger(to) && to > safeFrom ? to : safeFrom + Math.max(1, pointCount - 1) * 60_000;
-  const step = pointCount === 1 ? 60_000 : Math.max(1, Math.floor((safeTo - safeFrom) / (pointCount - 1)));
-  writer.writeInt64(safeFrom);
-  writer.writeUint64(step);
+  const axis = generatedAxis(pointCount, from, to);
+  writer.writeInt64(axis.start);
+  writer.writeUint64(axis.step);
   writer.writeUint32(pointCount);
   writer.writeUint32(0);
 
@@ -168,7 +168,7 @@ export function buildCompactResponse({
       writer.writeUint32(0);
       writer.writeUint32(refIdStringIds.get(refId));
       writer.writeUint32(valueNameStringId);
-      writer.writeUint32(0);
+      writer.writeUint32(firstSeriesStringId + globalSeriesIndex);
       writer.writeUint32(2);
       writer.writeUint32(0);
       writer.writeUint64(0);
@@ -185,7 +185,7 @@ export function buildCompactResponse({
         if (gapped && isGap(pointIndex, globalSeriesIndex, gapEvery)) {
           continue;
         }
-        writer.writeFloat64(valueAt(resultIndex, globalSeriesIndex, pointIndex, seed));
+        writer.writeFloat64(generatedValueAt(resultIndex, globalSeriesIndex, pointIndex, seed));
       }
     }
 
@@ -515,17 +515,6 @@ function isGap(pointIndex, seriesIndex, gapEvery) {
 function countGaps(pointCount, seriesIndex, gapEvery) {
   const firstGap = (gapEvery - (seriesIndex % gapEvery)) % gapEvery;
   return firstGap >= pointCount ? 0 : Math.floor((pointCount - 1 - firstGap) / gapEvery) + 1;
-}
-
-function valueAt(resultIndex, seriesIndex, pointIndex, seed) {
-  const seededSeries = seriesIndex + seed * 97;
-  if ((seededSeries + pointIndex) % 251 === 0) {
-    return 0;
-  }
-  if ((seededSeries * 17 + pointIndex) % 4093 === 0) {
-    return 1_000_000;
-  }
-  return 50 + resultIndex * 10 + Math.sin((seededSeries * 3 + pointIndex) / 19) * 25;
 }
 
 function align8(value) {

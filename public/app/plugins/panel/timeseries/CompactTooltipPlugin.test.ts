@@ -1,6 +1,11 @@
 import { SortOrder } from '@grafana/schema';
 
-import { filterTooltipIndexes, sortTooltipIndexes } from './CompactTooltipPlugin';
+import {
+  filterTooltipIndexes,
+  getTooltipTransform,
+  resolveTooltipValue,
+  sortTooltipIndexes,
+} from './CompactTooltipPlugin';
 
 describe('compact tooltip indexes', () => {
   const indexes = {
@@ -16,6 +21,7 @@ describe('compact tooltip indexes', () => {
     const source = {
       seriesCount: 5,
       yAt: (seriesIndex: number) => [4, null, -2, Number.NaN, 4][seriesIndex],
+      nearestPresent: () => null,
     };
     const filtered = filterTooltipIndexes(
       indexes,
@@ -32,6 +38,7 @@ describe('compact tooltip indexes', () => {
     const source = {
       seriesCount: 5,
       yAt: (seriesIndex: number) => [0, null, -2, 0, 4][seriesIndex],
+      nearestPresent: () => null,
     };
     const filterStorage = new Uint32Array(indexes.length);
     const sortStorage = new Uint32Array(indexes.length);
@@ -47,7 +54,11 @@ describe('compact tooltip indexes', () => {
   it('keeps missing values when noValue is configured and preserves NaN parity with the legacy tooltip', () => {
     const filtered = filterTooltipIndexes(
       indexes,
-      { seriesCount: 5, yAt: (seriesIndex: number) => [0, null, -2, Number.NaN, 4][seriesIndex] },
+      {
+        seriesCount: 5,
+        yAt: (seriesIndex: number) => [0, null, -2, Number.NaN, 4][seriesIndex],
+        nearestPresent: () => null,
+      },
       (seriesIndex) => ({ config: seriesIndex === 1 ? { noValue: 'N/A' } : {} }),
       0,
       false
@@ -58,11 +69,44 @@ describe('compact tooltip indexes', () => {
 
   it('reads each series value once when filtering and sorting the same cursor column', () => {
     const yAt = jest.fn((seriesIndex: number) => [4, null, -2, Number.NaN, 4][seriesIndex]);
-    const source = { seriesCount: 5, yAt };
+    const source = { seriesCount: 5, yAt, nearestPresent: () => null };
     const filtered = filterTooltipIndexes(indexes, source, getStyle, 0, false);
 
     expect(readIndexes(sortTooltipIndexes(filtered, SortOrder.Descending))).toEqual([0, 4, 2, 3]);
     expect(yAt).toHaveBeenCalledTimes(5);
+  });
+
+  it('uses the nearest present sample for a series gap like the legacy tooltip', () => {
+    const values = [
+      [1, null, 3],
+      [10, 11, 12],
+    ];
+    const source = {
+      seriesCount: values.length,
+      yAt: (seriesIndex: number, valueIndex: number) => values[seriesIndex][valueIndex],
+      nearestPresent: (seriesIndex: number, valueIndex: number) =>
+        seriesIndex === 0 && valueIndex === 1 ? 0 : valueIndex,
+    };
+    const filtered = filterTooltipIndexes({ length: 2, at: (index) => index }, source, getStyle, 1, false);
+
+    expect(readIndexes(filtered)).toEqual([0, 1]);
+    expect(Array.from(filtered.valueStorage)).toEqual([1, 11]);
+    expect(resolveTooltipValue(source, 0, 1)).toBe(1);
+  });
+});
+
+describe('compact tooltip positioning', () => {
+  const size = { width: 240, height: 160 };
+  const viewport = { width: 1000, height: 800 };
+
+  it('places the tooltip below and to the right when it fits', () => {
+    expect(getTooltipTransform({ left: 300, top: 200 }, size, viewport)).toBe('translateX(310px) translateY(210px)');
+  });
+
+  it('reflects the tooltip away from the viewport edges', () => {
+    expect(getTooltipTransform({ left: 900, top: 700 }, size, viewport)).toBe(
+      'translateX(890px) translateX(-100%) translateY(690px) translateY(-100%)'
+    );
   });
 });
 
