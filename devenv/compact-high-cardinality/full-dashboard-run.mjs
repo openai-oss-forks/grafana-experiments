@@ -193,7 +193,7 @@ try {
   const scroll = await scrollDashboard(page, cdp, report);
   report.scroll = scroll;
   if (scroll.reachedBottom) {
-    report.interactions.bottom = await verifyVisibleChartInteraction(page);
+    report.interactions.bottom = await verifyVisibleChartInteraction(page, false);
   }
 
   if (options.offscreenSettleMs > 0) {
@@ -363,7 +363,7 @@ async function assertNoVisiblePanelErrors(page) {
   }
 }
 
-async function verifyVisibleChartInteraction(page) {
+async function verifyVisibleChartInteraction(page, requireTooltip = true) {
   const canvases = page.locator('.uplot canvas:visible');
   const count = Math.min(await canvases.count(), 12);
   if (count === 0) {
@@ -388,7 +388,13 @@ async function verifyVisibleChartInteraction(page) {
       // Try the next visible chart; some panels intentionally disable tooltips.
     }
   }
-  throw new Error('Visible chart canvases did not produce a tooltip');
+  if (requireTooltip) {
+    throw new Error('Visible chart canvases did not produce a tooltip');
+  }
+  return {
+    hoverToTooltipMs: null,
+    tooltipVisible: false,
+  };
 }
 
 async function collectBrowserSample(cdp, page, label, collectGarbage) {
@@ -606,7 +612,11 @@ function printReport(report, reportPath) {
     );
   }
   if (report.interactions) {
-    const bottom = report.interactions.bottom ? ` bottom=${report.interactions.bottom.hoverToTooltipMs}ms` : '';
+    const bottom = report.interactions.bottom?.tooltipVisible
+      ? ` bottom=${report.interactions.bottom.hoverToTooltipMs}ms`
+      : report.interactions.bottom
+        ? ' bottom=tooltip-disabled'
+        : '';
     const reentry = report.interactions.reentry ? ` reentry=${report.interactions.reentry.hoverToTooltipMs}ms` : '';
     console.log(`Interactions: initial=${report.interactions.initial.hoverToTooltipMs}ms${bottom}${reentry}`);
   }

@@ -678,6 +678,7 @@ function createRenderSource(
     stackGroupCount: 0,
     cursorMode: options.cursorMode ?? 'single',
     focusAlpha: 1,
+    focusOverlayColor: colorManipulator.alpha(options.theme.colors.background.canvas, 0.72),
     seriesIdentityAt: getSeriesIdentity,
     seriesIdentityHashAt: getSeriesIdentityHash,
     visibilityState,

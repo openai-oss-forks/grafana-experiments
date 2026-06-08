@@ -72,6 +72,7 @@ export interface CompactRenderSource extends CompactPlotSource {
   readonly stackGroupCount: number;
   readonly cursorMode: 'single' | 'multi' | 'none';
   readonly focusAlpha: number;
+  readonly focusOverlayColor?: string;
   seriesIdentityAt?(seriesIndex: number): string;
   seriesIdentityHashAt?(seriesIndex: number): number;
   formatValueAt?(seriesIndex: number, index: number, value: number): string;
@@ -161,6 +162,13 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private bufferView: DataView;
   private bufferBytes: Uint8Array;
   private focusedSeries = -1;
+  private renderedPlot: uPlot | null = null;
+  private focusCanvas: HTMLCanvasElement | null = null;
+  private focusContext: CanvasRenderingContext2D | null = null;
+  private focusScanFrom = 0;
+  private focusScanTo = 0;
+  private focusVisibleFrom = 0;
+  private focusVisibleTo = 0;
   private stackScratch = new Float64Array(0);
   private percentTotals = new Float64Array(0);
   private cursorStacks = new Float64Array(0);
@@ -286,6 +294,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     copyVisibilityState(previousSource.visibilityState, nextSource.visibilityState);
     this.applyVisibilityState(nextSource);
     this.focusedSeries = -1;
+    this.clearFocusOverlay();
     this.stackScratch = new Float64Array(0);
     this.percentTotals = new Float64Array(0);
     this.gradientCache.length = 0;
@@ -301,6 +310,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       throw new Error('Compact renderer destroyed with a foreign source');
     }
     this.cancelProgressiveDraw();
+    this.focusCanvas?.remove();
+    this.focusCanvas = null;
+    this.focusContext = null;
+    this.renderedPlot = null;
     this.plot = null;
     this.context = null;
     this.stackScratch = new Float64Array(0);
@@ -369,6 +382,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
 
   draw(plot: uPlot, from: number, to: number): void | Promise<boolean> {
     this.cancelProgressiveDraw();
+    this.renderedPlot = plot;
+    this.clearFocusOverlay();
     if (this.source.pointCount === 0 || from > to) {
       return;
     }
@@ -376,15 +391,25 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.context = plot.ctx;
     const scanFrom = Math.max(0, from - 1);
     const scanTo = Math.min(this.source.pointCount - 1, to + 1);
+    this.focusScanFrom = scanFrom;
+    this.focusScanTo = scanTo;
+    this.focusVisibleFrom = from;
+    this.focusVisibleTo = to;
     this.prepareStackScratch(scanFrom, scanTo);
 
     if (this.shouldDrawProgressively(scanFrom, scanTo)) {
       this.plot = null;
       this.context = null;
-      return this.drawProgressively(plot, scanFrom, scanTo, from, to);
+      return this.drawProgressively(plot, scanFrom, scanTo, from, to).then((completed) => {
+        if (completed) {
+          this.drawFocusOverlay();
+        }
+        return completed;
+      });
     }
 
     this.drawSeriesRange(plot, 0, this.source.seriesCount, scanFrom, scanTo, from, to);
+    this.drawFocusOverlay();
   }
 
   private drawSeriesRange(
@@ -394,15 +419,16 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     scanFrom: number,
     scanTo: number,
     visibleFrom: number,
-    visibleTo: number
+    visibleTo: number,
+    context: CanvasRenderingContext2D = plot.ctx
   ): void {
     this.plot = plot;
-    this.context = plot.ctx;
-    plot.ctx.save();
+    this.context = context;
+    context.save();
     try {
-      plot.ctx.beginPath();
-      plot.ctx.rect(plot.bbox.left, plot.bbox.top, plot.bbox.width, plot.bbox.height);
-      plot.ctx.clip();
+      context.beginPath();
+      context.rect(plot.bbox.left, plot.bbox.top, plot.bbox.width, plot.bbox.height);
+      context.clip();
 
       for (let series = seriesFrom; series < seriesTo; series++) {
         if (!this.isVisible(series)) {
@@ -411,7 +437,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         this.drawSeries(series, scanFrom, scanTo, visibleFrom, visibleTo);
       }
     } finally {
-      plot.ctx.restore();
+      context.restore();
       this.gradientCache.length = 0;
       this.operation = ScanOperation.None;
       this.plot = null;
@@ -518,8 +544,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       if (nextFocus >= 0) {
         this.assertSeriesIndex(nextFocus);
       }
-      redraw ||= this.focusedSeries !== nextFocus && this.source.focusAlpha !== 1;
-      this.focusedSeries = nextFocus;
+      if (this.focusedSeries !== nextFocus) {
+        this.focusedSeries = nextFocus;
+        this.drawFocusOverlay();
+      }
     }
     if (redraw) {
       this.cancelProgressiveDraw();
@@ -587,7 +615,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
 
     const viaSync = plot.cursor != null && plot.cursor.event == null;
-    if (viaSync || this.source.cursorMode === 'multi' || this.source.cursorMode === 'none') {
+    if (viaSync || this.source.cursorMode === 'none') {
       state.dataIndex = index;
       state.left = plot.valToPos(this.source.xAt(index), 'x');
       state.top = mouseY;
@@ -644,6 +672,76 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       }
     }
     return state.seriesIndex < 0 ? null : state;
+  }
+
+  private drawFocusOverlay(): void {
+    const plot = this.renderedPlot;
+    if (
+      !plot ||
+      this.focusedSeries < 0 ||
+      this.source.focusOverlayColor == null ||
+      !this.isVisible(this.focusedSeries) ||
+      this.source.pointCount === 0
+    ) {
+      this.clearFocusOverlay();
+      return;
+    }
+    const context = this.ensureFocusOverlay(plot);
+    if (!context) {
+      return;
+    }
+
+    context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+    const { left, top, width, height } = plot.bbox;
+    context.save();
+    context.fillStyle = this.source.focusOverlayColor;
+    context.fillRect(left, top, width, height);
+    context.restore();
+    this.drawSeriesRange(
+      plot,
+      this.focusedSeries,
+      this.focusedSeries + 1,
+      this.focusScanFrom,
+      this.focusScanTo,
+      this.focusVisibleFrom,
+      this.focusVisibleTo,
+      context
+    );
+  }
+
+  private clearFocusOverlay(): void {
+    if (this.focusContext) {
+      this.focusContext.clearRect(0, 0, this.focusContext.canvas.width, this.focusContext.canvas.height);
+    }
+  }
+
+  private ensureFocusOverlay(plot: uPlot): CanvasRenderingContext2D | null {
+    const mainCanvas = plot.ctx.canvas;
+    if (!mainCanvas) {
+      return null;
+    }
+    const parent = plot.over?.parentElement ?? mainCanvas.parentElement;
+    if (!parent) {
+      return null;
+    }
+    if (!this.focusCanvas) {
+      const canvas = document.createElement('canvas');
+      canvas.className = 'u-compact-focus-overlay';
+      canvas.setAttribute('aria-hidden', 'true');
+      canvas.style.position = 'absolute';
+      canvas.style.inset = '0';
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.pointerEvents = 'none';
+      parent.insertBefore(canvas, plot.over ?? null);
+      this.focusCanvas = canvas;
+      this.focusContext = canvas.getContext('2d');
+    }
+    if (this.focusCanvas.width !== mainCanvas.width || this.focusCanvas.height !== mainCanvas.height) {
+      this.focusCanvas.width = mainCanvas.width;
+      this.focusCanvas.height = mainCanvas.height;
+    }
+    return this.focusContext;
   }
 
   private drawSeries(series: number, from: number, to: number, visibleFrom: number, visibleTo: number): void {

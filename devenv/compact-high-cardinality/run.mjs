@@ -38,6 +38,7 @@ const options = {
   heapSnapshot: process.env.HEAP_SNAPSHOT === '1',
   cpuProfile: process.env.CPU_PROFILE === '1',
   verifyInteractions: process.env.VERIFY_INTERACTIONS === '1',
+  hoverSteps: readPositiveInteger('HOVER_STEPS', 12),
   headless: process.env.HEADLESS === '1',
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-high-cardinality',
   chromiumPath: process.env.CHROMIUM_PATH,
@@ -65,6 +66,7 @@ Environment:
   HEAP_SNAPSHOT           Set to 1 to capture the active dashboard heap
   CPU_PROFILE             Set to 1 to capture per-render Chrome CPU profiles
   VERIFY_INTERACTIONS     Set to 1 to verify tooltip and legend interactions
+  HOVER_STEPS             Cursor moves sampled during interaction verification (default: 12)
   HEADLESS                Set to 1 for headless Chromium
   CHROMIUM_PATH           Optional Chromium executable
   OUTPUT_DIR              Metrics and screenshot directory
@@ -680,6 +682,7 @@ async function verifyPanelInteractions(page, responseFormat) {
   if (responseFormat === 'compact-v1' && tooltip.overlappingRows) {
     throw new Error('Compact tooltip rows overlap');
   }
+  const repeatedHover = await measureRepeatedHover(page, bounds, responseFormat, options.hoverSteps);
 
   const legendButtons = page.locator(
     '[data-testid^="data-testid VizLegend series "] > button, table tbody tr button[title]'
@@ -688,6 +691,7 @@ async function verifyPanelInteractions(page, responseFormat) {
     return {
       hoverToTooltipMs,
       tooltip,
+      repeatedHover,
       legendToggleChangedState: null,
     };
   }
@@ -711,7 +715,67 @@ async function verifyPanelInteractions(page, responseFormat) {
   return {
     hoverToTooltipMs,
     tooltip,
+    repeatedHover,
     legendToggleChangedState: initialClass !== isolatedClass,
+  };
+}
+
+async function measureRepeatedHover(page, bounds, responseFormat, stepCount) {
+  const samples = [];
+  for (let step = 0; step < stepCount; step++) {
+    const xFraction = 0.12 + (0.76 * step) / Math.max(1, stepCount - 1);
+    const yFraction = step % 2 === 0 ? 0.3 : 0.7;
+    await page.evaluate(() => {
+      window.__compactHoverProbe = null;
+      document.addEventListener(
+        'mousemove',
+        () => {
+          const eventStartedAt = performance.now();
+          requestAnimationFrame(() => {
+            window.__compactHoverProbe = {
+              eventToFrameMs: performance.now() - eventStartedAt,
+            };
+          });
+        },
+        { capture: true, once: true }
+      );
+    });
+    const commandStartedAt = performance.now();
+    await page.mouse.move(bounds.x + bounds.width * xFraction, bounds.y + bounds.height * yFraction);
+    await page.waitForFunction(() => window.__compactHoverProbe != null, undefined, { timeout: 10_000 });
+    const probe = await page.evaluate(() => window.__compactHoverProbe);
+    samples.push({
+      eventToFrameMs: round(probe.eventToFrameMs),
+      commandToFrameMs: round(performance.now() - commandStartedAt),
+    });
+  }
+
+  let overlayCount = await page.locator('.u-compact-focus-overlay').count();
+  if (responseFormat === 'compact-v1' && overlayCount === 0) {
+    for (let step = 1; step < 10 && overlayCount === 0; step++) {
+      await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + (bounds.height * step) / 10);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      overlayCount = await page.locator('.u-compact-focus-overlay').count();
+    }
+  }
+  if (responseFormat === 'compact-v1' && overlayCount !== 1) {
+    throw new Error(`Compact hover expected one focus overlay, found ${overlayCount}`);
+  }
+  if (responseFormat === 'json' && overlayCount !== 0) {
+    throw new Error('Legacy JSON hover unexpectedly created a compact focus overlay');
+  }
+  await page
+    .locator('.uplot')
+    .first()
+    .screenshot({ path: path.join(options.outputDir, 'chart-hover.png') });
+
+  const eventSamples = samples.map((sample) => sample.eventToFrameMs);
+  return {
+    samples,
+    eventToFrameMedianMs: percentile(eventSamples, 0.5),
+    eventToFrameP95Ms: percentile(eventSamples, 0.95),
+    eventToFrameMaxMs: round(Math.max(...eventSamples)),
+    focusOverlayCount: overlayCount,
   };
 }
 
@@ -904,7 +968,7 @@ function printReport(report, reportPath) {
   }
   if (report.interactions) {
     console.log(
-      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms rows=${report.interactions.tooltip.rows} legendToggle=${report.interactions.legendToggleChangedState}`
+      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms hoverP50=${report.interactions.repeatedHover.eventToFrameMedianMs}ms hoverP95=${report.interactions.repeatedHover.eventToFrameP95Ms}ms rows=${report.interactions.tooltip.rows} legendToggle=${report.interactions.legendToggleChangedState}`
     );
   }
   if (report.error) {
@@ -922,6 +986,12 @@ function readPositiveInteger(name, defaultValue) {
     throw new Error(`${name} must be at least 1`);
   }
   return value;
+}
+
+function percentile(values, fraction) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * fraction) - 1));
+  return round(sorted[index]);
 }
 
 function readNonNegativeInteger(name, defaultValue) {

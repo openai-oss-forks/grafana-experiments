@@ -200,7 +200,7 @@ describe('CompactRenderController', () => {
     expect(controller.updateCursor(plot, 1, 2)).toBeNull();
   });
 
-  test('does not scan series to update a multi-series tooltip cursor', () => {
+  test('resolves the nearest series for a local multi-series tooltip cursor', () => {
     const source = createSource(
       [
         [1, 2, 3],
@@ -215,8 +215,8 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
-    expect(source.yAt).not.toHaveBeenCalled();
+    expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
+    expect(source.yAt).toHaveBeenCalledTimes(2);
   });
 
   test('does not scan series for a synchronized cursor update', () => {
@@ -230,7 +230,7 @@ describe('CompactRenderController', () => {
     expect(source.yAt).not.toHaveBeenCalled();
   });
 
-  test('does not request a redraw when focus has no visual opacity effect', () => {
+  test('does not redraw the complete plot when compact focus changes', () => {
     const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine]);
     const controller = new CompactRenderController(source);
 
@@ -238,7 +238,49 @@ describe('CompactRenderController', () => {
     expect(controller.setSeries(null, { focus: true })).toBe(false);
 
     Reflect.set(source, 'focusAlpha', 0.3);
-    expect(controller.setSeries(0, { focus: true })).toBe(true);
+    expect(controller.setSeries(0, { focus: true })).toBe(false);
+  });
+
+  test('draws and clears a focused-series overlay without rebuilding the complete plot', () => {
+    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine]);
+    source.focusOverlayColor = 'rgba(0, 0, 0, 0.5)';
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const parent = document.createElement('div');
+    const mainCanvas = document.createElement('canvas');
+    const over = document.createElement('div');
+    parent.append(mainCanvas, over);
+    Object.defineProperty(context, 'canvas', { value: mainCanvas });
+    Reflect.set(plot, 'over', over);
+    const overlayContext = {
+      ...context,
+      clearRect: jest.fn(),
+      fillRect: jest.fn(),
+      stroke: jest.fn(),
+    } as unknown as jest.Mocked<CanvasRenderingContext2D>;
+    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
+      Object.defineProperty(overlayContext, 'canvas', { value: this, configurable: true });
+      return overlayContext;
+    });
+
+    try {
+      controller.draw(plot, 0, 2);
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+
+      source.scan.mockClear();
+      expect(controller.setSeries(0, { focus: true })).toBe(false);
+      expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
+      expect(overlayContext.fillRect).toHaveBeenCalledWith(0, 0, 100, 100);
+      expect(overlayContext.stroke).toHaveBeenCalledTimes(1);
+      expect(source.scan).toHaveBeenCalledTimes(1);
+
+      controller.setSeries(null, { focus: true });
+      expect(overlayContext.clearRect).toHaveBeenCalled();
+      controller.destroy(source);
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+    } finally {
+      getContext.mockRestore();
+    }
   });
 
   test('draws regular linear series directly from response storage', () => {
@@ -744,6 +786,7 @@ function createPlot(): {
     arc: jest.fn(),
     stroke: jest.fn(),
     fill: jest.fn(),
+    clearRect: jest.fn(),
     fillRect: jest.fn(),
     strokeRect: jest.fn(),
     setLineDash: jest.fn(),

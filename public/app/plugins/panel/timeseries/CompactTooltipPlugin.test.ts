@@ -8,6 +8,7 @@ describe('compact tooltip sorting', () => {
     at: (index: number) => [0, 1, 2, 3, 4][index],
   };
   const source = {
+    seriesCount: 5,
     yAt: (seriesIndex: number) => [4, null, -2, Number.NaN, 4][seriesIndex],
   };
 
@@ -33,7 +34,7 @@ describe('compact tooltip sorting', () => {
     const storage = new Uint32Array(indexes.length);
     const filtered = filterTooltipIndexes(
       indexes,
-      { yAt: (seriesIndex: number) => [0, null, -2, 0, 4][seriesIndex] },
+      { seriesCount: 5, yAt: (seriesIndex: number) => [0, null, -2, 0, 4][seriesIndex] },
       () => ({ config: {} }),
       0,
       true,
@@ -50,12 +51,21 @@ describe('compact tooltip sorting', () => {
   it('keeps missing values when noValue is configured and preserves NaN parity with the legacy tooltip', () => {
     const filtered = filterTooltipIndexes(
       indexes,
-      { yAt: (seriesIndex: number) => [0, null, -2, Number.NaN, 4][seriesIndex] },
+      { seriesCount: 5, yAt: (seriesIndex: number) => [0, null, -2, Number.NaN, 4][seriesIndex] },
       (seriesIndex) => ({ config: seriesIndex === 1 ? { noValue: 'N/A' } : {} }),
       0,
       false
     );
 
     expect(Array.from({ length: filtered.length }, (_, index) => filtered.at(index))).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('reads each series value once when filtering and sorting the same cursor column', () => {
+    const yAt = jest.fn((seriesIndex: number) => [4, null, -2, Number.NaN, 4][seriesIndex]);
+    const cachedSource = { seriesCount: 5, yAt };
+    const filtered = filterTooltipIndexes(indexes, cachedSource, () => ({ config: {} }), 0, false);
+
+    expect(Array.from(sortTooltipIndexes(filtered, cachedSource, 0, SortOrder.Descending))).toEqual([0, 4, 2, 3]);
+    expect(yAt).toHaveBeenCalledTimes(5);
   });
 });

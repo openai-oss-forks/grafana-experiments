@@ -30,8 +30,6 @@ interface HoverState {
   cursorIndex: number;
   focusedIndex: number;
   focusedSeries: number;
-  left: number;
-  top: number;
   viaSync: boolean;
 }
 
@@ -67,6 +65,8 @@ export function CompactTooltipPlugin({
   const yZoomedRef = useRef(false);
   const sortedIndexesRef = useRef<Uint32Array>();
   const filteredIndexesRef = useRef<Uint32Array>();
+  const tooltipValueStorageRef = useRef<Float64Array>();
+  const positionRef = useRef({ left: 0, top: 0 });
   hoverRef.current = hover;
   pinnedRef.current = pinned;
   queryZoomRef.current = queryZoom;
@@ -90,9 +90,11 @@ export function CompactTooltipPlugin({
       plan.getStyle,
       hoverCursorIndex,
       hideZeros,
-      filteredIndexesRef.current
+      filteredIndexesRef.current,
+      tooltipValueStorageRef.current
     );
     filteredIndexesRef.current = filtered.storage;
+    tooltipValueStorageRef.current = filtered.valueStorage;
     return filtered;
   }, [baseIndexes, effectiveMode, hideZeros, hoverCursorIndex, hoverSource, plan.getStyle]);
   const indexes = useMemo(() => {
@@ -233,18 +235,38 @@ export function CompactTooltipPlugin({
         plot.cursor.left < 0 ||
         (viaSync && syncModeRef.current !== DashboardCursorSync.Tooltip)
       ) {
-        setHover(null);
+        if (hoverRef.current != null) {
+          hoverRef.current = null;
+          setHover(null);
+        }
         return;
       }
-      setHover({
+
+      positionRef.current.left = plot.rect.left + plot.cursor.left + 10;
+      positionRef.current.top = plot.rect.top + (plot.cursor.top ?? 0) + 10;
+      if (tooltipRef.current) {
+        tooltipRef.current.style.transform = getTooltipTransform(positionRef.current);
+      }
+
+      const nextHover = {
         source: sourceRef.current,
         cursorIndex: index,
         focusedIndex: cursor.dataIndex,
         focusedSeries: cursor.seriesIndex,
-        left: plot.rect.left + plot.cursor.left + 10,
-        top: plot.rect.top + (plot.cursor.top ?? 0) + 10,
         viaSync,
-      });
+      };
+      const previousHover = hoverRef.current;
+      if (
+        previousHover?.source === nextHover.source &&
+        previousHover.cursorIndex === nextHover.cursorIndex &&
+        previousHover.focusedIndex === nextHover.focusedIndex &&
+        previousHover.focusedSeries === nextHover.focusedSeries &&
+        previousHover.viaSync === nextHover.viaSync
+      ) {
+        return;
+      }
+      hoverRef.current = nextHover;
+      setHover(nextHover);
     });
     config.addHook('setData', () => {
       yZoomedRef.current = false;
@@ -267,6 +289,7 @@ export function CompactTooltipPlugin({
     pinnedRef.current = false;
     sortedIndexesRef.current = undefined;
     filteredIndexesRef.current = undefined;
+    tooltipValueStorageRef.current = undefined;
     setHover(null);
     setPinned(false);
   }, [plan.source]);
@@ -307,7 +330,7 @@ export function CompactTooltipPlugin({
       ref={tooltipRef}
       className={styles.tooltip}
       style={{
-        transform: `translate(${activeHover.left}px, ${activeHover.top}px)`,
+        transform: getTooltipTransform(positionRef.current),
         pointerEvents: pinned ? 'all' : 'none',
       }}
     >
@@ -367,26 +390,31 @@ interface CompactTooltipIndexes {
 
 interface FilteredTooltipIndexes extends CompactTooltipIndexes {
   readonly storage: Uint32Array;
+  readonly valueStorage: Float64Array;
 }
 
 export function filterTooltipIndexes(
   indexes: CompactTooltipIndexes,
-  source: Pick<CompactNativeRenderPlan['source'], 'yAt'>,
+  source: Pick<CompactNativeRenderPlan['source'], 'seriesCount' | 'yAt'>,
   getStyle: CompactNativeRenderPlan['getStyle'],
   valueIndex: number,
   hideZeros: boolean,
-  target?: Uint32Array
+  target?: Uint32Array,
+  valueTarget?: Float64Array
 ): FilteredTooltipIndexes {
   const storage = target && target.length >= indexes.length ? target : new Uint32Array(indexes.length);
+  const valueStorage =
+    valueTarget && valueTarget.length >= source.seriesCount ? valueTarget : new Float64Array(source.seriesCount);
   let length = 0;
   for (let index = 0; index < indexes.length; index++) {
     const seriesIndex = indexes.at(index);
     const value = source.yAt(seriesIndex, valueIndex);
+    valueStorage[seriesIndex] = value ?? Number.NaN;
     if (shouldShowTooltipValue(value, getStyle(seriesIndex).config.noValue, hideZeros)) {
       storage[length++] = seriesIndex;
     }
   }
-  return { storage, length, at: (index) => storage[index] };
+  return { storage, valueStorage, length, at: (index) => storage[index] };
 }
 
 function shouldShowTooltipValue(value: number | null | undefined, noValue: unknown, hideZeros: boolean): boolean {
@@ -432,25 +460,34 @@ export function sortTooltipIndexes(
   }
 
   const direction = sortOrder === SortOrder.Descending ? -1 : 1;
+  const values = isFilteredTooltipIndexes(indexes) ? indexes.valueStorage : undefined;
   sorted.sort((leftSeries, rightSeries) => {
-    const left = source.yAt(leftSeries, valueIndex);
-    const right = source.yAt(rightSeries, valueIndex);
+    const left = values ? values[leftSeries] : source.yAt(leftSeries, valueIndex);
+    const right = values ? values[rightSeries] : source.yAt(rightSeries, valueIndex);
     const leftMissing = left == null || Number.isNaN(left);
     const rightMissing = right == null || Number.isNaN(right);
 
     if (leftMissing || rightMissing) {
       return leftMissing === rightMissing ? leftSeries - rightSeries : leftMissing ? 1 : -1;
     }
-    if (left < right) {
+    if (left! < right!) {
       return -direction;
     }
-    if (left > right) {
+    if (left! > right!) {
       return direction;
     }
     return leftSeries - rightSeries;
   });
 
   return sorted;
+}
+
+function isFilteredTooltipIndexes(indexes: CompactTooltipIndexes): indexes is FilteredTooltipIndexes {
+  return 'valueStorage' in indexes;
+}
+
+function getTooltipTransform(position: { left: number; top: number }): string {
+  return `translate(${position.left}px, ${position.top}px)`;
 }
 
 const getStyles = (theme: import('@grafana/data').GrafanaTheme2, maxWidth?: number) => ({
