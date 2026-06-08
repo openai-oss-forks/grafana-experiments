@@ -27,7 +27,7 @@ ENV NODE_OPTIONS=--max_old_space_size=8000
 
 WORKDIR /tmp/grafana
 
-RUN apk add --no-cache make build-base python3
+RUN apk add --no-cache make build-base python3 git
 
 COPY package.json project.json nx.json yarn.lock .yarnrc.yml ./
 COPY .yarn .yarn
