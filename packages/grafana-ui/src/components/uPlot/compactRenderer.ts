@@ -71,7 +71,6 @@ export interface CompactRenderSource extends CompactPlotSource {
   readonly scales: readonly CompactScaleRecord[];
   readonly stackGroupCount: number;
   readonly cursorMode: 'single' | 'multi' | 'none';
-  readonly focusAlpha: number;
   readonly focusOverlayColor?: string;
   seriesIdentityAt?(seriesIndex: number): string;
   seriesIdentityHashAt?(seriesIndex: number): number;
@@ -294,7 +293,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     copyVisibilityState(previousSource.visibilityState, nextSource.visibilityState);
     this.applyVisibilityState(nextSource);
     this.focusedSeries = -1;
-    this.clearFocusOverlay();
+    this.removeFocusOverlay();
     this.stackScratch = new Float64Array(0);
     this.percentTotals = new Float64Array(0);
     this.gradientCache.length = 0;
@@ -310,9 +309,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       throw new Error('Compact renderer destroyed with a foreign source');
     }
     this.cancelProgressiveDraw();
-    this.focusCanvas?.remove();
-    this.focusCanvas = null;
-    this.focusContext = null;
+    this.removeFocusOverlay();
     this.renderedPlot = null;
     this.plot = null;
     this.context = null;
@@ -446,7 +443,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   }
 
   private shouldDrawProgressively(from: number, to: number): boolean {
-    if (this.focusedSeries >= 0 || this.source.stackGroupCount !== 0) {
+    if (this.source.stackGroupCount !== 0) {
       return false;
     }
 
@@ -683,7 +680,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       !this.isVisible(this.focusedSeries) ||
       this.source.pointCount === 0
     ) {
-      this.clearFocusOverlay();
+      this.removeFocusOverlay();
       return;
     }
     const context = this.ensureFocusOverlay(plot);
@@ -713,6 +710,12 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (this.focusContext) {
       this.focusContext.clearRect(0, 0, this.focusContext.canvas.width, this.focusContext.canvas.height);
     }
+  }
+
+  private removeFocusOverlay(): void {
+    this.focusCanvas?.remove();
+    this.focusCanvas = null;
+    this.focusContext = null;
   }
 
   private ensureFocusOverlay(plot: uPlot): CanvasRenderingContext2D | null {
@@ -768,13 +771,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const hasPoints =
       (flags & CompactSeriesFlag.Points) !== 0 ||
       ((flags & CompactSeriesFlag.AutoPoints) !== 0 && this.shouldShowAutoPoints(style, visibleFrom, visibleTo));
-    const alpha =
-      this.focusedSeries < 0 || this.focusedSeries === series
-        ? (style.alpha ?? 1)
-        : (style.alpha ?? 1) * this.source.focusAlpha;
-
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = style.alpha ?? 1;
     ctx.strokeStyle = style.stroke;
     ctx.fillStyle = style.fill ?? style.stroke;
     if ((style.lineWidth ?? 1) > 0) {
@@ -1552,9 +1550,6 @@ function validateSource(source: CompactRenderSource): void {
   }
   if (typeof source.prepareBufferScan !== 'function') {
     throw new Error('Compact renderer requires direct buffer scan preparation');
-  }
-  if (!Number.isFinite(source.focusAlpha) || source.focusAlpha < 0 || source.focusAlpha > 1) {
-    throw new Error('Compact renderer focusAlpha must be between zero and one');
   }
   const columnEntries: Array<[string, CompactIndexColumn]> = [
     ['styleIds', columns.styleIds],

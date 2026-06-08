@@ -1,6 +1,6 @@
 import { css } from '@emotion/css';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { dateTimeFormat, TimeZone } from '@grafana/data';
@@ -67,6 +67,15 @@ export function CompactTooltipPlugin({
   const filteredIndexesRef = useRef<Uint32Array>();
   const tooltipValueStorageRef = useRef<Float64Array>();
   const positionRef = useRef({ left: 0, top: 0 });
+  const clearHover = useCallback(() => {
+    hoverRef.current = null;
+    setHover(null);
+  }, []);
+  const clearTooltip = useCallback(() => {
+    pinnedRef.current = false;
+    setPinned(false);
+    clearHover();
+  }, [clearHover]);
   hoverRef.current = hover;
   pinnedRef.current = pinned;
   queryZoomRef.current = queryZoom;
@@ -80,9 +89,9 @@ export function CompactTooltipPlugin({
   const hoverSource = activeHover?.source;
   const hoverCursorIndex = activeHover?.cursorIndex;
   const effectiveMode = activeHover?.viaSync ? TooltipDisplayMode.Multi : mode;
-  const visibleIndexes = useMemo(() => {
+  const filteredTooltipIndexes = useMemo(() => {
     if (!hoverSource || hoverCursorIndex == null || effectiveMode === TooltipDisplayMode.Single) {
-      return baseIndexes;
+      return null;
     }
     const filtered = filterTooltipIndexes(
       baseIndexes,
@@ -97,26 +106,15 @@ export function CompactTooltipPlugin({
     tooltipValueStorageRef.current = filtered.valueStorage;
     return filtered;
   }, [baseIndexes, effectiveMode, hideZeros, hoverCursorIndex, hoverSource, plan.getStyle]);
+  const visibleIndexes = filteredTooltipIndexes ?? baseIndexes;
   const indexes = useMemo(() => {
-    if (
-      !hoverSource ||
-      hoverCursorIndex == null ||
-      effectiveMode === TooltipDisplayMode.Single ||
-      sortOrder === SortOrder.None
-    ) {
-      sortedIndexesRef.current = undefined;
+    if (!filteredTooltipIndexes || sortOrder === SortOrder.None) {
       return visibleIndexes;
     }
-    const sorted = sortTooltipIndexes(
-      visibleIndexes,
-      hoverSource,
-      hoverCursorIndex,
-      sortOrder,
-      sortedIndexesRef.current
-    );
-    sortedIndexesRef.current = sorted;
-    return { length: sorted.length, at: (index: number) => sorted[index] };
-  }, [effectiveMode, hoverCursorIndex, hoverSource, sortOrder, visibleIndexes]);
+    const sorted = sortTooltipIndexes(filteredTooltipIndexes, sortOrder, sortedIndexesRef.current);
+    sortedIndexesRef.current = sorted.storage;
+    return sorted;
+  }, [filteredTooltipIndexes, sortOrder, visibleIndexes]);
   const focusedValue =
     activeHover && activeHover.focusedSeries >= 0
       ? activeHover.source.yAt(activeHover.focusedSeries, activeHover.focusedIndex)
@@ -179,6 +177,7 @@ export function CompactTooltipPlugin({
           return;
         }
         if (hoverRef.current != null) {
+          pinnedRef.current = true;
           setPinned(true);
         }
       };
@@ -236,8 +235,7 @@ export function CompactTooltipPlugin({
         (viaSync && syncModeRef.current !== DashboardCursorSync.Tooltip)
       ) {
         if (hoverRef.current != null) {
-          hoverRef.current = null;
-          setHover(null);
+          clearHover();
         }
         return;
       }
@@ -270,8 +268,7 @@ export function CompactTooltipPlugin({
     });
     config.addHook('setData', () => {
       yZoomedRef.current = false;
-      setPinned(false);
-      setHover(null);
+      clearTooltip();
     });
     return () => {
       if (initializedPlot && clickHandler) {
@@ -282,17 +279,14 @@ export function CompactTooltipPlugin({
       }
       shiftMouseUp?.();
     };
-  }, [config]);
+  }, [clearHover, clearTooltip, config]);
 
   useLayoutEffect(() => {
-    hoverRef.current = null;
-    pinnedRef.current = false;
     sortedIndexesRef.current = undefined;
     filteredIndexesRef.current = undefined;
     tooltipValueStorageRef.current = undefined;
-    setHover(null);
-    setPinned(false);
-  }, [plan.source]);
+    clearTooltip();
+  }, [clearTooltip, plan.source]);
 
   useLayoutEffect(() => {
     if (!pinned) {
@@ -305,8 +299,7 @@ export function CompactTooltipPlugin({
       if (event instanceof MouseEvent && event.target instanceof Node && tooltipRef.current?.contains(event.target)) {
         return;
       }
-      setPinned(false);
-      setHover(null);
+      clearTooltip();
     };
     document.addEventListener('mousedown', dismiss, true);
     document.addEventListener('keydown', dismiss, true);
@@ -314,7 +307,7 @@ export function CompactTooltipPlugin({
       document.removeEventListener('mousedown', dismiss, true);
       document.removeEventListener('keydown', dismiss, true);
     };
-  }, [pinned]);
+  }, [clearTooltip, pinned]);
 
   if (!activeHover) {
     return null;
@@ -341,10 +334,7 @@ export function CompactTooltipPlugin({
             type="button"
             className={styles.close}
             aria-label={t('timeseries.compact-tooltip.close', 'Close tooltip')}
-            onClick={() => {
-              setPinned(false);
-              setHover(null);
-            }}
+            onClick={clearTooltip}
           >
             <Icon name="times" />
           </button>
@@ -391,6 +381,10 @@ interface CompactTooltipIndexes {
 interface FilteredTooltipIndexes extends CompactTooltipIndexes {
   readonly storage: Uint32Array;
   readonly valueStorage: Float64Array;
+}
+
+interface SortedTooltipIndexes extends CompactTooltipIndexes {
+  readonly storage: Uint32Array;
 }
 
 export function filterTooltipIndexes(
@@ -443,12 +437,10 @@ function buildTooltipIndexes(plan: CompactNativeRenderPlan): CompactTooltipIndex
 }
 
 export function sortTooltipIndexes(
-  indexes: CompactTooltipIndexes,
-  source: Pick<CompactNativeRenderPlan['source'], 'yAt'>,
-  valueIndex: number,
+  indexes: FilteredTooltipIndexes,
   sortOrder: SortOrder,
   target?: Uint32Array
-): Uint32Array {
+): SortedTooltipIndexes {
   const storage = target && target.length >= indexes.length ? target : new Uint32Array(indexes.length);
   const sorted = storage.length === indexes.length ? storage : storage.subarray(0, indexes.length);
   for (let index = 0; index < indexes.length; index++) {
@@ -456,16 +448,16 @@ export function sortTooltipIndexes(
   }
 
   if (sortOrder === SortOrder.None || indexes.length < 2) {
-    return sorted;
+    return { storage, length: sorted.length, at: (index) => sorted[index] };
   }
 
   const direction = sortOrder === SortOrder.Descending ? -1 : 1;
-  const values = isFilteredTooltipIndexes(indexes) ? indexes.valueStorage : undefined;
+  const values = indexes.valueStorage;
   sorted.sort((leftSeries, rightSeries) => {
-    const left = values ? values[leftSeries] : source.yAt(leftSeries, valueIndex);
-    const right = values ? values[rightSeries] : source.yAt(rightSeries, valueIndex);
-    const leftMissing = left == null || Number.isNaN(left);
-    const rightMissing = right == null || Number.isNaN(right);
+    const left = values[leftSeries];
+    const right = values[rightSeries];
+    const leftMissing = Number.isNaN(left);
+    const rightMissing = Number.isNaN(right);
 
     if (leftMissing || rightMissing) {
       return leftMissing === rightMissing ? leftSeries - rightSeries : leftMissing ? 1 : -1;
@@ -479,11 +471,7 @@ export function sortTooltipIndexes(
     return leftSeries - rightSeries;
   });
 
-  return sorted;
-}
-
-function isFilteredTooltipIndexes(indexes: CompactTooltipIndexes): indexes is FilteredTooltipIndexes {
-  return 'valueStorage' in indexes;
+  return { storage, length: sorted.length, at: (index) => sorted[index] };
 }
 
 function getTooltipTransform(position: { left: number; top: number }): string {

@@ -42,6 +42,7 @@ const options = {
   headless: process.env.HEADLESS === '1',
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-high-cardinality',
   chromiumPath: process.env.CHROMIUM_PATH,
+  dashboardUid: process.env.DASHBOARD_UID ?? `${DASHBOARD_UID}-${process.pid}`,
 };
 
 if (process.argv.includes('--help')) {
@@ -79,6 +80,7 @@ Examples:
 }
 
 const fixture = await createDashboardFixture(options);
+fixture.dashboard.uid = options.dashboardUid;
 const capturedResponse = options.responseJson ? await loadCapturedResponse(options.responseJson) : undefined;
 await fs.mkdir(options.outputDir, { recursive: true });
 
@@ -114,7 +116,7 @@ await context.route('**/api/ds/query**', async (route) => {
   const request = route.request();
   const headers = request.headers();
   if (
-    headers['x-dashboard-uid'] !== DASHBOARD_UID ||
+    headers['x-dashboard-uid'] !== options.dashboardUid ||
     headers['x-panel-id'] !== '1' ||
     headers['x-panel-plugin-id'] !== 'timeseries'
   ) {
@@ -182,7 +184,7 @@ await context.route('**/api/ds/query**', async (route) => {
     ? buildCapturedResponse(capturedResponse, refIds, compact)
     : buildGeneratedResponse(responseOptions, compact);
   const generatedAt = performance.now();
-  const responseBody = compact ? Buffer.from(response) : Buffer.from(response);
+  const responseBody = Buffer.from(response);
   const compressionStartedAt = performance.now();
   const rawResponseBytes = responseBody.byteLength;
   const gzipResponseBytes = gzipSync(responseBody).byteLength;
@@ -221,7 +223,7 @@ await context.route('**/api/ds/query**', async (route) => {
 });
 
 const report = {
-  config: options,
+  config: { ...options, password: '<redacted>' },
   fixture: {
     ...fixture.source,
     responseFixture: capturedResponse?.summary,
@@ -246,7 +248,7 @@ try {
       : options.dashboardFrom != null && options.dashboardTo != null
         ? `from=${options.dashboardFrom}&to=${options.dashboardTo}`
         : 'from=now-1h&to=now';
-  const dashboardUrl = `${options.baseUrl}/d/${DASHBOARD_UID}/compact-high-cardinality-local?orgId=1&${dashboardRange}`;
+  const dashboardUrl = `${options.baseUrl}/d/${options.dashboardUid}/compact-high-cardinality-local?orgId=1&${dashboardRange}`;
   if (options.cpuProfile) {
     await startCpuProfile(cdp);
   }
@@ -731,22 +733,38 @@ async function measureRepeatedHover(page, bounds, responseFormat, stepCount) {
         'mousemove',
         () => {
           const eventStartedAt = performance.now();
-          requestAnimationFrame(() => {
-            window.__compactHoverProbe = {
-              eventToFrameMs: performance.now() - eventStartedAt,
-            };
-          });
+          let frames = 0;
+          const waitForSettledFrame = () => {
+            frames++;
+            if (frames >= 2) {
+              const tooltipVisible = Boolean(
+                document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
+                  Array.from(document.body.querySelectorAll('div')).find((element) => {
+                    const style = getComputedStyle(element);
+                    return style.position === 'fixed' && style.zIndex === '10000' && element.textContent?.trim();
+                  })
+              );
+              window.__compactHoverProbe = {
+                eventToSettledFrameMs: performance.now() - eventStartedAt,
+                tooltipVisible,
+                focusOverlayVisible: document.querySelector('.u-compact-focus-overlay') != null,
+              };
+              return;
+            }
+            requestAnimationFrame(waitForSettledFrame);
+          };
+          requestAnimationFrame(waitForSettledFrame);
         },
         { capture: true, once: true }
       );
     });
-    const commandStartedAt = performance.now();
     await page.mouse.move(bounds.x + bounds.width * xFraction, bounds.y + bounds.height * yFraction);
     await page.waitForFunction(() => window.__compactHoverProbe != null, undefined, { timeout: 10_000 });
     const probe = await page.evaluate(() => window.__compactHoverProbe);
     samples.push({
-      eventToFrameMs: round(probe.eventToFrameMs),
-      commandToFrameMs: round(performance.now() - commandStartedAt),
+      durationMs: round(probe.eventToSettledFrameMs),
+      tooltipVisible: probe.tooltipVisible,
+      focusOverlayVisible: probe.focusOverlayVisible,
     });
   }
 
@@ -769,12 +787,17 @@ async function measureRepeatedHover(page, bounds, responseFormat, stepCount) {
     .first()
     .screenshot({ path: path.join(options.outputDir, 'chart-hover.png') });
 
-  const eventSamples = samples.map((sample) => sample.eventToFrameMs);
   return {
     samples,
-    eventToFrameMedianMs: percentile(eventSamples, 0.5),
-    eventToFrameP95Ms: percentile(eventSamples, 0.95),
-    eventToFrameMaxMs: round(Math.max(...eventSamples)),
+    eventToSettledFrameMedianMs: percentile(
+      samples.map((sample) => sample.durationMs),
+      0.5
+    ),
+    eventToSettledFrameP95Ms: percentile(
+      samples.map((sample) => sample.durationMs),
+      0.95
+    ),
+    eventToSettledFrameMaxMs: round(Math.max(...samples.map((sample) => sample.durationMs))),
     focusOverlayCount: overlayCount,
   };
 }
@@ -968,7 +991,7 @@ function printReport(report, reportPath) {
   }
   if (report.interactions) {
     console.log(
-      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms hoverP50=${report.interactions.repeatedHover.eventToFrameMedianMs}ms hoverP95=${report.interactions.repeatedHover.eventToFrameP95Ms}ms rows=${report.interactions.tooltip.rows} legendToggle=${report.interactions.legendToggleChangedState}`
+      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms hoverP50=${report.interactions.repeatedHover.eventToSettledFrameMedianMs}ms hoverP95=${report.interactions.repeatedHover.eventToSettledFrameP95Ms}ms rows=${report.interactions.tooltip.rows} legendToggle=${report.interactions.legendToggleChangedState}`
     );
   }
   if (report.error) {

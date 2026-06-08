@@ -52,9 +52,11 @@ const options = {
   headless: process.env.HEADLESS === '1',
   chromiumPath: process.env.CHROMIUM_PATH,
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-full-dashboard',
+  dashboardUid: process.env.DASHBOARD_UID ?? `${DASHBOARD_UID}-${process.pid}`,
 };
 
 const fixture = await createFullDashboardFixture(dashboardJson, options.pointCount);
+fixture.dashboard.uid = options.dashboardUid;
 await fs.mkdir(options.outputDir, { recursive: true });
 
 const browser = await chromium.launch({
@@ -84,7 +86,7 @@ page.on('console', (message) => {
 await context.route('**/api/ds/query**', async (route) => {
   const request = route.request();
   const headers = request.headers();
-  if (headers['x-dashboard-uid'] !== DASHBOARD_UID) {
+  if (headers['x-dashboard-uid'] !== options.dashboardUid) {
     await route.continue();
     return;
   }
@@ -178,7 +180,7 @@ try {
   await putDashboard(context, fixture.dashboard);
   report.baseline = await collectBrowserSample(cdp, page, 'pre-dashboard', true);
 
-  const dashboardUrl = `${options.baseUrl}/d/${DASHBOARD_UID}/full-dashboard-local?orgId=1&from=now-1h&to=now`;
+  const dashboardUrl = `${options.baseUrl}/d/${options.dashboardUid}/full-dashboard-local?orgId=1&from=now-1h&to=now`;
   const navigationStartedAt = performance.now();
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await waitForQueryIdle(120_000);
@@ -341,7 +343,7 @@ async function waitForCanvasIdle(page, timeoutMs) {
   await page.waitForFunction(
     () => {
       const lastOperationAt = window.__dashboardCanvasActivity?.lastOperationAt ?? 0;
-      return performance.now() - lastOperationAt >= 250;
+      return lastOperationAt > 0 && performance.now() - lastOperationAt >= 250;
     },
     undefined,
     { timeout: timeoutMs, polling: 50 }

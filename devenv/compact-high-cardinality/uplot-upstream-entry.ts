@@ -240,7 +240,6 @@ function createPreparedData(
     scales: [{ key: 'y' }],
     stackGroupCount: 0,
     cursorMode: 'none',
-    focusAlpha: 1,
     visibilityState: { overrides: new Map() },
     xAt: (index) => start + step * index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round((value - start) / Math.max(1, step)))),

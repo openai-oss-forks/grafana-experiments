@@ -107,7 +107,7 @@ describe('CompactRenderController', () => {
     controller.destroy(second);
   });
 
-  test.each(['visibility change', 'source replacement', 'destruction'] as const)(
+  test.each(['focused visibility change', 'source replacement', 'destruction'] as const)(
     'cancels a progressive line draw on %s',
     async (action) => {
       const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
@@ -124,6 +124,9 @@ describe('CompactRenderController', () => {
         const source = createVirtualSource(1000, 1000);
         const controller = new CompactRenderController(source);
         const { plot } = createPlot();
+        if (action === 'focused visibility change') {
+          controller.setSeries(0, { focus: true });
+        }
 
         const completed = controller.draw(plot, 0, 999);
 
@@ -132,7 +135,7 @@ describe('CompactRenderController', () => {
         expect(source.scan.mock.calls.length).toBeLessThan(source.seriesCount);
         expect(callbacks.size).toBe(1);
 
-        if (action === 'visibility change') {
+        if (action === 'focused visibility change') {
           controller.setSeries(0, { show: false });
         } else if (action === 'source replacement') {
           controller.replaceSource(source, createVirtualSource(1000, 1000));
@@ -230,17 +233,6 @@ describe('CompactRenderController', () => {
     expect(source.yAt).not.toHaveBeenCalled();
   });
 
-  test('does not redraw the complete plot when compact focus changes', () => {
-    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine]);
-    const controller = new CompactRenderController(source);
-
-    expect(controller.setSeries(0, { focus: true })).toBe(false);
-    expect(controller.setSeries(null, { focus: true })).toBe(false);
-
-    Reflect.set(source, 'focusAlpha', 0.3);
-    expect(controller.setSeries(0, { focus: true })).toBe(false);
-  });
-
   test('draws and clears a focused-series overlay without rebuilding the complete plot', () => {
     const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine]);
     source.focusOverlayColor = 'rgba(0, 0, 0, 0.5)';
@@ -267,15 +259,12 @@ describe('CompactRenderController', () => {
       controller.draw(plot, 0, 2);
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
 
-      source.scan.mockClear();
       expect(controller.setSeries(0, { focus: true })).toBe(false);
       expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
       expect(overlayContext.fillRect).toHaveBeenCalledWith(0, 0, 100, 100);
-      expect(overlayContext.stroke).toHaveBeenCalledTimes(1);
-      expect(source.scan).toHaveBeenCalledTimes(1);
 
-      controller.setSeries(null, { focus: true });
-      expect(overlayContext.clearRect).toHaveBeenCalled();
+      expect(controller.setSeries(null, { focus: true })).toBe(false);
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
       controller.destroy(source);
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
     } finally {
@@ -659,7 +648,6 @@ function createVirtualSource(seriesCount: number, pointCount: number): TestSourc
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount: 0,
     cursorMode: 'single',
-    focusAlpha: 1,
     visibilityState: { overrides: new Map() },
     release: () => structuredClone(samples.buffer, { transfer: [samples.buffer] }),
     xAt: (index) => index,
@@ -721,7 +709,6 @@ function createSource(
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount,
     cursorMode,
-    focusAlpha: 1,
     seriesIdentityAt: (seriesIndex) => `${identity}:${seriesIndex}`,
     seriesIdentityHashAt: (seriesIndex) => seriesIndex,
     visibilityState: { overrides: new Map() },
