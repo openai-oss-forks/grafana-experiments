@@ -39,6 +39,11 @@ export interface FeatureToggles {
   */
   lokiExperimentalStreaming?: boolean;
   /**
+  * Enables progressive rendering for Prometheus HTTP multi-batch responses
+  * @default true
+  */
+  prometheusMultiBatchStreaming?: boolean;
+  /**
   * Highlight Grafana Enterprise features
   * @default false
   */

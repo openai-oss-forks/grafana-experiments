@@ -3896,6 +3896,7 @@ __metadata:
     testing-library-selector: "npm:0.3.1"
     typescript: "npm:5.9.2"
     uuid: "npm:11.1.0"
+    zstddec: "npm:^0.1.0"
   peerDependencies:
     react: ^18.0.0
     react-dom: ^18.0.0

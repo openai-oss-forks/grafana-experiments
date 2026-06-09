@@ -69,6 +69,18 @@ datasources:
     secureJsonData:
       basicAuthPassword: admin #https://grafana.com/docs/grafana/latest/administration/provisioning/#using-environment-variables
 
+  - name: Chronosphere Multibatch Demo
+    uid: chronosphere-multibatch-demo
+    type: prometheus
+    access: proxy
+    url: http://localhost:19090
+    jsonData:
+      customQueryParameters: final=delta
+      disableMetricsLookup: true
+      httpMethod: POST
+      prometheusType: Prometheus
+      prometheusVersion: 2.40.0
+
   - name: gdev-slow-prometheus
     uid: gdev-slow-prometheus-uid
     type: prometheus

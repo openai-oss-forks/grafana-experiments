@@ -3827,6 +3827,20 @@
     },
     {
       "metadata": {
+        "name": "prometheusMultiBatchStreaming",
+        "resourceVersion": "1780957643514",
+        "creationTimestamp": "2026-06-08T22:27:23Z"
+      },
+      "spec": {
+        "description": "Enables progressive rendering for Prometheus HTTP multi-batch responses",
+        "stage": "preview",
+        "codeowner": "@grafana/oss-big-tent",
+        "frontend": true,
+        "expression": "true"
+      }
+    },
+    {
+      "metadata": {
         "name": "prometheusSpecialCharsInLabelValues",
         "resourceVersion": "1768498862515",
         "creationTimestamp": "2024-12-18T21:31:08Z",
