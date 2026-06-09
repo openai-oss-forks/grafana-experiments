@@ -550,6 +550,7 @@ const knownPanelProperties = new Set([
   'maxDataPoints',
   'transformations',
   'interval',
+  'stepSize',
   'timeFrom',
   'timeShift',
   'hideTimeOverride',
@@ -663,6 +664,7 @@ export function buildPanelKind(p: Panel): PanelKind {
             ...(p.cacheTimeout !== undefined && { cacheTimeout: p.cacheTimeout }),
             ...(p.maxDataPoints !== undefined && { maxDataPoints: p.maxDataPoints }),
             ...(p.interval !== undefined && { interval: p.interval }),
+            ...(p.stepSize !== undefined && { stepSize: p.stepSize }),
             ...(p.hideTimeOverride !== undefined && { hideTimeOverride: p.hideTimeOverride }),
             ...(p.queryCachingTTL !== undefined && { queryCachingTTL: p.queryCachingTTL }),
             ...(p.timeFrom !== undefined && { timeFrom: p.timeFrom }),
@@ -1214,6 +1216,7 @@ function transformV2PanelToV1Panel(
         maxDataPoints: panel.data.spec.queryOptions.maxDataPoints,
       }),
       ...(panel.data.spec.queryOptions.interval !== undefined && { interval: panel.data.spec.queryOptions.interval }),
+      ...(panel.data.spec.queryOptions.stepSize !== undefined && { stepSize: panel.data.spec.queryOptions.stepSize }),
       ...(panel.data.spec.queryOptions.hideTimeOverride !== undefined && {
         hideTimeOverride: panel.data.spec.queryOptions.hideTimeOverride,
       }),

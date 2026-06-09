@@ -12,6 +12,7 @@ import {
   AdHocVariableFilter,
   ScopedVars,
   getDefaultTimeRange,
+  dateTime,
 } from '@grafana/data';
 
 import { config } from '../config';
@@ -146,6 +147,92 @@ describe('DataSourceWithBackend', () => {
         "url": "/api/ds/query?ds_type=dummy",
       }
     `);
+  });
+
+  test('applies request-level step size metadata to backend query interval', () => {
+    const { mock, ds } = createMockDatasource();
+    ds.query({
+      maxDataPoints: 1000,
+      interval: '1m',
+      intervalMs: 60000,
+      stepSize: '30m',
+      minInterval: '5m',
+      targets: [{ refId: 'A' }],
+      range: {
+        from: dateTime('2023-10-06T00:00:00Z'),
+        to: dateTime('2023-10-13T00:00:00Z'),
+        raw: { from: 'now-7d', to: 'now' },
+      },
+    } as DataQueryRequest);
+
+    const args = mock.calls[0][0];
+
+    expect(args.data.queries[0]).toMatchObject({
+      intervalMs: 1800000,
+      maxDataPoints: 337,
+      __grafanaQueryOptions: {
+        stepSize: '30m',
+        minInterval: '5m',
+      },
+    });
+    expect(args.data.queries[0]).not.toHaveProperty('stepSize');
+    expect(args.data.queries[0]).not.toHaveProperty('minInterval');
+  });
+
+  test('applies query-level step size metadata to backend query interval', () => {
+    const { mock, ds } = createMockDatasource('prometheus');
+    ds.query({
+      maxDataPoints: 1000,
+      interval: '1m',
+      intervalMs: 60000,
+      minInterval: '15s',
+      targets: [{ refId: 'A', interval: '5m', stepSize: '30m' }],
+      range: {
+        from: dateTime('2023-10-06T00:00:00Z'),
+        to: dateTime('2023-10-13T00:00:00Z'),
+        raw: { from: 'now-7d', to: 'now' },
+      },
+    } as DataQueryRequest);
+
+    const args = mock.calls[0][0];
+
+    expect(args.data.queries[0]).toMatchObject({
+      interval: '5m',
+      intervalMs: 1800000,
+      maxDataPoints: 337,
+      stepSize: '30m',
+      __grafanaQueryOptions: {
+        stepSize: '30m',
+        minInterval: '5m',
+      },
+    });
+    expect(args.data.queries[0]).not.toHaveProperty('minInterval');
+  });
+
+  test('preserves plugin-owned step size fields for non-Prometheus datasources', () => {
+    const { mock, ds } = createMockDatasource();
+    ds.query({
+      maxDataPoints: 1000,
+      interval: '1m',
+      intervalMs: 60000,
+      minInterval: '5m',
+      targets: [{ refId: 'A', stepSize: 'plugin-step', minInterval: 'plugin-min' }],
+      range: {
+        from: dateTime('2023-10-06T00:00:00Z'),
+        to: dateTime('2023-10-13T00:00:00Z'),
+        raw: { from: 'now-7d', to: 'now' },
+      },
+    } as DataQueryRequest);
+
+    const args = mock.calls[0][0];
+
+    expect(args.data.queries[0]).toMatchObject({
+      intervalMs: 60000,
+      maxDataPoints: 1000,
+      stepSize: 'plugin-step',
+      minInterval: 'plugin-min',
+    });
+    expect(args.data.queries[0]).not.toHaveProperty('__grafanaQueryOptions');
   });
 
   test('correctly passes datasource headers', () => {
@@ -608,12 +695,12 @@ describe('DataSourceWithBackend', () => {
   });
 });
 
-function createMockDatasource() {
+function createMockDatasource(type = 'dummy') {
   const settings = {
     name: 'test',
     id: 1234,
     uid: 'abc',
-    type: 'dummy',
+    type,
     jsonData: {},
   } as DataSourceInstanceSettings<DataSourceJsonData>;
 

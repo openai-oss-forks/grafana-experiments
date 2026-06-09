@@ -301,7 +301,14 @@ function vizPanelDataToPanel(
 
   const panel: Pick<
     Panel,
-    'datasource' | 'targets' | 'maxDataPoints' | 'transformations' | 'cacheTimeout' | 'queryCachingTTL' | 'interval'
+    | 'datasource'
+    | 'targets'
+    | 'maxDataPoints'
+    | 'transformations'
+    | 'cacheTimeout'
+    | 'queryCachingTTL'
+    | 'interval'
+    | 'stepSize'
   > = {};
   const queryRunner = getQueryRunnerFor(vizPanel);
 
@@ -330,6 +337,10 @@ function vizPanelDataToPanel(
     }
     if (queryRunner.state.minInterval) {
       panel.interval = queryRunner.state.minInterval;
+    }
+    const stepSize = (queryRunner.state as { stepSize?: string | null }).stepSize;
+    if (stepSize) {
+      panel.stepSize = stepSize;
     }
   }
 

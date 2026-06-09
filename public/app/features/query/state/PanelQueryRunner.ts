@@ -18,11 +18,10 @@ import {
   DataTransformerConfig,
   getDefaultTimeRange,
   LoadingState,
-  PanelData,
-  rangeUtil,
-  ScopedVars,
-  TimeRange,
-  TimeZone,
+  type PanelData,
+  type ScopedVars,
+  type TimeRange,
+  type TimeZone,
   toDataFrame,
   transformDataFrame,
   preProcessPanelData,
@@ -37,7 +36,8 @@ import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
 import { getTemplateSrv } from 'app/features/templating/template_srv';
 
 import { isSharedDashboardQuery, runSharedRequest } from '../../../plugins/datasource/dashboard/runSharedRequest';
-import { PanelModel } from '../../dashboard/state/PanelModel';
+import { type PanelModel } from '../../dashboard/state/PanelModel';
+import { resolveQueryIntervalWithStepSize } from '../utils/stepSize';
 
 import { getDashboardQueryRunner } from './DashboardQueryRunner/DashboardQueryRunner';
 import { mergePanelAndDashData } from './mergePanelAndDashData';
@@ -59,6 +59,7 @@ export interface QueryRunnerOptions<
   timeInfo?: string; // String description of time range for display
   maxDataPoints: number;
   minInterval: string | undefined | null;
+  stepSize?: string | null;
   scopedVars?: ScopedVars;
   cacheTimeout?: string | null;
   queryCachingTTL?: number | null;
@@ -284,6 +285,7 @@ export class PanelQueryRunner {
       maxDataPoints,
       scopedVars,
       minInterval,
+      stepSize,
       app,
     } = options;
 
@@ -334,7 +336,12 @@ export class PanelQueryRunner {
       });
 
       const lowerIntervalLimit = minInterval ? this.templateSrv.replace(minInterval, request.scopedVars) : ds.interval;
-      const norm = rangeUtil.calculateInterval(timeRange, maxDataPoints, lowerIntervalLimit);
+      const norm = resolveQueryIntervalWithStepSize({
+        range: timeRange,
+        maxDataPoints,
+        minInterval: lowerIntervalLimit,
+        stepSize,
+      });
 
       // make shallow copy of scoped vars,
       // and add built in variables interval and interval_ms
@@ -345,6 +352,9 @@ export class PanelQueryRunner {
 
       request.interval = norm.interval;
       request.intervalMs = norm.intervalMs;
+      request.maxDataPoints = norm.maxDataPoints;
+      request.stepSize = stepSize;
+      request.minInterval = lowerIntervalLimit;
       request.filters = this.templateSrv.getAdhocFilters(ds.name, true);
 
       request.panelId = panelId;

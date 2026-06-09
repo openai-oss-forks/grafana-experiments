@@ -763,10 +763,11 @@ func TestIntegrationQueryDataWithQSDSClient(t *testing.T) {
 
 func TestQueryToJson(t *testing.T) {
 	tests := []struct {
-		name          string
-		data          []byte
-		expected      []byte
-		expectedError bool
+		name            string
+		data            []byte
+		expected        []byte
+		expectedNoLocal []byte
+		expectedError   bool
 	}{
 		{
 			name:          "simple",
@@ -786,6 +787,13 @@ func TestQueryToJson(t *testing.T) {
 			expected:      []byte(`{"a":{"b":["c","d"]},"intervalMs":60000}`),
 			expectedError: false,
 		},
+		{
+			name:            "strips internal panel query metadata",
+			data:            []byte(`{"refId":"A","stepSize":"plugin-step","minInterval":"plugin-min","__grafanaQueryOptions":{"stepSize":"30m","minInterval":"5m"},"timeRange":{"from":"111","to":"112"}}`),
+			expectedNoLocal: []byte(`{"refId":"A","stepSize":"plugin-step","minInterval":"plugin-min","timeRange":{"from":"111","to":"112"}}`),
+			expected:        []byte(`{"refId":"A","stepSize":"plugin-step","minInterval":"plugin-min"}`),
+			expectedError:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -802,8 +810,13 @@ func TestQueryToJson(t *testing.T) {
 			require.NoError(t, err)
 			require.JSONEq(t, string(data2), string(tt.data))
 
-			// verify the output is the same as the input (because we used supportLocalTimeRange=false)
-			require.JSONEq(t, string(res), string(tt.data))
+			expectedNoLocal := tt.expectedNoLocal
+			if expectedNoLocal == nil {
+				expectedNoLocal = tt.data
+			}
+
+			// verify the output only strips metadata that is independent of local time range support
+			require.JSONEq(t, string(expectedNoLocal), string(res))
 
 			// now we go with supportLocalTimeRange=true
 

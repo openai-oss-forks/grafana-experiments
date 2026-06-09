@@ -184,6 +184,7 @@ export class PanelDataQueriesTab extends SceneObjectBase<PanelDataQueriesTabStat
       queries,
       maxDataPoints: queryRunner.state.maxDataPoints,
       minInterval: queryRunner.state.minInterval,
+      stepSize: (queryRunner.state as { stepSize?: string | null }).stepSize,
       timeRange: timeRangeOpts,
     };
   }
@@ -218,7 +219,7 @@ export class PanelDataQueriesTab extends SceneObjectBase<PanelDataQueriesTabStat
     const panel = this.state.panelRef.resolve();
     const dataObj = this.queryRunner;
 
-    const dataObjStateUpdate: Partial<SceneQueryRunner['state']> = {};
+    const dataObjStateUpdate: Partial<SceneQueryRunner['state']> & { stepSize?: string | null } = {};
     const panelStateUpdate: Partial<VizPanel['state']> = {};
 
     if (options.maxDataPoints !== dataObj.state.maxDataPoints) {
@@ -227,6 +228,10 @@ export class PanelDataQueriesTab extends SceneObjectBase<PanelDataQueriesTabStat
 
     if (options.minInterval !== dataObj.state.minInterval) {
       dataObjStateUpdate.minInterval = options.minInterval ?? undefined;
+    }
+
+    if (options.stepSize !== (dataObj.state as { stepSize?: string | null }).stepSize) {
+      dataObjStateUpdate.stepSize = options.stepSize ?? undefined;
     }
 
     const timeFrom = options.timeRange?.from ?? undefined;

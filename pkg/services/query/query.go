@@ -353,32 +353,26 @@ func getTimeRange(query *simplejson.Json, globalFrom string, globalTo string) (s
 const timeRangeKey = "timeRange"
 
 func queryToJson(query *simplejson.Json, supportLocalTimeRange bool) ([]byte, error) {
-	if !supportLocalTimeRange {
-		return query.MarshalJSON()
-	}
-
-	// we need to remove the `timeRange` attribute from the JSON, if it exists there,
-	// because it might cause complications with certain data sources.
-	_, has := query.CheckGet(timeRangeKey)
-	if !has {
-		return query.MarshalJSON()
-	}
-
 	qMap, err := query.Map()
 	if err != nil {
 		return nil, err
 	}
 
 	// we do not want to modify the query,
-	// so we create a copy without
-	// the timeRange attribute
+	// so we create a copy without panel/request metadata.
 	d := make(map[string]any)
+	removedMetadata := false
 
-	// without the `timeRange` attribute
 	for k, v := range qMap {
-		if k != timeRangeKey {
-			d[k] = v
+		if k == queryOptionsKey || (supportLocalTimeRange && k == timeRangeKey) {
+			removedMetadata = true
+			continue
 		}
+		d[k] = v
+	}
+
+	if !removedMetadata {
+		return query.MarshalJSON()
 	}
 
 	return simplejson.NewFromAny(d).MarshalJSON()
@@ -399,6 +393,10 @@ func (s *ServiceImpl) parseMetricRequest(ctx context.Context, user identity.Requ
 	// Parse the queries and store them by datasource
 	datasourcesByUid := map[string]*datasources.DataSource{}
 	for _, query := range reqDTO.Queries {
+		if err := validateStepSize(query); err != nil {
+			return nil, err
+		}
+
 		ds, err := s.getDataSourceFromQuery(ctx, user, skipDSCache, query, datasourcesByUid)
 		if err != nil {
 			return nil, err

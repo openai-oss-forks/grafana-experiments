@@ -42,6 +42,7 @@ import { DashboardAnnotationsDataLayer } from '../scene/DashboardAnnotationsData
 import { DashboardControls } from '../scene/DashboardControls';
 import { DashboardDataLayerSet } from '../scene/DashboardDataLayerSet';
 import { DashboardScene, DashboardSceneState } from '../scene/DashboardScene';
+import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 import { VizPanelLinks, VizPanelLinksMenu } from '../scene/PanelLinks';
 import { AutoGridItem } from '../scene/layout-auto-grid/AutoGridItem';
 import { AutoGridLayout } from '../scene/layout-auto-grid/AutoGridLayout';
@@ -955,6 +956,40 @@ describe('getVizPanelQueries', () => {
     expect(result[1].spec.query.datasource?.name).toBe('prometheus-uid');
     expect(result[1].spec.query.group).toBe('prometheus');
     expect(result[1].spec.query.version).toBe('v0');
+  });
+
+  it('should serialize step size from panel query runner state', () => {
+    const vizPanel = new VizPanel({
+      key: 'panel-1',
+      pluginId: 'timeseries',
+      $data: new DashboardSceneQueryRunner({
+        queries: [],
+        stepSize: '30m',
+      }),
+    });
+
+    const scene = setupDashboardScene(
+      getMinimalSceneState(
+        new DefaultGridLayoutManager({
+          grid: new SceneGridLayout({
+            children: [
+              new DashboardGridItem({
+                y: 0,
+                height: 10,
+                body: vizPanel,
+              }),
+            ],
+          }),
+        })
+      )
+    );
+
+    const result = transformSceneToSaveModelSchemaV2(scene);
+
+    expect(
+      (result.elements['panel-1'].spec as { data: { spec: { queryOptions: { stepSize?: string } } } }).data.spec
+        .queryOptions.stepSize
+    ).toBe('30m');
   });
 
   describe('snapshot mode', () => {

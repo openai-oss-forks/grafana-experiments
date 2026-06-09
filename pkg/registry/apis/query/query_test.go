@@ -67,6 +67,7 @@ func TestQueryAPI(t *testing.T) {
 		expectedStatus int
 		testdataFile   string
 		stubbedFrame   *data.Frame
+		expectedError  string
 	}{
 		{
 			name: "single prometheus query",
@@ -164,10 +165,64 @@ func TestQueryAPI(t *testing.T) {
 				data.NewField("Value", nil, []float64{7.0}),
 			),
 		},
+		{
+			name: "invalid step size returns bad request",
+			queryJSON: `{
+				"queries": [
+					{
+						"datasource": {
+							"type": "prometheus",
+							"uid": "demo-prom"
+						},
+						"expr": "vector(0)",
+						"__grafanaQueryOptions": {
+							"stepSize": "605s"
+						},
+						"refId": "A"
+					}
+				],
+				"from": "now-1h",
+				"to": "now"
+			}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedError:  "invalid stepSize",
+			stubbedFrame: data.NewFrame("",
+				data.NewField("Time", nil, []time.Time{time.Unix(1704067200, 0)}),
+				data.NewField("Value", nil, []float64{0}),
+			),
+		},
+		{
+			name: "step size below min interval returns bad request",
+			queryJSON: `{
+				"queries": [
+					{
+						"datasource": {
+							"type": "prometheus",
+							"uid": "demo-prom"
+						},
+						"expr": "vector(0)",
+						"__grafanaQueryOptions": {
+							"stepSize": "5m",
+							"minInterval": "10m"
+						},
+						"refId": "A"
+					}
+				],
+				"from": "now-1h",
+				"to": "now"
+			}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedError:  "below minInterval",
+			stubbedFrame: data.NewFrame("",
+				data.NewField("Time", nil, []time.Time{time.Unix(1704067200, 0)}),
+				data.NewField("Value", nil, []float64{0}),
+			),
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			queryCalls := 0
 			builder := &QueryAPIBuilder{
 				converter: &expr.ResultConverter{
 					Features: featuremgmt.WithFeatures(featuremgmt.FlagSqlExpressions),
@@ -175,6 +230,7 @@ func TestQueryAPI(t *testing.T) {
 				},
 				instanceProvider: mockClient{
 					stubbedFrame: tc.stubbedFrame,
+					queryCalls:   &queryCalls,
 				},
 				tracer:                 tracing.InitializeTracerForTest(),
 				log:                    log.New("test"),
@@ -209,6 +265,16 @@ func TestQueryAPI(t *testing.T) {
 			qdr, ok := mr.response.(*queryapi.QueryDataResponse)
 			require.True(t, ok, "Response should be QueryDataResponse type")
 			require.NotNil(t, qdr.Responses, "Should have responses")
+
+			if tc.expectedStatus >= http.StatusBadRequest {
+				require.Equal(t, 0, queryCalls, "Should reject before datasource execution")
+				require.Contains(t, qdr.Responses, "A", "Should contain error response for refId A")
+				require.NotNil(t, qdr.Responses["A"].Error, "Should include query error")
+				if tc.expectedError != "" {
+					require.Contains(t, qdr.Responses["A"].Error.Error(), tc.expectedError)
+				}
+				return
+			}
 
 			// Load expected frames from testdata if provided
 			if tc.testdataFile != "" {
@@ -266,12 +332,14 @@ func (m *mockResponder) Error(err error) {
 type mockClient struct {
 	stubbedFrame *data.Frame
 	logger       log.Logger
+	queryCalls   *int
 }
 
 func (m mockClient) GetInstance(ctx context.Context, logger log.Logger, headers map[string]string) (clientapi.Instance, error) {
 	mclient := mockClient{
 		stubbedFrame: m.stubbedFrame,
 		logger:       logger,
+		queryCalls:   m.queryCalls,
 	}
 	return mclient, nil
 }
@@ -290,11 +358,16 @@ func (m mockClient) GetLogger() log.Logger {
 func (m mockClient) GetDataSourceClient(ctx context.Context, ref dataapi.DataSourceRef) (clientapi.QueryDataClient, error) {
 	mclient := mockClient{
 		stubbedFrame: m.stubbedFrame,
+		queryCalls:   m.queryCalls,
 	}
 	return mclient, nil
 }
 
 func (m mockClient) QueryData(ctx context.Context, req dataapi.QueryDataRequest) (*backend.QueryDataResponse, error) {
+	if m.queryCalls != nil {
+		*m.queryCalls = *m.queryCalls + 1
+	}
+
 	responses := make(backend.Responses)
 	for i := range req.Queries {
 		refID := req.Queries[i].RefID

@@ -129,6 +129,24 @@ describe('QueryGroup', () => {
   });
 });
 
+function getDefaultOptions(): Props['options'] {
+  return {
+    maxDataPoints: 100,
+    minInterval: '1m',
+    queries: [
+      {
+        datasource: mockDS,
+        refId: 'A',
+      },
+      {
+        datasource: mockDS,
+        refId: 'B',
+      },
+    ],
+    dataSource: mockDS,
+  };
+}
+
 function renderScenario(overrides: Partial<Props>) {
   const props: Props = {
     onOptionsChange: jest.fn(),
@@ -137,21 +155,7 @@ function renderScenario(overrides: Partial<Props>) {
       getFieldOverrideOptions: jest.fn(),
       getTransformations: jest.fn(),
     }),
-    options: {
-      maxDataPoints: 100,
-      minInterval: '1m',
-      queries: [
-        {
-          datasource: mockDS,
-          refId: 'A',
-        },
-        {
-          datasource: mockDS,
-          refId: 'B',
-        },
-      ],
-      dataSource: mockDS,
-    },
+    options: getDefaultOptions(),
     onRunQueries: function (): void {
       throw new Error('Function not implemented.');
     },
