@@ -38,7 +38,7 @@ describe('Prometheus multi-batch streaming', () => {
 
   it('decodes split chunks and zstd-encoded JSONL payload frames', async () => {
     const bytes = concatBytes(
-      streamHeaderFrame(),
+      responseHeaderFrame(),
       frame('{"type":"status","status":"streaming"}\n', 0),
       frame('{"type":"status","status":"done"}\n', FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)
     );
@@ -65,83 +65,66 @@ describe('Prometheus multi-batch streaming', () => {
 
   it('rejects responses without a final batch marker', async () => {
     await expect(
-      decodeMultiBatchFrames([streamHeaderFrame(), frame('{"type":"status"}\n', 0)], jest.fn())
+      decodeMultiBatchFrames([responseHeaderFrame(), frame('{"type":"status"}\n', 0)], jest.fn())
     ).rejects.toThrow(/without a final batch/);
   });
 
-  it('rejects current-format responses without a stream header frame', async () => {
+  it('rejects responses without a response header frame', async () => {
     await expect(decodeMultiBatchFrames([frame('{"type":"status"}\n')], jest.fn())).rejects.toThrow(
-      /missing stream header/
+      /missing response header/
     );
   });
 
-  it('keeps compatibility with legacy data-frame-only responses', async () => {
-    const batches: Array<{ payload: string; isFinal: boolean }> = [];
-
-    await decodeMultiBatchFrames([legacyFrame('{"type":"status","status":"done"}\n')], (payload, isFinal) => {
-      batches.push({ payload, isFinal });
-    });
-
-    expect(batches).toEqual([{ payload: '{"type":"status","status":"done"}\n', isFinal: true }]);
-  });
-
-  it('rejects stream header frames marked final', async () => {
-    await expect(decodeMultiBatchFrames([streamHeaderFrame(FINAL_BATCH_FLAG)], jest.fn())).rejects.toThrow(
-      /stream header cannot be final/
-    );
+  it('rejects unsupported frame magic', async () => {
+    await expect(
+      decodeMultiBatchFrames(
+        [responseHeaderFrame(), frame('{"type":"status","status":"done"}\n', FINAL_BATCH_FLAG, 0, 1, 'BAD!')],
+        jest.fn()
+      )
+    ).rejects.toThrow(/frame magic/);
   });
 
   it('rejects unsupported reserved flags', async () => {
     await expect(
-      decodeMultiBatchFrames([streamHeaderFrame(), frame('{"type":"status"}\n', 0x02)], jest.fn())
+      decodeMultiBatchFrames([responseHeaderFrame(), frame('{"type":"status"}\n', 0x02)], jest.fn())
     ).rejects.toThrow(/frame flags/);
   });
 
   it('rejects data after the final batch marker', async () => {
     await expect(
       decodeMultiBatchFrames(
-        [streamHeaderFrame(), frame('{"type":"status"}\n'), frame('{"type":"status"}\n')],
+        [responseHeaderFrame(), frame('{"type":"status"}\n'), frame('{"type":"status"}\n')],
         jest.fn()
       )
-    ).rejects.toThrow(
-      /after the final batch/
-    );
+    ).rejects.toThrow(/after the final batch/);
   });
 
   it('rejects unsupported payload encodings before decoding', async () => {
     await expect(
-      decodeMultiBatchFrames([streamHeaderFrame(), frame('{"type":"status"}\n', FINAL_BATCH_FLAG, 9)], jest.fn())
-    ).rejects.toThrow(
-      /payload encoding/
-    );
+      decodeMultiBatchFrames([responseHeaderFrame(), frame('{"type":"status"}\n', FINAL_BATCH_FLAG, 9)], jest.fn())
+    ).rejects.toThrow(/payload encoding/);
   });
 
   it('rejects unsupported payload types', async () => {
     await expect(
-      decodeMultiBatchFrames([streamHeaderFrame(), frame('{"type":"status"}\n', FINAL_BATCH_FLAG, 0, 9)], jest.fn())
-    ).rejects.toThrow(
-      /payload type/
+      decodeMultiBatchFrames([responseHeaderFrame(), frame('{"type":"status"}\n', FINAL_BATCH_FLAG, 0, 9)], jest.fn())
+    ).rejects.toThrow(/payload type/);
+  });
+
+  it('rejects duplicate response headers', async () => {
+    await expect(decodeMultiBatchFrames([responseHeaderFrame(), responseHeaderFrame()], jest.fn())).rejects.toThrow(
+      /duplicate response header/
     );
   });
 
-  it('rejects duplicate stream headers', async () => {
-    await expect(decodeMultiBatchFrames([streamHeaderFrame(), streamHeaderFrame()], jest.fn())).rejects.toThrow(
-      /duplicate stream header/
-    );
-  });
-
-  it('rejects duplicate stream headers after data starts', async () => {
+  it('rejects duplicate response headers after data starts', async () => {
     await expect(
-      decodeMultiBatchFrames([streamHeaderFrame(), frame('{"type":"status"}\n', 0), streamHeaderFrame()], jest.fn())
-    ).rejects.toThrow(
-      /duplicate stream header/
-    );
+      decodeMultiBatchFrames([responseHeaderFrame(), frame('{"type":"status"}\n', 0), responseHeaderFrame()], jest.fn())
+    ).rejects.toThrow(/duplicate response header/);
   });
 
-  it('rejects responses with only a stream header frame', async () => {
-    await expect(decodeMultiBatchFrames([streamHeaderFrame()], jest.fn())).rejects.toThrow(
-      /without a final batch/
-    );
+  it('rejects responses with only a response header', async () => {
+    await expect(decodeMultiBatchFrames([responseHeaderFrame()], jest.fn())).rejects.toThrow(/without a final batch/);
   });
 
   it('emits partial Prometheus data first and keeps it in the final response', async () => {
@@ -160,7 +143,7 @@ describe('Prometheus multi-batch streaming', () => {
       targets: [target],
     } as DataQueryRequest<PromQuery>;
     const batches = [
-      streamHeaderFrame(),
+      responseHeaderFrame(),
       frame(
         `${JSON.stringify({
           status: 'success',
@@ -216,8 +199,14 @@ describe('Prometheus multi-batch streaming', () => {
   });
 });
 
-function streamHeaderFrame(flags = 0): Uint8Array {
-  return frame('', flags, PAYLOAD_ENCODING_IDENTITY, 0);
+function responseHeaderFrame(): Uint8Array {
+  const bytes = new Uint8Array(12);
+  bytes.set(
+    [...`MBRH`].map((char) => char.charCodeAt(0)),
+    0
+  );
+  bytes[4] = 1;
+  return bytes;
 }
 
 function frame(
@@ -225,19 +214,18 @@ function frame(
   flags = FINAL_BATCH_FLAG,
   encoding = PAYLOAD_ENCODING_IDENTITY,
   payloadType = 1,
-  magic = 'OQPB'
+  magic = 'MBBF'
 ): Uint8Array {
   const payloadBytes = new TextEncoder().encode(payload);
   const bytes = new Uint8Array(12 + payloadBytes.byteLength);
-  bytes.set([...magic].map((char) => char.charCodeAt(0)), 0);
+  bytes.set(
+    [...magic].map((char) => char.charCodeAt(0)),
+    0
+  );
   bytes.set([1, payloadType, flags, encoding], 4);
   new DataView(bytes.buffer).setUint32(8, payloadBytes.byteLength, false);
   bytes.set(payloadBytes, 12);
   return bytes;
-}
-
-function legacyFrame(payload: string, flags = FINAL_BATCH_FLAG, encoding = PAYLOAD_ENCODING_IDENTITY): Uint8Array {
-  return frame(payload, flags, encoding, 1, 'MBPB');
 }
 
 function concatBytes(...chunks: Uint8Array[]): Uint8Array {
