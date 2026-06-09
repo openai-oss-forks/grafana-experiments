@@ -5,7 +5,6 @@
 
 ARG GO_IMAGE=go-builder-base
 ARG JS_IMAGE=js-builder-base
-ARG JS_PLATFORM=linux/amd64
 
 # Default to building locally
 ARG GO_SRC=go-builder
@@ -16,9 +15,9 @@ ARG JS_SRC=js-builder
 FROM alpine:3.23.3 AS alpine-base
 FROM ubuntu:24.04 AS ubuntu-base
 FROM golang:1.25.9-alpine AS go-builder-base
-FROM --platform=${JS_PLATFORM} node:24-alpine AS js-builder-base
+FROM --platform=$BUILDPLATFORM node:24-alpine AS js-builder-base
 # Javascript build stage
-FROM --platform=${JS_PLATFORM} ${JS_IMAGE} AS js-builder
+FROM --platform=$BUILDPLATFORM ${JS_IMAGE} AS js-builder
 ARG JS_NODE_ENV=production
 ARG JS_YARN_INSTALL_FLAG=--immutable
 ARG JS_YARN_BUILD_FLAG=build
@@ -27,7 +26,7 @@ ENV NODE_OPTIONS=--max_old_space_size=8000
 
 WORKDIR /tmp/grafana
 
-RUN apk add --no-cache make build-base python3
+RUN apk add --no-cache make build-base python3 git
 
 COPY package.json project.json nx.json yarn.lock .yarnrc.yml ./
 COPY .yarn .yarn
