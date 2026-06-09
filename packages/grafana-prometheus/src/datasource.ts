@@ -56,6 +56,7 @@ import { getQueryHints } from './query_hints';
 import { renderLabelsWithoutBrackets } from './querybuilder/shared/rendering/labels';
 import { QueryBuilderLabelFilter, QueryEditorMode } from './querybuilder/shared/types';
 import { CacheRequestInfo, defaultPrometheusQueryOverlapWindow, QueryCache } from './querycache/QueryCache';
+import { queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { transformV2 } from './result_transformer';
 import { trackQuery } from './tracking';
 import {
@@ -467,6 +468,26 @@ export class PrometheusDatasource
       return this.directAccessError();
     }
 
+    const multiBatchTarget = this.getPrometheusMultiBatchTarget(request);
+    if (multiBatchTarget) {
+      const preparedTarget = this.preparePrometheusMultiBatchTarget(multiBatchTarget, request);
+      const startTime = new Date();
+
+      return queryPrometheusMultiBatch(this.uid, request, preparedTarget, {
+        httpMethod: this.httpMethod,
+        customQueryParameters: this.customQueryParameters,
+      }).pipe(
+        map((response) =>
+          transformV2(response, request, {
+            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
+          })
+        ),
+        tap((response: DataQueryResponse) => {
+          trackQuery(response, request, startTime);
+        })
+      );
+    }
+
     // Use incremental query only if enabled and no instant queries or no $__range variables
     const shouldUseIncrementalQuery =
       this.hasIncrementalQuery &&
@@ -497,6 +518,49 @@ export class PrometheusDatasource
         trackQuery(response, request, startTime);
       })
     );
+  }
+
+  private getPrometheusMultiBatchTarget(request: DataQueryRequest<PromQuery>): PromQuery | undefined {
+    if (!config.featureToggles.prometheusMultiBatchStreaming || config.publicDashboardAccessToken) {
+      return undefined;
+    }
+
+    const visibleTargets = request.targets.filter((target) => this.filterQuery(target));
+    if (visibleTargets.length !== 1) {
+      return undefined;
+    }
+
+    const target = visibleTargets[0];
+    if (target.instant || target.range === false || target.exemplar) {
+      return undefined;
+    }
+
+    const datasourceUid = typeof target.datasource === 'string' ? target.datasource : target.datasource?.uid;
+    if (datasourceUid && datasourceUid !== this.uid) {
+      return undefined;
+    }
+
+    return target;
+  }
+
+  private preparePrometheusMultiBatchTarget(target: PromQuery, request: DataQueryRequest<PromQuery>): PromQuery {
+    const scopedVars = {
+      ...request.scopedVars,
+      __interval: { text: request.interval, value: request.interval },
+      __interval_ms: { text: request.intervalMs, value: request.intervalMs },
+      __rate_interval: request.scopedVars?.__rate_interval ?? { text: request.interval, value: request.interval },
+      ...this.getRangeScopedVars(request.range),
+    };
+    const interpolatedTarget = this.interpolateVariablesInQueries([target], scopedVars, request.filters)[0];
+    const targetWithInterpolatedLegend = {
+      ...interpolatedTarget,
+      legendFormat: this.templateSrv.replace(interpolatedTarget.legendFormat, scopedVars),
+    };
+
+    return this.processTargetV2(targetWithInterpolatedLegend, {
+      ...request,
+      targets: [targetWithInterpolatedLegend],
+    })[0];
   }
 
   metricFindQuery(query: string, options?: LegacyMetricFindQueryOptions) {

@@ -122,12 +122,7 @@ func (s *Service) CallResource(ctx context.Context, req *backend.CallResourceReq
 		return sender.Send(resp)
 	}
 
-	resp, err := i.resource.Execute(ctx, req)
-	if err != nil {
-		return err
-	}
-
-	return sender.Send(resp)
+	return i.resource.ExecuteStream(ctx, req, sender)
 }
 
 func (s *Service) getInstance(ctx context.Context, pluginCtx backend.PluginContext) (*instance, error) {

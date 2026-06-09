@@ -75,6 +75,7 @@ Most [generally available](https://grafana.com/docs/release-life-cycle/#general-
 | Feature toggle name               | Description                                                                                            |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `panelTitleSearch`                | Search for dashboards using panel title                                                                |
+| `prometheusMultiBatchStreaming`   | Enables progressive rendering for Prometheus HTTP multi-batch responses                                |
 | `grpcServer`                      | Run the GRPC server                                                                                    |
 | `renderAuthJWT`                   | Uses JWT-based auth for rendering instead of relying on remote cache                                   |
 | `refactorVariablesTimeRange`      | Refactor time range variables flow to reduce number of API calls made when query variables are chained |

@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -20,6 +23,9 @@ import (
 	"github.com/grafana/grafana/pkg/promlib/models"
 	"github.com/grafana/grafana/pkg/promlib/utils"
 )
+
+const multiBatchContentType = "application/prometheus.multibatch"
+const streamBufferSize = 32 * 1024
 
 type Resource struct {
 	promClient *client.Client
@@ -82,6 +88,87 @@ func (r *Resource) Execute(ctx context.Context, req *backend.CallResourceRequest
 	}
 
 	return callResponse, err
+}
+
+func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	r.log.FromContext(ctx).Debug("Sending resource query", "URL", req.URL)
+	resp, err := r.promClient.QueryResource(ctx, req)
+	if err != nil {
+		return fmt.Errorf("error querying resource: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			r.log.FromContext(ctx).Warn("Failed to close resource response body", "err", closeErr)
+		}
+	}()
+
+	// frontend sets the X-Grafana-Cache with the desired response cache control value
+	if len(req.GetHTTPHeaders().Get("X-Grafana-Cache")) > 0 {
+		resp.Header.Set("X-Grafana-Cache", "y")
+		resp.Header.Set("Cache-Control", req.GetHTTPHeaders().Get("X-Grafana-Cache"))
+	}
+
+	if !isMultiBatchContentType(resp.Header.Get("Content-Type")) {
+		var buf bytes.Buffer
+		// Should be more efficient than ReadAll. See https://github.com/prometheus/client_golang/pull/976
+		_, err = buf.ReadFrom(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  resp.StatusCode,
+			Headers: resp.Header,
+			Body:    buf.Bytes(),
+		})
+	}
+
+	headers := resp.Header.Clone()
+	headers.Del("Content-Length")
+
+	buf := make([]byte, streamBufferSize)
+	sentHeader := false
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			chunkHeaders := http.Header(nil)
+			if !sentHeader {
+				chunkHeaders = headers
+			}
+			if err := sender.Send(&backend.CallResourceResponse{
+				Status:  resp.StatusCode,
+				Headers: chunkHeaders,
+				Body:    chunk,
+			}); err != nil {
+				return err
+			}
+			sentHeader = true
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+
+	if !sentHeader {
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  resp.StatusCode,
+			Headers: headers,
+		})
+	}
+
+	return nil
+}
+
+func isMultiBatchContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.Split(contentType, ";")[0]
+	}
+	return strings.EqualFold(strings.TrimSpace(mediaType), multiBatchContentType)
 }
 
 func getSelectors(expr string) ([]string, error) {
