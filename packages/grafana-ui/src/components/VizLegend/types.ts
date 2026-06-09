@@ -60,7 +60,6 @@ export interface LegendProps<T = any> extends VizLegendBaseProps<T>, VizLegendTa
 }
 
 export interface VizLegendItem<T = any> {
-  itemKey?: string;
   getItemKey?: () => string;
   label: string;
   color?: string;

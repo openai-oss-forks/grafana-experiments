@@ -160,6 +160,8 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
 
     return () => {
       subscription.unsubscribe();
+      throttledHover.cancel();
+      throttledClear.cancel();
     };
   }, [config]);
 

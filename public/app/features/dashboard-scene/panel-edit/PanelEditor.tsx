@@ -96,15 +96,20 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     const panel = this.state.panelRef.resolve();
     const dashboard = getDashboardSceneFor(this);
     const queryRunner = getQueryRunnerFor(panel);
+    const hasCompactData =
+      queryRunner?.state.data?.compactSeries !== undefined ||
+      queryRunner?.state.data?.request?.preferredQueryResultFormat === 'compact-v1';
+    const compactDataSource = hasCompactData ? panel.state.$data : undefined;
+    let compactEditWrapper: SceneDataTransformer | undefined;
 
-    if (panel.state.$data && !(panel.state.$data instanceof SceneDataTransformer)) {
-      const dataProvider = panel.state.$data;
-      dataProvider.clearParent();
+    if (compactDataSource && !(compactDataSource instanceof SceneDataTransformer)) {
+      compactDataSource.clearParent();
+      compactEditWrapper = new SceneDataTransformer({
+        $data: compactDataSource,
+        transformations: [],
+      });
       panel.setState({
-        $data: new SceneDataTransformer({
-          $data: dataProvider,
-          transformations: [],
-        }),
+        $data: compactEditWrapper,
       });
     }
 
@@ -125,11 +130,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     );
 
     const deactivateParents = activateSceneObjectAndParentTree(panel);
-    if (
-      queryRunner &&
-      (queryRunner.state.data?.compactSeries ||
-        queryRunner.state.data?.request?.preferredQueryResultFormat === 'compact-v1')
-    ) {
+    if (queryRunner && hasCompactData) {
       queryRunner.cancelQuery();
       queryRunner.runQueries();
     }
@@ -137,11 +138,13 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this.waitForPlugin();
 
     return () => {
-      const dataProvider = panel.state.$data;
-      if (dataProvider instanceof SceneDataTransformer && dataProvider.state.transformations.length === 0) {
-        const sourceData = dataProvider.state.$data;
-        sourceData?.clearParent();
-        panel.setState({ $data: sourceData });
+      if (
+        compactEditWrapper &&
+        panel.state.$data === compactEditWrapper &&
+        compactEditWrapper.state.transformations.length === 0
+      ) {
+        compactDataSource?.clearParent();
+        panel.setState({ $data: compactDataSource });
       }
 
       this.commitChanges();

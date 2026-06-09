@@ -99,7 +99,11 @@ func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Respon
 		return hs.handleQueryMetricsError(err)
 	}
 	if c.Req.Header.Get(compactQueryDataHeader) == compactQueryDataVersion {
-		compactResponse, err := newCompactQueryDataResponse(resp, newCompactQueryRequests(reqDTO, handleTimeInQuery))
+		compactResponse, err := newCompactQueryDataResponseContext(
+			c.Req.Context(),
+			resp,
+			newCompactQueryRequests(reqDTO, handleTimeInQuery),
+		)
 		if errors.Is(err, errCompactQueryDataUnsupported) {
 			return hs.toJsonStreamingResponse(c.Req.Context(), resp)
 		}

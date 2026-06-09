@@ -53,9 +53,6 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
           const [isConditionallyHidden, conditionalRenderingClass, conditionalRenderingOverlay, renderHidden] =
             useIsConditionallyHidden(conditionalRendering);
 
-          const onRenderMarginChange = (isWithinRenderMargin: boolean) => {
-            sceneGraph.getData(item).isInViewChanged?.(isWithinRenderMargin);
-          };
           const wrapperClassName = cx(
             conditionalRenderingClass,
             styles.wrapper,
@@ -83,7 +80,6 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
                   <DashboardPanelLazyLoader
                     key={item.state.key!}
                     suspendGraphNGOffscreen={suspendGraphNGOffscreen}
-                    onRenderMarginChange={onRenderMarginChange}
                     className={wrapperClassName}
                   >
                     {panelContent}

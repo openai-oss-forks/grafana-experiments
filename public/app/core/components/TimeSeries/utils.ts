@@ -248,7 +248,21 @@ export function prepareCompactPlotConfigBuilder(options: {
   }
 
   builder.scaleKeys = ['x', plan.source.scales[0]?.key ?? ''];
-  builder.setCursor({ focus: { prox: hoverProximity ?? 30 } });
+  builder.setCursor({
+    hover: {
+      prox:
+        hoverProximity ??
+        ((plot, seriesIndex, hoveredIndex) => {
+          const source = plot.compactSource;
+          if (!source) {
+            throw new Error('Compact cursor proximity requires the active compact source');
+          }
+          return source.yAt(seriesIndex - 1, hoveredIndex) === null ? 15 : null;
+        }),
+      skip: [null],
+    },
+    focus: { prox: hoverProximity ?? 30 },
+  });
   return builder;
 }
 

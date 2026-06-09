@@ -27,6 +27,7 @@ const options = {
   panelId: process.env.PANEL_ID,
   expectedFormat: readExpectedFormat(),
   responseFormat: readResponseFormat(),
+  requestFormat: readRequestFormat(),
   seriesPerQuery: readPositiveInteger('SERIES_PER_QUERY', 1500),
   pointCount: readPositiveInteger('POINT_COUNT', 360),
   refreshes: readNonNegativeInteger('REFRESHES', 2),
@@ -37,9 +38,16 @@ const options = {
   dashboardTo: readOptionalTimestamp('DASHBOARD_TO'),
   heapSnapshot: process.env.HEAP_SNAPSHOT === '1',
   cpuProfile: process.env.CPU_PROFILE === '1',
+  hoverStageProfile: process.env.HOVER_STAGE_PROFILE === '1',
   verifyInteractions: process.env.VERIFY_INTERACTIONS === '1',
+  verifyTooltipDigest: process.env.VERIFY_TOOLTIP_DIGEST === '1',
+  verifyTimeRange: process.env.VERIFY_TIME_RANGE === '1',
   hoverSteps: readPositiveInteger('HOVER_STEPS', 12),
+  hoverPattern: readHoverPattern(),
+  hoverYFraction: readOptionalUnitFraction('HOVER_Y_FRACTION'),
   headless: process.env.HEADLESS === '1',
+  preservePanelGrid: process.env.PRESERVE_PANEL_GRID === '1',
+  deviceScaleFactor: readPositiveNumber('DEVICE_SCALE_FACTOR', 1),
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-high-cardinality',
   chromiumPath: process.env.CHROMIUM_PATH,
   dashboardUid: process.env.DASHBOARD_UID ?? `${DASHBOARD_UID}-${process.pid}`,
@@ -56,6 +64,7 @@ Environment:
   PANEL_ID                Panel ID selected from DASHBOARD_JSON (default: first timeseries)
   EXPECTED_FORMAT         compact-v1, json, or auto (default: compact-v1)
   RESPONSE_FORMAT         auto, compact-v1, or json (default: auto follows request)
+  REQUEST_FORMAT          auto or json; json strips the compact request header (default: auto)
   SERIES_PER_QUERY        Series returned per query refId (default: 1500)
   POINT_COUNT             Samples per series (default: 360)
   REFRESHES               In-place dashboard refreshes after first draw (default: 2)
@@ -66,8 +75,15 @@ Environment:
   DASHBOARD_TO            Fixed dashboard end timestamp in milliseconds
   HEAP_SNAPSHOT           Set to 1 to capture the active dashboard heap
   CPU_PROFILE             Set to 1 to capture per-render Chrome CPU profiles
+  HOVER_STAGE_PROFILE     Set to 1 to collect compact cursor, tooltip, and redraw stage timings
   VERIFY_INTERACTIONS     Set to 1 to verify tooltip and legend interactions
+  VERIFY_TOOLTIP_DIGEST   Set to 1 to hash every ordered tooltip row, including virtualized rows
+  VERIFY_TIME_RANGE       Set to 1 to exercise zoom-out and move-back dashboard controls
   HOVER_STEPS             Cursor moves sampled during interaction verification (default: 12)
+  HOVER_PATTERN           horizontal, vertical, or sweep (default: horizontal)
+  HOVER_Y_FRACTION        Optional fixed cursor Y fraction from 0 through 1
+  PRESERVE_PANEL_GRID     Set to 1 to keep the source panel width and height
+  DEVICE_SCALE_FACTOR     Browser device scale factor (default: 1)
   HEADLESS                Set to 1 for headless Chromium
   CHROMIUM_PATH           Optional Chromium executable
   OUTPUT_DIR              Metrics and screenshot directory
@@ -89,8 +105,11 @@ const browser = await chromium.launch({
   headless: options.headless,
   args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
 });
-const context = await browser.newContext({ viewport: { width: 1800, height: 1100 } });
-await installPaintProbe(context);
+const context = await browser.newContext({
+  viewport: { width: 1800, height: 1100 },
+  deviceScaleFactor: options.deviceScaleFactor,
+});
+await installPaintProbe(context, options.hoverStageProfile);
 const page = await context.newPage();
 const cdp = await context.newCDPSession(page);
 await cdp.send('Performance.enable');
@@ -207,6 +226,8 @@ await context.route('**/api/ds/query**', async (route) => {
     gzipResponseBytes,
     brotliResponseBytes,
     responseFormat,
+    from: requestBody.from,
+    to: requestBody.to,
     generationMs: round(generatedAt - startedAt),
     compressionMs: round(compressedAt - compressionStartedAt),
   });
@@ -222,6 +243,13 @@ await context.route('**/api/ds/query**', async (route) => {
     body: responseBody,
   });
 });
+if (options.requestFormat === 'json') {
+  await context.route('**/api/ds/query**', async (route) => {
+    const headers = { ...route.request().headers() };
+    delete headers[COMPACT_HEADER];
+    await route.fallback({ headers });
+  });
+}
 
 const report = {
   config: { ...options, password: '<redacted>' },
@@ -261,6 +289,7 @@ try {
   }
   if (options.verifyInteractions) {
     report.interactions = await verifyPanelInteractions(page, queryRequests[0].responseFormat);
+    report.hoverMemory = await collectBrowserSample(cdp, page, 'after-hover');
   }
 
   for (let refreshIndex = 0; refreshIndex < options.refreshes; refreshIndex++) {
@@ -273,6 +302,30 @@ try {
     await recordRender(page, cdp, report, expectedRequestCount, label);
     if (options.cpuProfile) {
       await stopCpuProfile(cdp, path.join(options.outputDir, `${label}.cpuprofile`));
+    }
+  }
+
+  if (options.verifyTimeRange) {
+    report.timeRangeActions = [];
+    for (const [action, testId] of [
+      ['zoom-out', 'data-testid explore-toolbar-timepicker-zoom-out-button'],
+      ['move-backward', 'data-testid explore-toolbar-timepicker-move-backward-button'],
+    ]) {
+      const previousRequest = queryRequests.at(-1);
+      const expectedRequestCount = queryRequests.length + 1;
+      await page.getByTestId(testId).click();
+      await recordRender(page, cdp, report, expectedRequestCount, `time-range-${action}`);
+      const currentRequest = queryRequests.at(-1);
+      if (previousRequest?.from === currentRequest?.from && previousRequest?.to === currentRequest?.to) {
+        throw new Error(`${action} did not change the query time range`);
+      }
+      report.timeRangeActions.push({
+        action,
+        requestedFormat: currentRequest.preferredFormat ?? 'json',
+        responseFormat: currentRequest.responseFormat,
+        from: currentRequest.from,
+        to: currentRequest.to,
+      });
     }
   }
 
@@ -364,13 +417,17 @@ async function recordRender(page, cdp, report, requestNumber, label) {
   await waitForChart(page);
   const sample = await collectBrowserSample(cdp, page, label);
   sample.paint = paint;
-  assertBoundedLegendDom(sample, queryRequests[requestNumber - 1].seriesCount);
+  assertCompactBoundedLegendDom(
+    sample,
+    queryRequests[requestNumber - 1].seriesCount,
+    queryRequests[requestNumber - 1].responseFormat
+  );
   assertCanvasRendered(sample);
   report.samples.push(sample);
 }
 
-async function installPaintProbe(context) {
-  await context.addInitScript(() => {
+async function installPaintProbe(context, hoverStageProfile) {
+  await context.addInitScript((hoverStageProfile) => {
     const originalClearRect = CanvasRenderingContext2D.prototype.clearRect;
     const originalStroke = CanvasRenderingContext2D.prototype.stroke;
     const originalFill = CanvasRenderingContext2D.prototype.fill;
@@ -410,6 +467,41 @@ async function installPaintProbe(context) {
             .sort((left, right) => right[1] - left[1])
             .slice(0, 32),
         };
+      },
+    };
+    if (hoverStageProfile) {
+      const hoverStages = new Map();
+      window.__compactHoverStageProbe = {
+        reset() {
+          hoverStages.clear();
+        },
+        record(stage, sample) {
+          const samples = hoverStages.get(stage) ?? [];
+          samples.push(sample);
+          hoverStages.set(stage, samples);
+        },
+        snapshot() {
+          return Object.fromEntries(
+            Array.from(hoverStages, ([stage, samples]) => [stage, samples.map((sample) => ({ ...sample }))])
+          );
+        },
+      };
+    }
+    const longTasks = [];
+    const longTaskObserver =
+      PerformanceObserver.supportedEntryTypes?.includes('longtask') &&
+      new PerformanceObserver((entries) => {
+        for (const entry of entries.getEntries()) {
+          longTasks.push({ startTime: entry.startTime, duration: entry.duration });
+        }
+      });
+    longTaskObserver?.observe({ entryTypes: ['longtask'] });
+    window.__compactLongTaskProbe = {
+      reset() {
+        longTasks.length = 0;
+      },
+      snapshot() {
+        return longTasks.map((entry) => ({ ...entry }));
       },
     };
     const recordDraw = () => {
@@ -464,7 +556,7 @@ async function installPaintProbe(context) {
       }
       return originalArc.apply(this, args);
     };
-  });
+  }, hoverStageProfile);
 }
 
 async function waitForPaint(page, requestNumber, timeoutMs) {
@@ -650,22 +742,11 @@ async function verifyPanelInteractions(page, responseFormat) {
     throw new Error('Compact chart canvas has no visible bounds');
   }
 
-  const hoverStartedAt = performance.now();
-  await page.mouse.move(bounds.x + bounds.width * 0.55, bounds.y + bounds.height * 0.45);
-  await page.waitForFunction(
-    () =>
-      Boolean(
-        document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
-          Array.from(document.body.querySelectorAll('div')).find((element) => {
-            const style = getComputedStyle(element);
-            return style.position === 'fixed' && style.zIndex === '10000' && element.textContent?.trim();
-          })
-      ),
-    undefined,
-    { timeout: 10_000 }
-  );
-  const hoverToTooltipMs = round(performance.now() - hoverStartedAt);
-  const tooltip = await page.evaluate(async (format) => {
+  await resetHoverStageProbe(page);
+  const firstHover = await measureFirstHover(page, bounds);
+  firstHover.stages = summarizeHoverStages(await collectHoverStageProbe(page));
+  const hoverToTooltipMs = firstHover.inputToNextPaintMs;
+  const tooltip = await page.evaluate((format) => {
     const element =
       document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
       Array.from(document.body.querySelectorAll('div')).find((candidate) => {
@@ -680,28 +761,23 @@ async function verifyPanelInteractions(page, responseFormat) {
             return row ? [row] : [];
           });
     const bounds = rows.map((row) => row.getBoundingClientRect());
-    let totalRows = rows.length;
-    if (format === 'compact-v1') {
-      const scrollContainer = Array.from(element?.querySelectorAll('div') ?? []).find(
-        (candidate) => getComputedStyle(candidate).overflowY === 'auto'
-      );
-      if (scrollContainer) {
-        const previous = scrollContainer.scrollTop;
-        for (let attempt = 0; attempt < 5; attempt++) {
-          scrollContainer.scrollTop = scrollContainer.scrollHeight;
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-        const indexes = Array.from(element?.querySelectorAll('[data-index]') ?? [], (row) =>
-          Number(row.getAttribute('data-index'))
-        );
-        totalRows = indexes.length === 0 ? 0 : Math.max(...indexes) + 1;
-        scrollContainer.scrollTop = previous;
-      }
-    }
+    const declaredRowCount = Number(rows[0]?.getAttribute('aria-setsize'));
+    const totalRows = Number.isFinite(declaredRowCount) && declaredRowCount > 0 ? declaredRowCount : rows.length;
+    const scrollContainer = element?.querySelector('[role="list"]');
+    const scrollBounds = scrollContainer?.getBoundingClientRect();
+    const virtualContent = scrollContainer?.firstElementChild;
     return {
       visible: Boolean(element),
       totalRows,
       mountedRows: rows.length,
+      scrollViewportHeight: Math.round((scrollBounds?.height ?? 0) * 10) / 10,
+      scrollHeight: scrollContainer?.scrollHeight ?? 0,
+      virtualContentHeight: Math.round((virtualContent?.getBoundingClientRect().height ?? 0) * 10) / 10,
+      virtualContentStyleHeight:
+        virtualContent instanceof HTMLElement ? virtualContent.style.height : virtualContent?.getAttribute('style'),
+      mountedIndexRange: rows.length
+        ? [Number(rows[0].getAttribute('data-index')), Number(rows.at(-1)?.getAttribute('data-index'))]
+        : null,
       sampleRows: rows.slice(0, 3).map((row) => row.textContent?.trim() ?? ''),
       textLength: element?.textContent?.length ?? 0,
       overlappingRows: bounds.some((rowBounds, index) => index > 0 && rowBounds.top < bounds[index - 1].bottom - 1),
@@ -713,7 +789,37 @@ async function verifyPanelInteractions(page, responseFormat) {
   if (responseFormat === 'compact-v1' && tooltip.overlappingRows) {
     throw new Error('Compact tooltip rows overlap');
   }
-  const repeatedHover = await measureRepeatedHover(page, bounds, responseFormat, options.hoverSteps);
+  if (responseFormat === 'compact-v1' && tooltip.totalRows > tooltip.mountedRows) {
+    const expectedScrollHeight = Number.parseFloat(tooltip.virtualContentStyleHeight);
+    if (!Number.isFinite(expectedScrollHeight) || tooltip.scrollHeight + 1 < expectedScrollHeight) {
+      throw new Error(
+        `Compact tooltip scroll range ${tooltip.scrollHeight}px does not cover its ${expectedScrollHeight}px virtual content`
+      );
+    }
+    if (tooltip.mountedRows > Math.ceil(tooltip.scrollViewportHeight / 20) + 30) {
+      throw new Error(
+        `Compact tooltip mounted ${tooltip.mountedRows} rows for a ${tooltip.scrollViewportHeight}px viewport`
+      );
+    }
+  }
+  const repeatedHover = await measureRepeatedHover(
+    page,
+    bounds,
+    responseFormat,
+    options.hoverSteps,
+    tooltip.totalRows > 1
+  );
+  if (options.verifyTooltipDigest) {
+    await restoreTooltipDigestPosition(page, bounds);
+  }
+  const tooltipRowDigest = options.verifyTooltipDigest
+    ? await collectTooltipRowDigest(page, responseFormat, tooltip.totalRows)
+    : undefined;
+  const scrollReachedLastRow =
+    responseFormat === 'compact-v1' && tooltip.totalRows > tooltip.mountedRows
+      ? await verifyVirtualTooltipScroll(page, tooltip.totalRows)
+      : null;
+  const pinning = await verifyCompactTooltipPinning(page, bounds, responseFormat);
 
   const legendButtons = page.locator(
     '[data-testid^="data-testid VizLegend series "] > button, table tbody tr button[title]'
@@ -721,8 +827,12 @@ async function verifyPanelInteractions(page, responseFormat) {
   if ((await legendButtons.count()) < 2) {
     return {
       hoverToTooltipMs,
+      firstHover,
       tooltip,
+      tooltipRowDigest,
+      scrollReachedLastRow,
       repeatedHover,
+      pinning,
       legendToggleChangedState: null,
     };
   }
@@ -740,8 +850,12 @@ async function verifyPanelInteractions(page, responseFormat) {
   if (!secondLegendButton) {
     return {
       hoverToTooltipMs,
+      firstHover,
       tooltip,
+      tooltipRowDigest,
+      scrollReachedLastRow,
       repeatedHover,
+      pinning,
       legendToggleChangedState: null,
     };
   }
@@ -761,27 +875,241 @@ async function verifyPanelInteractions(page, responseFormat) {
 
   return {
     hoverToTooltipMs,
+    firstHover,
     tooltip,
+    tooltipRowDigest,
+    scrollReachedLastRow,
     repeatedHover,
+    pinning,
     legendToggleChangedState: initialClass !== isolatedClass,
   };
 }
 
-async function measureRepeatedHover(page, bounds, responseFormat, stepCount) {
+async function collectTooltipRowDigest(page, responseFormat, totalRows) {
+  return page.evaluate(
+    async ({ responseFormat, totalRows }) => {
+      const tooltip =
+        document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
+        Array.from(document.body.querySelectorAll('div')).find((candidate) => {
+          const style = getComputedStyle(candidate);
+          return style.position === 'fixed' && style.zIndex === '10000' && candidate.textContent?.trim();
+        });
+      if (!tooltip) {
+        throw new Error('Tooltip disappeared before row digest collection');
+      }
+
+      const values = new Array(totalRows);
+      if (responseFormat === 'compact-v1') {
+        const rows = tooltip.querySelector('[role="list"]');
+        if (!(rows instanceof HTMLElement)) {
+          throw new Error('Compact tooltip has no scroll container');
+        }
+        const capture = () => {
+          for (const row of rows.querySelectorAll('[data-index]')) {
+            const index = Number(row.getAttribute('data-index'));
+            if (Number.isInteger(index) && index >= 0 && index < values.length) {
+              values[index] = row.textContent?.trim() ?? '';
+            }
+          }
+        };
+        const maxOffset = Math.max(0, rows.scrollHeight - rows.clientHeight);
+        const step = Math.max(1, Math.floor(rows.clientHeight * 0.8));
+        for (let offset = 0; offset < maxOffset; offset += step) {
+          rows.scrollTop = offset;
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          capture();
+        }
+        rows.scrollTop = maxOffset;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        capture();
+        rows.scrollTop = 0;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      } else {
+        const rows = Array.from(tooltip.querySelectorAll('[data-testid="series-icon"]')).flatMap((icon) => {
+          const row = icon.closest('tr') ?? icon.parentElement?.parentElement;
+          return row ? [row] : [];
+        });
+        rows.forEach((row, index) => {
+          values[index] = row.textContent?.trim() ?? '';
+        });
+      }
+
+      const missing = values.findIndex((value) => value == null);
+      if (missing >= 0) {
+        throw new Error(`Tooltip digest did not visit row ${missing} of ${totalRows}`);
+      }
+      const bytes = new TextEncoder().encode(values.map((value, index) => `${index}\0${value}\n`).join(''));
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      return Array.from(digest, (value) => value.toString(16).padStart(2, '0')).join('');
+    },
+    { responseFormat, totalRows }
+  );
+}
+
+async function verifyVirtualTooltipScroll(page, totalRows) {
+  const lastMountedIndex = await page.evaluate(async () => {
+    const tooltip = document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]');
+    const rows = tooltip?.querySelector('[role="list"]');
+    if (!(rows instanceof HTMLElement)) {
+      return -1;
+    }
+    rows.scrollTop = rows.scrollHeight;
+    const deadline = performance.now() + 2_000;
+    let lastIndex = -1;
+    while (performance.now() < deadline) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const mounted = Array.from(rows.querySelectorAll('[data-index]'));
+      lastIndex = Number(mounted.at(-1)?.getAttribute('data-index'));
+      if (lastIndex === Number(mounted[0]?.getAttribute('aria-setsize')) - 1) {
+        break;
+      }
+    }
+    rows.scrollTop = 0;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return lastIndex;
+  });
+  if (lastMountedIndex !== totalRows - 1) {
+    throw new Error(`Compact tooltip stopped at row ${lastMountedIndex}; expected ${totalRows - 1}`);
+  }
+  return true;
+}
+
+async function restoreTooltipDigestPosition(page, bounds) {
+  await page.mouse.move(
+    bounds.x + bounds.width * 0.55,
+    bounds.y + bounds.height * (options.hoverYFraction ?? 0.45)
+  );
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      )
+  );
+}
+
+async function measureFirstHover(page, bounds) {
+  const yFractions = options.hoverYFraction == null ? [0.45, 0.7, 0.3, 0.85, 0.15] : [options.hoverYFraction];
+  let lastError;
+  for (const yFraction of yFractions) {
+    try {
+      await resetHoverStageProbe(page);
+      return await measureFirstHoverAt(page, bounds.x + bounds.width * 0.55, bounds.y + bounds.height * yFraction);
+    } catch (error) {
+      lastError = error;
+      await page.evaluate(() => window.__compactFirstHoverCleanup?.());
+    }
+  }
+  throw lastError;
+}
+
+async function measureFirstHoverAt(page, x, y) {
+  await page.evaluate(() => {
+    const findTooltip = () =>
+      document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
+      Array.from(document.body.querySelectorAll('div')).find((element) => {
+        const style = getComputedStyle(element);
+        return style.position === 'fixed' && style.zIndex === '10000' && element.textContent?.trim();
+      });
+    let eventStartedAt = 0;
+    let firstCommitAt = 0;
+    const cleanup = () => {
+      observer.disconnect();
+      document.removeEventListener('mousemove', onMouseMove, true);
+      window.__compactFirstHoverCleanup = undefined;
+    };
+    const observer = new MutationObserver(() => {
+      if (firstCommitAt !== 0 || eventStartedAt === 0 || !findTooltip()) {
+        return;
+      }
+      firstCommitAt = performance.now();
+      requestAnimationFrame(() => {
+        cleanup();
+        window.__compactFirstHoverProbe = {
+          inputToCommitMs: firstCommitAt - eventStartedAt,
+          inputToNextPaintMs: performance.now() - eventStartedAt,
+        };
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    const onMouseMove = () => {
+      eventStartedAt = performance.now();
+    };
+    window.__compactFirstHoverProbe = null;
+    window.__compactFirstHoverCleanup = cleanup;
+    document.addEventListener('mousemove', onMouseMove, { capture: true, once: true });
+  });
+  await page.mouse.move(x, y);
+  await page.waitForFunction(() => window.__compactFirstHoverProbe != null, undefined, { timeout: 1_500 });
+  return page.evaluate(() => ({
+    inputToCommitMs: Math.round(window.__compactFirstHoverProbe.inputToCommitMs * 100) / 100,
+    inputToNextPaintMs: Math.round(window.__compactFirstHoverProbe.inputToNextPaintMs * 100) / 100,
+  }));
+}
+
+async function measureRepeatedHover(page, bounds, responseFormat, stepCount, waitForTooltipCommit) {
+  await resetHoverStageProbe(page);
+  await resetLongTaskProbe(page);
+  if (options.hoverPattern === 'sweep') {
+    const result = await measureContinuousSweep(page, bounds, responseFormat, stepCount);
+    result.longTasks = summarizeLongTasks(await collectLongTaskProbe(page));
+    return result;
+  }
+
   const samples = [];
   for (let step = 0; step < stepCount; step++) {
-    const xFraction = 0.12 + (0.76 * step) / Math.max(1, stepCount - 1);
-    const yFraction = step % 2 === 0 ? 0.3 : 0.7;
-    await page.evaluate(() => {
-      window.__compactHoverProbe = null;
-      document.addEventListener(
-        'mousemove',
-        () => {
-          const eventStartedAt = performance.now();
-          let frames = 0;
-          const waitForSettledFrame = () => {
-            frames++;
-            if (frames >= 2) {
+    const progress = step / Math.max(1, stepCount - 1);
+    const xFraction = options.hoverPattern === 'vertical' ? 0.5 : 0.12 + 0.76 * progress;
+    const yFraction =
+      options.hoverPattern === 'horizontal'
+        ? (options.hoverYFraction ?? (step % 2 === 0 ? 0.3 : 0.7))
+        : 0.12 + 0.76 * progress;
+    await page.evaluate(
+      (waitForTooltipCommit) => {
+        window.__compactHoverProbe = null;
+        document.addEventListener(
+          'mousemove',
+          () => {
+            const eventStartedAt = performance.now();
+            const tooltip =
+              document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
+              Array.from(document.body.querySelectorAll('div')).find((element) => {
+                const style = getComputedStyle(element);
+                return style.position === 'fixed' && style.zIndex === '10000' && element.textContent?.trim();
+              });
+            let firstCommitAt = null;
+            let addedNodes = 0;
+            let removedNodes = 0;
+            let attributeMutations = 0;
+            let textMutations = 0;
+            const observer = new MutationObserver((records) => {
+              firstCommitAt ??= performance.now();
+              for (const record of records) {
+                if (record.type === 'childList') {
+                  addedNodes += record.addedNodes.length;
+                  removedNodes += record.removedNodes.length;
+                } else if (record.type === 'attributes') {
+                  attributeMutations++;
+                } else {
+                  textMutations++;
+                }
+              }
+            });
+            if (tooltip) {
+              observer.observe(tooltip, {
+                attributes: true,
+                characterData: true,
+                childList: true,
+                subtree: true,
+              });
+            }
+            let frames = 0;
+            const waitForPaint = () => {
+              frames++;
+              if (firstCommitAt == null && waitForTooltipCommit && frames < 4) {
+                requestAnimationFrame(waitForPaint);
+                return;
+              }
+              observer.disconnect();
               const tooltipVisible = Boolean(
                 document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
                   Array.from(document.body.querySelectorAll('div')).find((element) => {
@@ -790,29 +1118,256 @@ async function measureRepeatedHover(page, bounds, responseFormat, stepCount) {
                   })
               );
               window.__compactHoverProbe = {
-                eventToSettledFrameMs: performance.now() - eventStartedAt,
+                inputToCommitMs: firstCommitAt == null ? null : firstCommitAt - eventStartedAt,
+                inputToNextPaintMs: performance.now() - eventStartedAt,
+                unchanged: firstCommitAt == null,
                 tooltipVisible,
                 focusOverlayVisible: document.querySelector('.u-compact-focus-overlay') != null,
+                mutations: { addedNodes, removedNodes, attributeMutations, textMutations },
               };
-              return;
-            }
-            requestAnimationFrame(waitForSettledFrame);
-          };
-          requestAnimationFrame(waitForSettledFrame);
-        },
-        { capture: true, once: true }
-      );
-    });
+            };
+            requestAnimationFrame(waitForPaint);
+          },
+          { capture: true, once: true }
+        );
+      },
+      options.hoverPattern === 'horizontal' && waitForTooltipCommit
+    );
     await page.mouse.move(bounds.x + bounds.width * xFraction, bounds.y + bounds.height * yFraction);
     await page.waitForFunction(() => window.__compactHoverProbe != null, undefined, { timeout: 10_000 });
     const probe = await page.evaluate(() => window.__compactHoverProbe);
     samples.push({
-      durationMs: round(probe.eventToSettledFrameMs),
+      inputToCommitMs: probe.inputToCommitMs == null ? null : round(probe.inputToCommitMs),
+      inputToNextPaintMs: round(probe.inputToNextPaintMs),
       tooltipVisible: probe.tooltipVisible,
       focusOverlayVisible: probe.focusOverlayVisible,
+      unchanged: probe.unchanged,
+      mutations: probe.mutations,
     });
   }
 
+  const overlayCount = await verifyFocusOverlay(page, bounds, responseFormat);
+  await page
+    .locator('.uplot')
+    .first()
+    .screenshot({ path: path.join(options.outputDir, 'chart-hover.png') });
+
+  return {
+    samples,
+    inputToCommitMedianMs: percentile(
+      samples.flatMap((sample) => (sample.inputToCommitMs == null ? [] : [sample.inputToCommitMs])),
+      0.5
+    ),
+    inputToCommitP95Ms: percentile(
+      samples.flatMap((sample) => (sample.inputToCommitMs == null ? [] : [sample.inputToCommitMs])),
+      0.95
+    ),
+    inputToNextPaintMedianMs: percentile(
+      samples.map((sample) => sample.inputToNextPaintMs),
+      0.5
+    ),
+    inputToNextPaintP95Ms: percentile(
+      samples.map((sample) => sample.inputToNextPaintMs),
+      0.95
+    ),
+    inputToNextPaintP99Ms: percentile(
+      samples.map((sample) => sample.inputToNextPaintMs),
+      0.99
+    ),
+    inputToNextPaintMaxMs: round(Math.max(...samples.map((sample) => sample.inputToNextPaintMs))),
+    domMutations: samples.reduce(
+      (total, sample) => ({
+        addedNodes: total.addedNodes + sample.mutations.addedNodes,
+        removedNodes: total.removedNodes + sample.mutations.removedNodes,
+        attributeMutations: total.attributeMutations + sample.mutations.attributeMutations,
+        textMutations: total.textMutations + sample.mutations.textMutations,
+      }),
+      { addedNodes: 0, removedNodes: 0, attributeMutations: 0, textMutations: 0 }
+    ),
+    focusOverlayCount: overlayCount,
+    stages: summarizeHoverStages(await collectHoverStageProbe(page)),
+    longTasks: summarizeLongTasks(await collectLongTaskProbe(page)),
+  };
+}
+
+async function measureContinuousSweep(page, bounds, responseFormat, stepCount) {
+  await page.evaluate(() => {
+    const tooltip =
+      document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
+      Array.from(document.body.querySelectorAll('div')).find((element) => {
+        const style = getComputedStyle(element);
+        return style.position === 'fixed' && style.zIndex === '10000' && element.textContent?.trim();
+      });
+    if (!tooltip) {
+      throw new Error('Tooltip is not mounted before the continuous sweep');
+    }
+
+    const state = {
+      inputEvents: 0,
+      commits: 0,
+      committedInput: 0,
+      maxBacklog: 0,
+      maxCommitLagMs: 0,
+      firstInputAt: 0,
+      lastInputAt: 0,
+      lastCommitAt: 0,
+    };
+    const onMouseMove = () => {
+      const now = performance.now();
+      state.inputEvents++;
+      state.firstInputAt ||= now;
+      state.lastInputAt = now;
+      state.maxBacklog = Math.max(state.maxBacklog, state.inputEvents - state.committedInput);
+    };
+    const observer = new MutationObserver(() => {
+      const now = performance.now();
+      state.commits++;
+      state.committedInput = state.inputEvents;
+      state.lastCommitAt = now;
+      state.maxCommitLagMs = Math.max(state.maxCommitLagMs, now - state.lastInputAt);
+    });
+    document.addEventListener('mousemove', onMouseMove, true);
+    observer.observe(tooltip, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+
+    window.__compactSweepProbe = {
+      state,
+      stop: () => {
+        observer.disconnect();
+        document.removeEventListener('mousemove', onMouseMove, true);
+        return {
+          ...state,
+          finalBacklog: state.inputEvents - state.committedInput,
+          sweepDurationMs: state.lastInputAt - state.firstInputAt,
+          settleAfterLastInputMs: performance.now() - state.lastInputAt,
+          tooltipText: tooltip.textContent?.trim() ?? '',
+        };
+      },
+    };
+  });
+
+  const startX = bounds.x + bounds.width * 0.12;
+  const endX = bounds.x + bounds.width * 0.88;
+  await page.mouse.move(startX, bounds.y + bounds.height * 0.25);
+  await page.mouse.move(endX, bounds.y + bounds.height * 0.75, { steps: stepCount });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        let stableFrames = 0;
+        let previousCommit = -1;
+        const waitForStableCommit = () => {
+          const state = window.__compactSweepProbe?.state;
+          if (!state) {
+            resolve();
+            return;
+          }
+          if (state.committedInput === state.inputEvents && state.commits === previousCommit) {
+            stableFrames++;
+          } else {
+            stableFrames = 0;
+            previousCommit = state.commits;
+          }
+          if (stableFrames >= 2 || performance.now() - state.lastInputAt > 2_000) {
+            resolve();
+          } else {
+            requestAnimationFrame(waitForStableCommit);
+          }
+        };
+        requestAnimationFrame(waitForStableCommit);
+      })
+  );
+  const sweep = await page.evaluate(() => {
+    const probe = window.__compactSweepProbe;
+    window.__compactSweepProbe = null;
+    return probe?.stop();
+  });
+  if (!sweep || sweep.inputEvents < stepCount) {
+    throw new Error(`Continuous sweep emitted ${sweep?.inputEvents ?? 0} events; expected at least ${stepCount}`);
+  }
+  if (sweep.finalBacklog !== 0) {
+    throw new Error(`Continuous sweep left ${sweep.finalBacklog} stale tooltip events`);
+  }
+
+  const overlayCount = await verifyFocusOverlay(page, bounds, responseFormat);
+  await page
+    .locator('.uplot')
+    .first()
+    .screenshot({ path: path.join(options.outputDir, 'chart-hover-sweep.png') });
+
+  return {
+    samples: [],
+    inputToCommitMedianMs: null,
+    inputToCommitP95Ms: null,
+    inputToNextPaintMedianMs: null,
+    inputToNextPaintP95Ms: null,
+    inputToNextPaintP99Ms: null,
+    inputToNextPaintMaxMs: null,
+    domMutations: null,
+    focusOverlayCount: overlayCount,
+    stages: summarizeHoverStages(await collectHoverStageProbe(page)),
+    continuousSweep: {
+      inputEvents: sweep.inputEvents,
+      commits: sweep.commits,
+      coalescedEvents: Math.max(0, sweep.inputEvents - sweep.commits),
+      maxBacklog: sweep.maxBacklog,
+      finalBacklog: sweep.finalBacklog,
+      maxCommitLagMs: round(sweep.maxCommitLagMs),
+      sweepDurationMs: round(sweep.sweepDurationMs),
+      settleAfterLastInputMs: round(sweep.settleAfterLastInputMs),
+      finalTooltipTextLength: sweep.tooltipText.length,
+    },
+  };
+}
+
+async function resetHoverStageProbe(page) {
+  await page.evaluate(() => window.__compactHoverStageProbe?.reset());
+}
+
+async function collectHoverStageProbe(page) {
+  return page.evaluate(() => window.__compactHoverStageProbe?.snapshot() ?? {});
+}
+
+async function resetLongTaskProbe(page) {
+  await page.evaluate(() => window.__compactLongTaskProbe?.reset());
+}
+
+async function collectLongTaskProbe(page) {
+  return page.evaluate(() => window.__compactLongTaskProbe?.snapshot() ?? []);
+}
+
+function summarizeLongTasks(tasks) {
+  return {
+    count: tasks.length,
+    totalDurationMs: round(tasks.reduce((total, task) => total + task.duration, 0)),
+    maxDurationMs: tasks.length === 0 ? 0 : round(Math.max(...tasks.map((task) => task.duration))),
+  };
+}
+
+function summarizeHoverStages(stages) {
+  return Object.fromEntries(
+    Object.entries(stages).map(([stage, samples]) => {
+      const durations = samples.map((sample) => sample.durationMs);
+      return [
+        stage,
+        {
+          count: samples.length,
+          durationP50Ms: percentile(durations, 0.5),
+          durationP95Ms: percentile(durations, 0.95),
+          durationMaxMs: durations.length === 0 ? null : round(Math.max(...durations)),
+          seriesVisits: samples.reduce((total, sample) => total + (sample.seriesVisits ?? 0), 0),
+          valueReads: samples.reduce((total, sample) => total + (sample.valueReads ?? 0), 0),
+          nearestReads: samples.reduce((total, sample) => total + (sample.nearestReads ?? 0), 0),
+        },
+      ];
+    })
+  );
+}
+
+async function verifyFocusOverlay(page, bounds, responseFormat) {
   let overlayCount = await page.locator('.u-compact-focus-overlay').count();
   if (responseFormat === 'compact-v1' && overlayCount === 0) {
     for (let step = 1; step < 10 && overlayCount === 0; step++) {
@@ -827,24 +1382,33 @@ async function measureRepeatedHover(page, bounds, responseFormat, stepCount) {
   if (responseFormat === 'json' && overlayCount !== 0) {
     throw new Error('Legacy JSON hover unexpectedly created a compact focus overlay');
   }
-  await page
-    .locator('.uplot')
-    .first()
-    .screenshot({ path: path.join(options.outputDir, 'chart-hover.png') });
+  return overlayCount;
+}
 
-  return {
-    samples,
-    eventToSettledFrameMedianMs: percentile(
-      samples.map((sample) => sample.durationMs),
-      0.5
-    ),
-    eventToSettledFrameP95Ms: percentile(
-      samples.map((sample) => sample.durationMs),
-      0.95
-    ),
-    eventToSettledFrameMaxMs: round(Math.max(...samples.map((sample) => sample.durationMs))),
-    focusOverlayCount: overlayCount,
-  };
+async function verifyCompactTooltipPinning(page, bounds, responseFormat) {
+  if (responseFormat !== 'compact-v1') {
+    return null;
+  }
+
+  const tooltip = page.locator('[data-testid="data-testid viz-tooltip-wrapper"]').first();
+  const x = bounds.x + bounds.width * 0.55;
+  const y = bounds.y + bounds.height * 0.45;
+  await page.mouse.move(x, y);
+  await tooltip.waitFor({ state: 'visible', timeout: 10_000 });
+  const before = (await tooltip.textContent())?.trim() ?? '';
+  await page.mouse.click(x, y);
+  await page.locator('.uplot[data-compact-tooltip-pinned="true"]').waitFor({ state: 'attached', timeout: 10_000 });
+
+  await page.mouse.move(bounds.x + bounds.width * 0.15, bounds.y + bounds.height * 0.8);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const after = (await tooltip.textContent())?.trim() ?? '';
+  if (after !== before) {
+    throw new Error('Pinned compact tooltip changed after pointer movement');
+  }
+
+  await page.keyboard.press('Escape');
+  await page.locator('.uplot[data-compact-tooltip-pinned="true"]').waitFor({ state: 'detached', timeout: 10_000 });
+  return { preservedContents: true, dismissedWithEscape: true };
 }
 
 async function waitForCanvasRedraw(page, previousOperationAt, timeoutMs) {
@@ -948,8 +1512,8 @@ async function stopCpuProfile(cdp, filePath) {
   await fs.writeFile(filePath, `${JSON.stringify(profile)}\n`);
 }
 
-function assertBoundedLegendDom(sample, seriesCount) {
-  if (seriesCount <= 200) {
+function assertCompactBoundedLegendDom(sample, seriesCount, responseFormat) {
+  if (responseFormat !== 'compact-v1' || seriesCount <= 200) {
     return;
   }
   const renderedLegendRows = Math.max(sample.dom.legendItems, sample.dom.legendTableRows);
@@ -1036,7 +1600,7 @@ function printReport(report, reportPath) {
   }
   if (report.interactions) {
     console.log(
-      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms hoverP50=${report.interactions.repeatedHover.eventToSettledFrameMedianMs}ms hoverP95=${report.interactions.repeatedHover.eventToSettledFrameP95Ms}ms rows=${report.interactions.tooltip.totalRows} mountedRows=${report.interactions.tooltip.mountedRows} legendToggle=${report.interactions.legendToggleChangedState}`
+      `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms commitP50=${report.interactions.repeatedHover.inputToCommitMedianMs}ms paintP50=${report.interactions.repeatedHover.inputToNextPaintMedianMs}ms paintP95=${report.interactions.repeatedHover.inputToNextPaintP95Ms}ms rows=${report.interactions.tooltip.totalRows} mountedRows=${report.interactions.tooltip.mountedRows} legendToggle=${report.interactions.legendToggleChangedState}`
     );
   }
   if (report.error) {
@@ -1057,6 +1621,9 @@ function readPositiveInteger(name, defaultValue) {
 }
 
 function percentile(values, fraction) {
+  if (values.length === 0) {
+    return null;
+  }
   const sorted = [...values].sort((left, right) => left - right);
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * fraction) - 1));
   return round(sorted[index]);
@@ -1078,6 +1645,27 @@ function readInteger(name, defaultValue) {
   const value = Number(raw);
   if (!Number.isSafeInteger(value)) {
     throw new Error(`${name} must be a safe integer`);
+  }
+  return value;
+}
+
+function readPositiveNumber(name, defaultValue) {
+  const raw = process.env[name];
+  const value = raw == null || raw === '' ? defaultValue : Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive finite number`);
+  }
+  return value;
+}
+
+function readOptionalUnitFraction(name) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${name} must be a finite number from 0 through 1`);
   }
   return value;
 }
@@ -1106,6 +1694,22 @@ function readResponseFormat() {
   const value = process.env.RESPONSE_FORMAT ?? 'auto';
   if (value !== 'compact-v1' && value !== 'json' && value !== 'auto') {
     throw new Error('RESPONSE_FORMAT must be compact-v1, json, or auto');
+  }
+  return value;
+}
+
+function readRequestFormat() {
+  const value = process.env.REQUEST_FORMAT ?? 'auto';
+  if (value !== 'json' && value !== 'auto') {
+    throw new Error('REQUEST_FORMAT must be json or auto');
+  }
+  return value;
+}
+
+function readHoverPattern() {
+  const value = process.env.HOVER_PATTERN ?? 'horizontal';
+  if (value !== 'horizontal' && value !== 'vertical' && value !== 'sweep') {
+    throw new Error('HOVER_PATTERN must be horizontal, vertical, or sweep');
   }
   return value;
 }

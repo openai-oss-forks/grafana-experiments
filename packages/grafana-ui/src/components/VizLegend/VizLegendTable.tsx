@@ -1,11 +1,11 @@
 import { css, cx } from '@emotion/css';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { type JSX, useMemo, useRef } from 'react';
+import { type JSX, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 
 import { GrafanaTheme2 } from '@grafana/data';
 
 import { useStyles2 } from '../../themes/ThemeContext';
 import { Icon } from '../Icon/Icon';
+import { useFixedVirtualWindow } from '../Virtualization/useFixedVirtualWindow';
 
 import { LegendTableItem } from './VizLegendTableItem';
 import { VizLegendItem, VizLegendItemSource, VizLegendTableProps } from './types';
@@ -14,6 +14,7 @@ const nameSortKey = 'Name';
 const naturalCompare = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
 const VIRTUALIZE_THRESHOLD = 200;
 const VIRTUAL_ROW_HEIGHT = 28;
+const VIRTUAL_OVERSCAN = 12;
 
 /**
  * @internal
@@ -55,19 +56,13 @@ export const VizLegendTable = <T extends unknown>({
       />
     );
   }
-  const getDisplayValues = (item: VizLegendItem<T>) => getItemDisplayValues?.(item) ?? item.getDisplayValues?.() ?? [];
   const header: Record<string, string> = {
     [nameSortKey]: '',
   };
 
-  if (displayValueColumns) {
-    for (const column of displayValueColumns) {
-      header[column.title ?? '?'] = column.description ?? '';
-    }
-  } else {
-    for (const item of items) {
-      const displayValues = getDisplayValues(item);
-      for (const displayValue of displayValues) {
+  for (const item of items) {
+    if (item.getDisplayValues) {
+      for (const displayValue of item.getDisplayValues()) {
         header[displayValue.title ?? '?'] = displayValue.description ?? '';
       }
     }
@@ -77,8 +72,8 @@ export const VizLegendTable = <T extends unknown>({
     let itemVals = new Map<VizLegendItem, number>();
 
     items.forEach((item) => {
-      if (sortKey !== nameSortKey) {
-        const stat = getDisplayValues(item).find((stat) => stat.title === sortKey);
+      if (sortKey !== nameSortKey && item.getDisplayValues) {
+        const stat = item.getDisplayValues().find((stat) => stat.title === sortKey);
         const val = stat == null || Number.isNaN(stat.numeric) ? -Infinity : stat.numeric;
         itemVals.set(item, val);
       }
@@ -103,25 +98,6 @@ export const VizLegendTable = <T extends unknown>({
   }
 
   if (!itemRenderer) {
-    if (items.length > VIRTUALIZE_THRESHOLD) {
-      return (
-        <VirtualizedVizLegendTable
-          className={className}
-          header={header}
-          getItemDisplayValues={getDisplayValues}
-          isSortable={isSortable}
-          items={items}
-          onLabelClick={onLabelClick}
-          onLabelMouseOut={onLabelMouseOut}
-          onLabelMouseOver={onLabelMouseOver}
-          onToggleSort={onToggleSort}
-          readonly={readonly}
-          sortKey={sortKey}
-          sortDesc={sortDesc}
-        />
-      );
-    }
-
     /* eslint-disable-next-line react/display-name */
     itemRenderer = (item, index) => (
       <LegendTableItem
@@ -131,7 +107,6 @@ export const VizLegendTable = <T extends unknown>({
         onLabelMouseOver={onLabelMouseOver}
         onLabelMouseOut={onLabelMouseOut}
         readonly={readonly}
-        displayValues={getDisplayValues(item)}
       />
     );
   }
@@ -401,14 +376,53 @@ function VirtualizedIndexedVizLegendTable<T>({
 }) {
   const styles = useStyles2(getStyles);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
+  const { scrollToIndex, totalSize, virtualItems } = useFixedVirtualWindow({
+    containerRef: scrollRef,
     count: itemSource.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => VIRTUAL_ROW_HEIGHT,
-    getItemKey: (index) => itemSource.getItemKey(sortedOrder?.[index] ?? index),
-    overscan: 12,
+    itemSize: VIRTUAL_ROW_HEIGHT,
+    overscan: VIRTUAL_OVERSCAN,
+    initialViewportSize: VIRTUAL_ROW_HEIGHT * 12,
   });
   const gridTemplateColumns = `minmax(0, 1fr) repeat(${Math.max(Object.keys(header).length - 1, 0)}, max-content)`;
+  const focusItem = useCallback(
+    (index: number) => {
+      const nextIndex = Math.max(0, Math.min(itemSource.length - 1, index));
+      scrollToIndex(nextIndex);
+      window.requestAnimationFrame(() => {
+        scrollRef.current?.querySelector<HTMLButtonElement>(`tr[aria-rowindex="${nextIndex + 2}"] button`)?.focus();
+      });
+    },
+    [itemSource.length, scrollToIndex]
+  );
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      const focusedRow = document.activeElement?.closest('tr[aria-rowindex]');
+      const currentIndex =
+        focusedRow instanceof HTMLTableRowElement ? Number(focusedRow.getAttribute('aria-rowindex')) - 2 : -1;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        focusItem(currentIndex + 1);
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        focusItem(currentIndex - 1);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        focusItem(0);
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        focusItem(itemSource.length - 1);
+      }
+    },
+    [focusItem, itemSource.length]
+  );
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container) {
+      return;
+    }
+    container.addEventListener('keydown', onKeyDown);
+    return () => container.removeEventListener('keydown', onKeyDown);
+  }, [onKeyDown]);
 
   return (
     <div ref={scrollRef} className={cx(styles.virtualScroll, className)}>
@@ -422,13 +436,13 @@ function VirtualizedIndexedVizLegendTable<T>({
           sortKey={sortKey}
           virtual
         />
-        <tbody className={styles.virtualBody} style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((row) => {
+        <tbody className={styles.virtualBody} style={{ height: totalSize }}>
+          {virtualItems.map((row) => {
             const sourceIndex = sortedOrder?.[row.index] ?? row.index;
             const item = itemSource.getItem(sourceIndex);
             return (
               <LegendTableItem
-                key={row.key}
+                key={itemSource.getItemKey(sourceIndex)}
                 item={item}
                 onLabelClick={onLabelClick}
                 onLabelMouseOver={onLabelMouseOver}
@@ -441,92 +455,6 @@ function VirtualizedIndexedVizLegendTable<T>({
               />
             );
           })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function VirtualizedVizLegendTable<T>({
-  className,
-  header,
-  getItemDisplayValues,
-  isSortable,
-  items,
-  onLabelClick,
-  onLabelMouseOut,
-  onLabelMouseOver,
-  onToggleSort,
-  readonly,
-  sortKey,
-  sortDesc,
-}: {
-  className?: string;
-  header: Record<string, string>;
-  getItemDisplayValues: (
-    item: VizLegendItem<T>
-  ) => ReturnType<NonNullable<VizLegendTableProps<T>['getItemDisplayValues']>>;
-  isSortable?: boolean;
-  items: Array<VizLegendItem<T>>;
-  onLabelClick?: VizLegendTableProps<T>['onLabelClick'];
-  onLabelMouseOut?: VizLegendTableProps<T>['onLabelMouseOut'];
-  onLabelMouseOver?: VizLegendTableProps<T>['onLabelMouseOver'];
-  onToggleSort?: VizLegendTableProps<T>['onToggleSort'];
-  readonly?: boolean;
-  sortKey?: string;
-  sortDesc?: boolean;
-}) {
-  const styles = useStyles2(getStyles);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => VIRTUAL_ROW_HEIGHT,
-    overscan: 12,
-  });
-  const gridTemplateColumns = `minmax(0, 1fr) repeat(${Math.max(Object.keys(header).length - 1, 0)}, max-content)`;
-
-  return (
-    <div ref={scrollRef} className={cx(styles.virtualScroll, className)}>
-      <table className={cx(styles.table, styles.virtualTable)} aria-rowcount={items.length}>
-        <thead className={styles.virtualHeader}>
-          <tr style={{ gridTemplateColumns }}>
-            {Object.keys(header).map((columnTitle) => (
-              <th
-                title={header[columnTitle]}
-                key={columnTitle}
-                className={cx(styles.header, {
-                  [styles.headerSortable]: Boolean(onToggleSort),
-                  [styles.nameHeader]: isSortable,
-                  [styles.withIcon]: sortKey === columnTitle,
-                  'sr-only': !isSortable,
-                })}
-                onClick={() => {
-                  if (onToggleSort && isSortable) {
-                    onToggleSort(columnTitle);
-                  }
-                }}
-              >
-                {columnTitle}
-                {sortKey === columnTitle && <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className={styles.virtualBody} style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((row) => (
-            <LegendTableItem
-              key={row.key}
-              item={items[row.index]}
-              onLabelClick={onLabelClick}
-              onLabelMouseOver={onLabelMouseOver}
-              onLabelMouseOut={onLabelMouseOut}
-              readonly={readonly}
-              displayValues={getItemDisplayValues(items[row.index])}
-              className={styles.virtualRow}
-              style={{ gridTemplateColumns, transform: `translateY(${row.start}px)` }}
-            />
-          ))}
         </tbody>
       </table>
     </div>

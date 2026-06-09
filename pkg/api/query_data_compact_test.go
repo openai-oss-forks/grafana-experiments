@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -144,8 +146,11 @@ func TestCompactQueryDataResponseRejectsInvalidFrames(t *testing.T) {
 	axis := compactRegularTimeAxis{Start: 0, Step: 1_000, Count: 5}
 
 	for name, frames := range map[string]data.Frames{
-		"off grid":   {newCompactTestFrame("A", axis, []int64{0, 1_500}, []float64{1, 2})},
-		"descending": {newCompactTestFrame("A", axis, []int64{2_000, 1_000}, []float64{1, 2})},
+		"off grid":          {newCompactTestFrame("A", axis, []int64{0, 1_500}, []float64{1, 2})},
+		"descending":        {newCompactTestFrame("A", axis, []int64{2_000, 1_000}, []float64{1, 2})},
+		"duplicate":         {newCompactTestFrame("A", axis, []int64{0, 0}, []float64{1, 2})},
+		"before axis start": {newCompactTestFrame("A", axis, []int64{-1_000}, []float64{1})},
+		"after axis end":    {newCompactTestFrame("A", axis, []int64{5_000}, []float64{1})},
 		"inconsistent interval": {
 			newCompactTestFrame("A", axis, []int64{0}, []float64{1}),
 			newCompactTestFrameWithInterval("B", axis, 2_000, []int64{0}, []float64{1}),
@@ -327,6 +332,118 @@ func TestCompactQueryDataStreamingResponse(t *testing.T) {
 	require.Greater(t, writer.writes, 1)
 	require.LessOrEqual(t, writer.maxWrite, compactWriteChunkSize)
 	decodeCompactTestResponse(t, writer.body.Bytes())
+}
+
+func TestCompactQueryDataResponseStopsOnCancellation(t *testing.T) {
+	axis := compactRegularTimeAxis{Start: 0, Step: 1_000, Count: 2}
+	qdr := &backend.QueryDataResponse{Responses: backend.Responses{
+		"A": {Frames: data.Frames{newCompactTestFrame("A", axis, []int64{0, 1_000}, []float64{1, 2})}},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	compact, err := newCompactQueryDataResponseContext(ctx, qdr, compactTestRequests(axis, "A"))
+
+	require.Nil(t, compact)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestCompactBinaryWriterStopsOnCancellationAndShortWrites(t *testing.T) {
+	t.Run("cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		target := newTrackingResponseWriter()
+		writer := compactBinaryWriter{context: ctx, writer: target}
+
+		writer.writeBytes([]byte("value"))
+
+		require.ErrorIs(t, writer.err, context.Canceled)
+		require.Zero(t, target.writes)
+	})
+
+	t.Run("short write", func(t *testing.T) {
+		writer := compactBinaryWriter{context: context.Background(), writer: shortCompactWriter{}}
+
+		writer.writeBytes([]byte("value"))
+
+		require.ErrorIs(t, writer.err, io.ErrShortWrite)
+	})
+
+	t.Run("frame header failure avoids value scratch", func(t *testing.T) {
+		axis := compactRegularTimeAxis{Start: 0, Step: 1_000, Count: 2}
+		frame := compactFrame{
+			Frame:        newCompactTestFrame("A", axis, []int64{0, 1_000}, []float64{1, 2}),
+			PresentCount: 2,
+		}
+		writer := compactBinaryWriter{context: context.Background(), writer: failingCompactWriter{}}
+
+		writeCompactFrame(frame, &writer)
+
+		require.Error(t, writer.err)
+		require.Nil(t, writer.valueScratch)
+	})
+}
+
+func TestCompactQueryDataResponseRejectsOverflowingStep(t *testing.T) {
+	axis := compactRegularTimeAxis{Start: 0, Step: maxDurationMilliseconds + 1, Count: 1}
+	frame := newCompactTestFrameWithInterval("A", axis, axis.Step, []int64{0}, []float64{1})
+	qdr := &backend.QueryDataResponse{Responses: backend.Responses{"A": {Frames: data.Frames{frame}}}}
+
+	compact, err := newCompactQueryDataResponse(qdr, compactTestRequests(axis, "A"))
+
+	require.Nil(t, compact)
+	require.ErrorIs(t, err, errCompactQueryDataUnsupported)
+}
+
+func BenchmarkCompactQueryDataResponseGapless(b *testing.B) {
+	axis, qdr := compactBenchmarkResponse(100, 360)
+	requests := compactTestRequests(axis, "A")
+	b.ReportAllocs()
+	for b.Loop() {
+		compact, err := newCompactQueryDataResponse(qdr, requests)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if compact.Results["A"].Frames[0].Presence != nil {
+			b.Fatal("gapless frame allocated a presence bitmap")
+		}
+	}
+}
+
+func BenchmarkWriteCompactQueryDataResponse(b *testing.B) {
+	axis, qdr := compactBenchmarkResponse(100, 360)
+	compact, err := newCompactQueryDataResponse(qdr, compactTestRequests(axis, "A"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.SetBytes(int64(100 * 360 * float64Bytes))
+	for b.Loop() {
+		writer := compactBinaryWriter{context: context.Background(), writer: io.Discard}
+		writeCompactQueryDataResponse(compact, &writer)
+		if writer.err != nil {
+			b.Fatal(writer.err)
+		}
+	}
+}
+
+const float64Bytes = 8
+
+func compactBenchmarkResponse(frameCount, pointCount int) (compactRegularTimeAxis, *backend.QueryDataResponse) {
+	axis := compactRegularTimeAxis{Start: 1_000, Step: 1_000, Count: uint32(pointCount)}
+	timestamps := make([]int64, pointCount)
+	for pointIndex := range timestamps {
+		timestamps[pointIndex] = axis.Start + int64(pointIndex)*axis.Step
+	}
+	frames := make(data.Frames, frameCount)
+	for frameIndex := range frames {
+		values := make([]float64, pointCount)
+		for pointIndex := range values {
+			values[pointIndex] = float64(frameIndex*pointCount + pointIndex)
+		}
+		frames[frameIndex] = newCompactTestFrame("series", axis, timestamps, values)
+	}
+	return axis, &backend.QueryDataResponse{Responses: backend.Responses{"A": {Frames: frames}}}
 }
 
 func newCompactTestFrame(name string, axis compactRegularTimeAxis, timestamps []int64, values []float64) *data.Frame {
@@ -610,4 +727,16 @@ func (w *trackingResponseWriter) Write(value []byte) (int, error) {
 	w.writes++
 	w.maxWrite = max(w.maxWrite, len(value))
 	return w.body.Write(value)
+}
+
+type shortCompactWriter struct{}
+
+func (shortCompactWriter) Write(value []byte) (int, error) {
+	return max(0, len(value)-1), nil
+}
+
+type failingCompactWriter struct{}
+
+func (failingCompactWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
 }

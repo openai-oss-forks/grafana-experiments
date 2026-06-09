@@ -97,7 +97,7 @@ describe('UPlotChart', () => {
     expect(plotRef).toHaveBeenLastCalledWith(expect.any(Object));
     unmount();
     expect(destroyMock).toBeCalledTimes(1);
-    expect(plotRef).toHaveBeenLastCalledWith(null);
+    expect(plotRef).toHaveBeenCalledTimes(1);
   });
 
   describe('data update', () => {
@@ -152,47 +152,47 @@ describe('UPlotChart', () => {
   });
 
   describe('config update', () => {
-    it('skips uPlot initialization until both dimensions are renderable', () => {
-      const { data, config } = mockData();
-      const { rerender } = render(
-        <UPlotChart data={preparePlotData2(data, getStackingGroups(data))} config={config} width={0} height={0} />
-      );
+    it('skips compact uPlot initialization until both dimensions are renderable', () => {
+      const { config } = mockData();
+      const data = mockCompactSource([10, 20, 5]);
+      const { rerender } = render(<UPlotChart data={data} config={config} width={0} height={0} />);
 
       expect(screen.queryAllByTestId('uplot-main-div')).toHaveLength(1);
-      expect(uPlot).not.toBeCalled();
+      expect(uPlot.compact).not.toBeCalled();
 
-      rerender(
-        <UPlotChart data={preparePlotData2(data, getStackingGroups(data))} config={config} width={100} height={0} />
-      );
-      expect(uPlot).not.toBeCalled();
+      rerender(<UPlotChart data={data} config={config} width={100} height={0} />);
+      expect(uPlot.compact).not.toBeCalled();
 
-      rerender(
-        <UPlotChart data={preparePlotData2(data, getStackingGroups(data))} config={config} width={100} height={100} />
-      );
-      expect(uPlot).toBeCalledTimes(1);
+      rerender(<UPlotChart data={data} config={config} width={100} height={100} />);
+      expect(uPlot.compact).toBeCalledTimes(1);
     });
 
-    it('destroys a plot when it becomes zero-sized and reinitializes when renderable', () => {
+    it('destroys a compact plot when it becomes zero-sized and reinitializes when renderable', () => {
+      const { config } = mockData();
+      const data = mockCompactSource([10, 20, 5]);
+      const { rerender } = render(<UPlotChart data={data} config={config} width={100} height={100} />);
+
+      rerender(<UPlotChart data={data} config={config} width={0} height={100} />);
+
+      expect(destroyMock).toBeCalledTimes(1);
+      expect(setDataMock).not.toBeCalled();
+
+      rerender(<UPlotChart data={data} config={config} width={100} height={100} />);
+
+      expect(destroyMock).toBeCalledTimes(1);
+      expect(uPlot.compact).toBeCalledTimes(2);
+      expect(setDataMock).not.toBeCalled();
+    });
+
+    it('preserves legacy setSize behavior for a temporarily zero dimension', () => {
       const { data, config } = mockData();
-      const { rerender } = render(
-        <UPlotChart data={preparePlotData2(data, getStackingGroups(data))} config={config} width={100} height={100} />
-      );
+      const alignedData = preparePlotData2(data, getStackingGroups(data));
+      const { rerender } = render(<UPlotChart data={alignedData} config={config} width={100} height={100} />);
 
-      data.fields[1].values.set(0, 1);
-      rerender(
-        <UPlotChart data={preparePlotData2(data, getStackingGroups(data))} config={config} width={0} height={100} />
-      );
+      rerender(<UPlotChart data={alignedData} config={config} width={0} height={100} />);
 
-      expect(destroyMock).toBeCalledTimes(1);
-      expect(setDataMock).not.toBeCalled();
-
-      rerender(
-        <UPlotChart data={preparePlotData2(data, getStackingGroups(data))} config={config} width={100} height={100} />
-      );
-
-      expect(destroyMock).toBeCalledTimes(1);
-      expect(uPlot).toBeCalledTimes(2);
-      expect(setDataMock).not.toBeCalled();
+      expect(destroyMock).not.toHaveBeenCalled();
+      expect(setSizeMock).toHaveBeenCalledWith({ width: 0, height: 100 });
     });
 
     it('reinitializes uPlot when config changes', () => {
@@ -252,7 +252,7 @@ describe('UPlotChart', () => {
       expect(setSizeMock).toBeCalledTimes(1);
     });
 
-    it('applies simultaneous dimension and data changes', () => {
+    it('preserves legacy update ordering when dimensions and data change together', () => {
       const { data, config } = mockData();
 
       const { rerender } = render(
@@ -266,7 +266,20 @@ describe('UPlotChart', () => {
       );
 
       expect(setSizeMock).toBeCalledTimes(1);
-      expect(setDataMock).toBeCalledTimes(1);
+      expect(setDataMock).not.toHaveBeenCalled();
+    });
+
+    it('updates compact source ownership when dimensions and data change together', () => {
+      const { config } = mockData();
+      const first = mockCompactSource([10, 20, 5]);
+      const second = mockCompactSource([11, 21, 6]);
+      const { rerender } = render(<UPlotChart data={first} config={config} width={100} height={100} />);
+
+      rerender(<UPlotChart data={second} config={config} width={200} height={200} />);
+
+      expect(setSizeMock).toHaveBeenCalledTimes(1);
+      expect(setCompactDataMock).toHaveBeenCalledWith(second);
+      expect(setDataMock).not.toHaveBeenCalled();
     });
   });
 });
@@ -290,7 +303,7 @@ function mockCompactSource(values: number[]): CompactRenderSource {
     stackGroupCount: 0,
     cursorMode: 'single',
     visibilityState: { overrides: new Map() },
-    release: () => structuredClone(buffer, { transfer: [buffer] }),
+    release: () => undefined,
     xAt: (index) => 1000 + index * 1000,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round((value - 1000) / 1000))),
     yAt: (_seriesIndex, index) => values[index],

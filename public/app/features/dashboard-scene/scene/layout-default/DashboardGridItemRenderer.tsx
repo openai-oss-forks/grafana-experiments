@@ -1,8 +1,8 @@
 import { css } from '@emotion/css';
-import { RefObject, useCallback, useMemo } from 'react';
+import { RefObject, useMemo } from 'react';
 
 import { config } from '@grafana/runtime';
-import { sceneGraph, SceneComponentProps, VizPanel } from '@grafana/scenes';
+import { SceneComponentProps, VizPanel } from '@grafana/scenes';
 import { GRID_CELL_HEIGHT, GRID_CELL_VMARGIN } from 'app/core/constants';
 
 import { useDashboardState } from '../../utils/utils';
@@ -21,13 +21,6 @@ interface PanelWrapperProps {
 }
 
 function PanelWrapper({ panel, isLazy, suspendGraphNGOffscreen, containerRef }: PanelWrapperProps) {
-  const onRenderMarginChange = useCallback(
-    (isWithinRenderMargin: boolean) => {
-      sceneGraph.getData(panel).isInViewChanged?.(isWithinRenderMargin);
-    },
-    [panel]
-  );
-
   if (isLazy) {
     return (
       <DashboardPanelLazyLoader
@@ -35,7 +28,6 @@ function PanelWrapper({ panel, isLazy, suspendGraphNGOffscreen, containerRef }: 
         ref={containerRef}
         className={panelWrapper}
         suspendGraphNGOffscreen={suspendGraphNGOffscreen}
-        onRenderMarginChange={onRenderMarginChange}
       >
         <panel.Component model={panel} />
       </DashboardPanelLazyLoader>

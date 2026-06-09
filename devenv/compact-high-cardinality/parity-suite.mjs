@@ -10,6 +10,8 @@ if (!dashboardJson || process.argv.includes('--help')) {
   console.log(`Usage: DASHBOARD_JSON=/path/to/dashboard.json node devenv/compact-high-cardinality/parity-suite.mjs
 
 Environment:
+  GRAFANA_URL             Compact Grafana URL (default: http://127.0.0.1:3000)
+  LEGACY_GRAFANA_URL      Required unmodified Grafana URL for the no-header JSON control
   PANEL_IDS               Optional comma-separated panel IDs (default: representative Prometheus time-series panels)
   MAX_PANELS              Maximum automatically selected panels (default: 6)
   SERIES_PER_QUERY        Series generated for each query (default: 3)
@@ -21,6 +23,10 @@ Environment:
   process.exit(dashboardJson ? 0 : 1);
 }
 
+const legacyGrafanaUrl = process.env.LEGACY_GRAFANA_URL;
+if (!legacyGrafanaUrl) {
+  throw new Error('LEGACY_GRAFANA_URL is required for true no-header JSON parity');
+}
 const outputDir = process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-parity';
 const maxPanels = readPositiveInteger('MAX_PANELS', 6);
 const maxMismatchRatio = readRatio('MAX_MISMATCH_RATIO', 0.15);
@@ -35,7 +41,7 @@ await fs.mkdir(outputDir, { recursive: true });
 for (const panel of selected) {
   const panelDir = path.join(outputDir, String(panel.id));
   const compactDir = path.join(panelDir, 'auto');
-  await runPanel(panel, compactDir, 'auto', 'auto');
+  await runPanel(panel, compactDir, 'auto', 'auto', process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000');
   const compactReport = await readReport(compactDir);
   const requestedFormat = compactReport.queryRequests[0]?.preferredFormat ?? 'json';
 
@@ -52,14 +58,16 @@ for (const panel of selected) {
   }
 
   const jsonDir = path.join(panelDir, 'json');
-  await runPanel(panel, jsonDir, 'compact-v1', 'json');
+  await runPanel(panel, jsonDir, 'json', 'auto', legacyGrafanaUrl);
   const jsonReport = await readReport(jsonDir);
   const comparison = await comparePng(path.join(compactDir, 'chart.png'), path.join(jsonDir, 'chart.png'), panelDir);
   const tooltipSampleParity = arraysEqual(
     compactReport.interactions?.tooltip?.sampleRows,
     jsonReport.interactions?.tooltip?.sampleRows
   );
-  const passed = comparison.mismatchRatio <= maxMismatchRatio && tooltipSampleParity;
+  const tooltipDigestParity =
+    compactReport.interactions?.tooltipRowDigest === jsonReport.interactions?.tooltipRowDigest;
+  const passed = comparison.mismatchRatio <= maxMismatchRatio && tooltipSampleParity && tooltipDigestParity;
   results.push({
     panelId: panel.id,
     title: panel.title,
@@ -72,17 +80,19 @@ for (const panel of selected) {
     compactTooltipRows: compactReport.interactions?.tooltip?.totalRows,
     jsonTooltipRows: jsonReport.interactions?.tooltip?.totalRows,
     tooltipSampleParity,
+    tooltipDigestParity,
     visualParity: passed ? 'passed' : 'failed',
     ...comparison,
   });
 }
 
 const failures = results.filter((result) => result.visualParity === 'failed');
+const compactPanels = results.filter((result) => result.requestedFormat === 'compact-v1').length;
 const summary = {
   dashboard: { uid: dashboard.uid, title: dashboard.title },
   maxMismatchRatio,
   selectedPanels: selected.map(({ id, title }) => ({ id, title })),
-  compactPanels: results.filter((result) => result.requestedFormat === 'compact-v1').length,
+  compactPanels,
   jsonOnlyPanels: results.filter((result) => result.requestedFormat !== 'compact-v1').length,
   failures: failures.length,
   results,
@@ -91,7 +101,7 @@ const summaryPath = path.join(outputDir, 'summary.json');
 await fs.writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
 console.table(results);
 console.log(`Parity summary: ${summaryPath}`);
-if (failures.length > 0) {
+if (failures.length > 0 || compactPanels === 0) {
   process.exitCode = 1;
 }
 
@@ -104,13 +114,14 @@ function arraysEqual(left, right) {
   );
 }
 
-function runPanel(panel, panelOutput, expectedFormat, responseFormat) {
+function runPanel(panel, panelOutput, expectedFormat, responseFormat, grafanaUrl) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['devenv/compact-high-cardinality/run.mjs'], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         DASHBOARD_JSON: dashboardJson,
+        GRAFANA_URL: grafanaUrl,
         PANEL_ID: String(panel.id),
         EXPECTED_FORMAT: expectedFormat,
         RESPONSE_FORMAT: responseFormat,
@@ -123,6 +134,7 @@ function runPanel(panel, panelOutput, expectedFormat, responseFormat) {
         DASHBOARD_TO: process.env.DASHBOARD_TO ?? '1700003600000',
         REFRESHES: '0',
         VERIFY_INTERACTIONS: '1',
+        VERIFY_TOOLTIP_DIGEST: '1',
         HEADLESS: '1',
         OUTPUT_DIR: panelOutput,
       },

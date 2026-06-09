@@ -140,6 +140,15 @@ interface RangeCacheChunk {
   readonly maxs: Float64Array;
 }
 
+interface NumericRangeCacheEntry<T> {
+  readonly configId: number;
+  readonly min: number | null;
+  readonly max: number | null;
+  readonly value: T;
+}
+
+type NumericRangeValueCache<T> = Map<number, Array<NumericRangeCacheEntry<T>>>;
+
 interface CompiledConfigRecord {
   readonly config: FieldConfig<GraphFieldConfig>;
   readonly styleId: number;
@@ -182,6 +191,7 @@ interface CompactSeriesAccess {
   getIdentityHash(index: number): number;
   getPresenceByteOffset(index: number): number;
   getPresenceByteLength(index: number): number;
+  getPresentCount(index: number): number;
   getValuesByteOffset(index: number): number;
 }
 
@@ -289,24 +299,24 @@ export function createCompactNativeRenderPlan(
 
     scratch.config.custom = canonicalizeCompactCustomConfig(scratch.config.custom);
 
-    configuredDisplayNameIdBuilder.set(
-      seriesIndex,
-      internOptionalString(scratchConfig.displayName, configuredDisplayNames, configuredDisplayNameKeys)
+    const configuredDisplayNameId = internOptionalString(
+      scratchConfig.displayName,
+      configuredDisplayNames,
+      configuredDisplayNameKeys
     );
+    configuredDisplayNameIdBuilder.set(seriesIndex, configuredDisplayNameId);
     flags[seriesIndex] = calculateFlags(scratchConfig, access.getPresenceByteLength(seriesIndex));
 
-    configIdBuilder.set(
-      seriesIndex,
-      internCompiledConfig(
-        scratchConfig,
-        compiledConfigs,
-        compiledConfigBuckets,
-        styles,
-        styleBuckets,
-        scales,
-        scaleBuckets
-      )
+    const configId = internCompiledConfig(
+      scratchConfig,
+      compiledConfigs,
+      compiledConfigBuckets,
+      styles,
+      styleBuckets,
+      scales,
+      scaleBuckets
     );
+    configIdBuilder.set(seriesIndex, configId);
   }
 
   const configIds = configIdBuilder.finish();
@@ -322,9 +332,11 @@ export function createCompactNativeRenderPlan(
     return reusablePlotOptions;
   });
   const reductionCaches = new Map<ReducerID, ReductionCache>();
+  const renderedMinMaxCache = new Map<number, RangeCacheChunk>();
+  const sourceMinMaxCache = new Map<number, RangeCacheChunk>();
   const rangeCache = new Map<number, RangeCacheChunk>();
   let globalRange: NumericRange | undefined;
-  const displayCache = new Map<string, DisplayProcessor>();
+  const displayCache: NumericRangeValueCache<DisplayProcessor> = new Map();
 
   const getConfigRecord = (seriesIndex: number) =>
     compiledConfigs[configIds[assertSeriesIndex(seriesIndex, seriesCount)]];
@@ -332,10 +344,48 @@ export function createCompactNativeRenderPlan(
   const getScale = (seriesIndex: number) => scales[getConfigRecord(seriesIndex).scaleId];
   const getMergedConfig = (seriesIndex: number): FieldConfig<GraphFieldConfig> => getConfigRecord(seriesIndex).config;
 
+  const getRenderedSeriesMinMax = (seriesIndex: number): NumericRange => {
+    const cache = getRangeCacheChunk(renderedMinMaxCache, seriesIndex);
+    const chunkIndex = seriesIndex % LAZY_CACHE_CHUNK_SIZE;
+    if (cache.states[chunkIndex] === 0) {
+      const { min, max } = calculateCompactMinMax(
+        data,
+        dataView,
+        dataBytes,
+        access,
+        seriesIndex,
+        getStyle(seriesIndex).config
+      );
+      cache.mins[chunkIndex] = min ?? Number.NaN;
+      cache.maxs[chunkIndex] = max ?? Number.NaN;
+      cache.states[chunkIndex] = 1;
+    }
+    const min = Number.isNaN(cache.mins[chunkIndex]) ? null : cache.mins[chunkIndex];
+    const max = Number.isNaN(cache.maxs[chunkIndex]) ? null : cache.maxs[chunkIndex];
+    return { min, max, delta: (max ?? 0) - (min ?? 0) };
+  };
+
+  const getSourceSeriesMinMax = (seriesIndex: number): NumericRange => {
+    const cache = getRangeCacheChunk(sourceMinMaxCache, seriesIndex);
+    const chunkIndex = seriesIndex % LAZY_CACHE_CHUNK_SIZE;
+    if (cache.states[chunkIndex] === 0) {
+      const { min, max } = calculateCompactSourceMinMax(dataView, access, seriesIndex, getStyle(seriesIndex).config);
+      cache.mins[chunkIndex] = min ?? Number.NaN;
+      cache.maxs[chunkIndex] = max ?? Number.NaN;
+      cache.states[chunkIndex] = 1;
+    }
+    const min = Number.isNaN(cache.mins[chunkIndex]) ? null : cache.mins[chunkIndex];
+    const max = Number.isNaN(cache.maxs[chunkIndex]) ? null : cache.maxs[chunkIndex];
+    return { min, max, delta: (max ?? 0) - (min ?? 0) };
+  };
+
   const reduce = (seriesIndex: number, reducer: ReducerID): unknown => {
     assertSeriesIndex(seriesIndex, seriesCount);
     if (!isCompactTimeSeriesReducerSupported(reducer)) {
       throw new Error(`Compact native reducer ${reducer} is unsupported`);
+    }
+    if (reducer === ReducerID.min || reducer === ReducerID.max) {
+      return getRenderedSeriesMinMax(seriesIndex)[reducer];
     }
     let cache = reductionCaches.get(reducer);
     if (!cache) {
@@ -415,8 +465,7 @@ export function createCompactNativeRenderPlan(
     let min: number | null = null;
     let max: number | null = null;
     for (let seriesIndex = 0; seriesIndex < seriesCount; seriesIndex++) {
-      const seriesMin = asNullableNumber(reduce(seriesIndex, ReducerID.min));
-      const seriesMax = asNullableNumber(reduce(seriesIndex, ReducerID.max));
+      const { min: seriesMin, max: seriesMax } = getSourceSeriesMinMax(seriesIndex);
       if (seriesMin != null && (min == null || seriesMin < min)) {
         min = seriesMin;
       }
@@ -437,10 +486,7 @@ export function createCompactNativeRenderPlan(
         scale.min != null && scale.max != null
           ? { min: scale.min, max: scale.max }
           : scale.fieldMinMax
-            ? {
-                min: asNullableNumber(reduce(seriesIndex, ReducerID.min)),
-                max: asNullableNumber(reduce(seriesIndex, ReducerID.max)),
-              }
+            ? getSourceSeriesMinMax(seriesIndex)
             : getGlobalRange();
       const min = scale.min ?? base.min;
       const max = scale.max ?? base.max;
@@ -456,11 +502,12 @@ export function createCompactNativeRenderPlan(
   const getDisplay = (seriesIndex: number): DisplayProcessor => {
     assertSeriesIndex(seriesIndex, seriesCount);
     const range = getRange(seriesIndex);
-    const key = `${configIds[seriesIndex]}/${range.min}/${range.max}`;
-    let display = displayCache.get(key);
-    if (!display) {
+    const configId = configIds[seriesIndex];
+    const rangeMin = range.min ?? null;
+    const rangeMax = range.max ?? null;
+    return getNumericRangeCacheValue(displayCache, configId, rangeMin, rangeMax, () => {
       const config = getMergedConfig(seriesIndex);
-      display = getDisplayProcessor({
+      return getDisplayProcessor({
         field: {
           name: TIME_SERIES_VALUE_FIELD_NAME,
           type: FieldType.number,
@@ -470,9 +517,7 @@ export function createCompactNativeRenderPlan(
         theme: options.theme,
         timeZone: options.timeZone,
       });
-      displayCache.set(key, display);
-    }
-    return display;
+    });
   };
 
   const source = createRenderSource(
@@ -549,10 +594,7 @@ function createRenderSource(
   const rendererScaleIds = new Map<Readonly<FieldConfig<GraphFieldConfig>>, number>();
   const rendererConfigs = new Map<number, RendererConfigRecord>();
   const colorCalculators = new Map<number, ReturnType<typeof getFieldColorCalculator>>();
-  const scaleCalculators = new Map<
-    number,
-    Map<number | null, Map<number | null, ReturnType<typeof getScaleCalculator>>>
-  >();
+  const scaleCalculators: NumericRangeValueCache<ReturnType<typeof getScaleCalculator>> = new Map();
   const colorState: { displayName: string; seriesIndex: number; range?: NumericRange } = {
     displayName: '',
     seriesIndex: 0,
@@ -843,26 +885,37 @@ function getCachedScaleCalculator(
   configId: number,
   target: FieldConfigTarget<GraphFieldConfig>,
   options: CompactFieldConfigOptions,
-  cache: Map<number, Map<number | null, Map<number | null, ReturnType<typeof getScaleCalculator>>>>
+  cache: NumericRangeValueCache<ReturnType<typeof getScaleCalculator>>
 ): ReturnType<typeof getScaleCalculator> {
   const min = target.state?.range?.min ?? null;
   const max = target.state?.range?.max ?? null;
-  let byMin = cache.get(configId);
-  if (!byMin) {
-    byMin = new Map();
-    cache.set(configId, byMin);
+  return getNumericRangeCacheValue(cache, configId, min, max, () => getScaleCalculator(target, options.theme));
+}
+
+function getNumericRangeCacheValue<T>(
+  cache: NumericRangeValueCache<T>,
+  configId: number,
+  min: number | null,
+  max: number | null,
+  create: () => T
+): T {
+  let hash = hashValue(configId);
+  hash = hashValue(min, hash);
+  hash = hashValue(max, hash);
+  let bucket = cache.get(hash);
+  if (bucket) {
+    for (const entry of bucket) {
+      if (entry.configId === configId && entry.min === min && entry.max === max) {
+        return entry.value;
+      }
+    }
+  } else {
+    bucket = [];
+    cache.set(hash, bucket);
   }
-  let byMax = byMin.get(min);
-  if (!byMax) {
-    byMax = new Map();
-    byMin.set(min, byMax);
-  }
-  let calculator = byMax.get(max);
-  if (!calculator) {
-    calculator = getScaleCalculator(target, options.theme);
-    byMax.set(max, calculator);
-  }
-  return calculator;
+  const value = create();
+  bucket.push({ configId, min, max, value });
+  return value;
 }
 
 const hashNumberBuffer = new ArrayBuffer(8);
@@ -990,6 +1043,7 @@ function createSeriesAccess(data: CompactTimeSeriesData): CompactSeriesAccess {
       ),
     getPresenceByteOffset: (index) => series[index].presenceByteOffset,
     getPresenceByteLength: (index) => series[index].presenceByteLength,
+    getPresentCount: (index) => series[index].presentCount,
     getValuesByteOffset: (index) => series[index].valuesByteOffset,
   };
 }
@@ -1009,6 +1063,7 @@ function createColumnarSeriesAccess(series: CompactTimeSeriesSeriesCollection): 
     getIdentityHash: (index) => series.getIdentityHash(index),
     getPresenceByteOffset: (index) => series.columns.presenceByteOffsets[columnIndex(index)],
     getPresenceByteLength: (index) => series.columns.presenceByteLengths[columnIndex(index)],
+    getPresentCount: (index) => series.columns.presentCounts[columnIndex(index)],
     getValuesByteOffset: (index) => series.columns.valuesByteOffsets[columnIndex(index)],
   };
 }
@@ -1129,7 +1184,7 @@ function matchesValue(
   config: FieldConfig<GraphFieldConfig>
 ): boolean {
   const { reducer, operation, value } = matcher;
-  const left = reduceCompactSeries(data, dataView, dataBytes, access, seriesIndex, config, reducer);
+  const left = reduceCompactSourceSeries(dataView, access, seriesIndex, config, reducer);
   if (reducer === ReducerID.allIsNull || reducer === ReducerID.allIsZero) {
     return Boolean(left);
   }
@@ -1322,6 +1377,64 @@ function calculateFlags(config: FieldConfig<GraphFieldConfig>, presenceByteLengt
   return flags;
 }
 
+function calculateCompactMinMax(
+  data: CompactTimeSeriesData,
+  dataView: DataView,
+  dataBytes: Uint8Array,
+  access: CompactSeriesAccess,
+  seriesIndex: number,
+  config: Readonly<FieldConfig<GraphFieldConfig>>
+): Pick<NumericRange, 'min' | 'max'> {
+  const nullMode = config.nullValueMode ?? NullValueMode.Ignore;
+  let min: number | null = null;
+  let max: number | null = null;
+  forEachRawValue(data, dataView, dataBytes, access, seriesIndex, (sourceValue) => {
+    let value = sourceValue;
+    if (value == null) {
+      if (nullMode === NullValueMode.Ignore) {
+        return;
+      }
+      if (nullMode === NullValueMode.AsZero) {
+        value = 0;
+      }
+    }
+    if (value == null || Number.isNaN(value)) {
+      return;
+    }
+    min = min == null || value < min ? value : min;
+    max = max == null || value > max ? value : max;
+  });
+  return { min, max };
+}
+
+function calculateCompactSourceMinMax(
+  dataView: DataView,
+  access: CompactSeriesAccess,
+  seriesIndex: number,
+  config: Readonly<FieldConfig<GraphFieldConfig>>
+): Pick<NumericRange, 'min' | 'max'> {
+  const nullMode = config.nullValueMode ?? NullValueMode.Ignore;
+  let min: number | null = null;
+  let max: number | null = null;
+  forEachSourceValue(dataView, access, seriesIndex, (sourceValue) => {
+    let value = sourceValue;
+    if (value == null) {
+      if (nullMode === NullValueMode.Ignore) {
+        return;
+      }
+      if (nullMode === NullValueMode.AsZero) {
+        value = 0;
+      }
+    }
+    if (value == null || Number.isNaN(value)) {
+      return;
+    }
+    min = min == null || value < min ? value : min;
+    max = max == null || value > max ? value : max;
+  });
+  return { min, max };
+}
+
 function reduceCompactSeries(
   data: CompactTimeSeriesData,
   dataView: DataView,
@@ -1335,6 +1448,28 @@ function reduceCompactSeries(
   if (!axis) {
     throw new Error(`Compact native series ${seriesIndex} references a missing axis`);
   }
+  return reduceCompactValues(config, reducer, (callback) =>
+    forEachRawValue(data, dataView, dataBytes, access, seriesIndex, callback)
+  );
+}
+
+function reduceCompactSourceSeries(
+  dataView: DataView,
+  access: CompactSeriesAccess,
+  seriesIndex: number,
+  config: Readonly<FieldConfig<GraphFieldConfig>>,
+  reducer: ReducerID
+): unknown {
+  return reduceCompactValues(config, reducer, (callback) =>
+    forEachSourceValue(dataView, access, seriesIndex, callback)
+  );
+}
+
+function reduceCompactValues(
+  config: Readonly<FieldConfig<GraphFieldConfig>>,
+  reducer: ReducerID,
+  iterate: (callback: (value: number | null, index: number) => void) => void
+): unknown {
   const nullMode = config.nullValueMode ?? NullValueMode.Ignore;
   let first: number | null | undefined;
   let last: number | null | undefined;
@@ -1357,8 +1492,10 @@ function reduceCompactSeries(
   let varianceCount = 0;
   let varianceMean = 0;
   let varianceSquareSum = 0;
+  let totalCount = 0;
 
-  forEachRawValue(data, dataView, dataBytes, access, seriesIndex, (sourceValue, axisIndex) => {
+  iterate((sourceValue, valueIndex) => {
+    totalCount++;
     if (sourceValue != null) {
       varianceCount++;
       const oldMean = varianceMean;
@@ -1366,7 +1503,7 @@ function reduceCompactSeries(
       varianceSquareSum += (sourceValue - oldMean) * (sourceValue - varianceMean);
     }
     let value = sourceValue;
-    if (axisIndex === 0) {
+    if (valueIndex === 0) {
       first = value;
     }
     last = value;
@@ -1443,7 +1580,7 @@ function reduceCompactSeries(
     case ReducerID.count:
       return count;
     case ReducerID.countAll:
-      return axis.count;
+      return totalCount;
     case ReducerID.diff:
       return diff;
     case ReducerID.diffperc:
@@ -1464,6 +1601,19 @@ function reduceCompactSeries(
       return Math.sqrt(variance);
     default:
       throw new Error(`Compact native reducer ${reducer} is unsupported`);
+  }
+}
+
+function forEachSourceValue(
+  dataView: DataView,
+  access: CompactSeriesAccess,
+  seriesIndex: number,
+  callback: (value: number | null, sourceIndex: number) => void
+): void {
+  const presentCount = access.getPresentCount(seriesIndex);
+  const valuesByteOffset = access.getValuesByteOffset(seriesIndex);
+  for (let sourceIndex = 0; sourceIndex < presentCount; sourceIndex++) {
+    callback(dataView.getFloat64(valuesByteOffset + sourceIndex * Float64Array.BYTES_PER_ELEMENT, true), sourceIndex);
   }
 }
 
@@ -1612,8 +1762,4 @@ function getReducerId(value: unknown): ReducerID | undefined {
 
 function isComparableValue(value: unknown): value is string | number | boolean | null | undefined {
   return value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
-}
-
-function asNullableNumber(value: unknown): number | null {
-  return typeof value === 'number' ? value : null;
 }

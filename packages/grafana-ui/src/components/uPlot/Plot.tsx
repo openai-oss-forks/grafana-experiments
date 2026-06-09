@@ -15,6 +15,10 @@ function sameData(prevProps: PlotProps, nextProps: PlotProps) {
   return nextProps.data === prevProps.data;
 }
 
+function sameConfig(prevProps: PlotProps, nextProps: PlotProps) {
+  return nextProps.config === prevProps.config;
+}
+
 function sameDataKind(prevProps: PlotProps, nextProps: PlotProps) {
   if (isCompactPlotSource(prevProps.data) && isCompactPlotSource(nextProps.data)) {
     return isCompactRenderSource(prevProps.data) === isCompactRenderSource(nextProps.data);
@@ -40,7 +44,6 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
   plotContainer = createRef<HTMLDivElement>();
   plotCanvasBBox = createRef<DOMRect>();
   plotInstance: uPlot | null = null;
-  plotRef: PlotProps['plotRef'];
 
   constructor(props: PlotProps) {
     super(props);
@@ -53,17 +56,25 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
 
     this.plotInstance.destroy();
     this.plotInstance = null;
-    this.plotRef?.(null);
-    this.plotRef = undefined;
   }
 
   reinitPlot() {
-    const { plotRef } = this.props;
+    const { plotRef, width, height } = this.props;
+    const compactData = isCompactPlotSource(this.props.data);
 
     this.destroyPlot();
 
-    if (!hasRenderableDimensions(this.props)) {
+    if (compactData ? !hasRenderableDimensions(this.props) : width === 0 && height === 0) {
       return;
+    }
+
+    if (!compactData) {
+      this.props.config.addHook('setSize', (plot) => {
+        const canvas = plot.over;
+        if (!canvas) {
+          return;
+        }
+      });
     }
 
     const config: Options = {
@@ -90,7 +101,6 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
 
     if (plotRef) {
       plotRef(plot);
-      this.plotRef = plotRef;
     }
 
     this.plotInstance = plot;
@@ -105,39 +115,49 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
   }
 
   componentDidUpdate(prevProps: PlotProps) {
-    if (!hasRenderableDimensions(this.props)) {
-      if (hasRenderableDimensions(prevProps)) {
-        this.destroyPlot();
+    const compactData = isCompactPlotSource(this.props.data);
+    const previousCompactData = isCompactPlotSource(prevProps.data);
+    if (compactData || previousCompactData) {
+      if (compactData && !hasRenderableDimensions(this.props)) {
+        if (this.plotInstance) {
+          this.destroyPlot();
+        }
+        return;
+      }
+
+      if (
+        !compactData ||
+        !previousCompactData ||
+        !this.plotInstance ||
+        !hasRenderableDimensions(prevProps) ||
+        !sameConfig(prevProps, this.props) ||
+        !sameDataKind(prevProps, this.props)
+      ) {
+        this.reinitPlot();
+        return;
+      }
+
+      if (!sameDims(prevProps, this.props)) {
+        this.plotInstance.setSize({
+          width: Math.floor(this.props.width),
+          height: Math.floor(this.props.height),
+        });
+      }
+      if (!sameData(prevProps, this.props)) {
+        this.plotInstance.setCompactData!(this.props.data);
       }
       return;
     }
 
-    if (
-      !this.plotInstance ||
-      !hasRenderableDimensions(prevProps) ||
-      prevProps.config !== this.props.config ||
-      !sameDataKind(prevProps, this.props)
-    ) {
-      this.reinitPlot();
-      return;
-    }
-
-    const dimensionsChanged = !sameDims(prevProps, this.props);
-    const dataChanged = !sameData(prevProps, this.props);
-
-    if (dimensionsChanged) {
-      this.plotInstance.setSize({
+    if (!sameDims(prevProps, this.props)) {
+      this.plotInstance?.setSize({
         width: Math.floor(this.props.width),
         height: Math.floor(this.props.height),
       });
-    }
-
-    if (dataChanged) {
-      if (isCompactPlotSource(this.props.data)) {
-        this.plotInstance.setCompactData!(this.props.data);
-      } else {
-        this.plotInstance.setData(this.props.data as AlignedData);
-      }
+    } else if (!sameConfig(prevProps, this.props)) {
+      this.reinitPlot();
+    } else if (!sameData(prevProps, this.props)) {
+      this.plotInstance?.setData(this.props.data as AlignedData);
     }
   }
 

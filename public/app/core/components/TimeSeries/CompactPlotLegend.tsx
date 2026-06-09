@@ -26,8 +26,10 @@ export function CompactPlotLegend({
     config.addHook('init', (plot) => {
       plotRef.current = plot;
     });
-    config.addHook('destroy', () => {
-      plotRef.current = null;
+    config.addHook('destroy', (plot) => {
+      if (plotRef.current === plot) {
+        plotRef.current = null;
+      }
     });
   }, [config]);
   const onSeriesVisibilityChange = useCallback(
@@ -126,7 +128,6 @@ function createLegendSource(
     const style = plan.source.styles[plan.source.columns.styleIds[seriesIndex]];
     const label = plan.getDisplayName(seriesIndex);
     return {
-      itemKey: `${seriesIndex}:${label}`,
       label,
       fieldName: label,
       color: style.stroke,
@@ -159,7 +160,6 @@ function createLegendSource(
         const style = plan.source.styles[plan.source.columns.styleIds[seriesIndex]];
         const label = plan.getDisplayName(seriesIndex);
         return {
-          itemKey: `${seriesIndex}:${label}`,
           label,
           fieldName: label,
           color: style.stroke,
@@ -170,7 +170,7 @@ function createLegendSource(
       },
       getItemKey: (index) => indexes[index],
       getDisplayValues: (index) => getDisplayValuesForSeries(plan, calcs, indexes[index]),
-      getSortValue: (index, sortBy) => getSortValue(plan, calcs, indexes[index], sortBy),
+      getSortValue: (index, sortBy) => getCompactLegendSortValue(plan, calcs, indexes[index], sortBy),
     };
   };
 
@@ -180,7 +180,7 @@ function createLegendSource(
     getItemKey: (index) => sourceAt(index),
     getItemsForYAxis: makeAxisSource,
     getDisplayValues,
-    getSortValue: (index, sortBy) => getSortValue(plan, calcs, sourceAt(index), sortBy),
+    getSortValue: (index, sortBy) => getCompactLegendSortValue(plan, calcs, sourceAt(index), sortBy),
   };
 }
 
@@ -196,11 +196,25 @@ function getDisplayValuesForSeries(plan: CompactNativeRenderPlan, calcs: string[
   });
 }
 
-function getSortValue(plan: CompactNativeRenderPlan, calcs: string[], seriesIndex: number, sortBy: string) {
+export function getCompactLegendSortValue(
+  plan: CompactNativeRenderPlan,
+  calcs: string[],
+  seriesIndex: number,
+  sortBy: string
+) {
   if (sortBy === 'Name') {
     return plan.getDisplayName(seriesIndex);
   }
-  return calcs.includes(sortBy) ? Number(reduce(plan, seriesIndex, sortBy)) : undefined;
+  const reducerId = calcs.find((candidate) => fieldReducers.get(candidate).name === sortBy);
+  if (!reducerId) {
+    return undefined;
+  }
+  const reduced = reduce(plan, seriesIndex, reducerId);
+  if (reduced == null) {
+    return undefined;
+  }
+  const value = Number(reduced);
+  return Number.isNaN(value) ? undefined : value;
 }
 
 function reduce(plan: CompactNativeRenderPlan, seriesIndex: number, reducerId: string) {

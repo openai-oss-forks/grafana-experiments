@@ -1,5 +1,4 @@
 import { css, cx } from '@emotion/css';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -10,9 +9,13 @@ import {
   CloseButton,
   ColorIndicator,
   ColorPlacement,
+  getCompactHoverStageProbe,
+  getCompactRenderController,
+  useFixedVirtualWindow,
   VizTooltipHeader,
   VizTooltipRow,
   VizTooltipWrapper,
+  type CompactCursorSnapshot,
 } from '@grafana/ui/internal';
 import { CompactNativeRenderPlan, CompactNativeSeriesFlag } from 'app/core/components/GraphNG/compactNativePlan';
 
@@ -34,17 +37,22 @@ interface CompactTooltipPluginProps {
 interface HoverState {
   source: CompactNativeRenderPlan['source'];
   cursorIndex: number;
+  cursorRevision: number;
   focusedIndex: number;
   focusedSeries: number;
   viaSync: boolean;
 }
 
 const ROW_HEIGHT = 24;
-const VIRTUALIZE_THRESHOLD = 200;
+const VIRTUALIZE_THRESHOLD = 40;
 const DEFAULT_VIRTUAL_HEIGHT = 400;
+const VIRTUAL_OVERSCAN = 12;
 const TOOLTIP_OFFSET = 10;
 const VIEWPORT_SCROLLBAR_WIDTH = 16;
 const MIN_ZOOM_DISTANCE = 5;
+const COMPACT_TOOLTIP_PIN_CHANGE_EVENT = 'grafana-compact-tooltip-pin-change';
+const COMPACT_TOOLTIP_PINNED_ATTRIBUTE = 'data-compact-tooltip-pinned';
+const hoverStageProbe = getCompactHoverStageProbe();
 
 export function CompactTooltipPlugin({
   config,
@@ -69,13 +77,15 @@ export function CompactTooltipPlugin({
   const pinnedRef = useRef(false);
   const queryZoomRef = useRef(queryZoom);
   const annotationRangeRef = useRef(onAnnotationRange);
+  const modeRef = useRef(mode);
   const syncModeRef = useRef(syncMode);
   const syncScopeRef = useRef(syncScope);
   const sourceRef = useRef(plan.source);
+  const plotRef = useRef<import('uplot')>();
+  const pinnedSnapshotRef = useRef<CompactCursorSnapshot>();
   const yZoomedRef = useRef(false);
   const sortedIndexesRef = useRef<Uint32Array>();
   const filteredIndexesRef = useRef<Uint32Array>();
-  const tooltipValueStorageRef = useRef<Float64Array>();
   const positionRef = useRef({ left: 0, top: 0 });
   const sizeRef = useRef({ width: 0, height: 0 });
   const clearHover = useCallback(() => {
@@ -91,33 +101,48 @@ export function CompactTooltipPlugin({
   pinnedRef.current = pinned;
   queryZoomRef.current = queryZoom;
   annotationRangeRef.current = onAnnotationRange;
+  modeRef.current = mode;
   syncModeRef.current = syncMode;
   syncScopeRef.current = syncScope;
   sourceRef.current = plan.source;
   const styles = useStyles2(getStyles, maxWidth);
   const baseIndexes = useMemo(() => buildTooltipIndexes(plan), [plan]);
   const activeHover = hover?.source === plan.source ? hover : null;
-  const isTooltipVisible = activeHover != null;
   const hoverSource = activeHover?.source;
   const hoverCursorIndex = activeHover?.cursorIndex;
+  const hoverCursorRevision = activeHover?.cursorRevision;
   const effectiveMode = activeHover?.viaSync ? TooltipDisplayMode.Multi : mode;
+  const cursorSnapshot = useMemo(() => {
+    if (
+      !hoverSource ||
+      hoverCursorIndex == null ||
+      hoverCursorRevision == null ||
+      effectiveMode === TooltipDisplayMode.Single
+    ) {
+      return null;
+    }
+    const snapshot = pinned
+      ? (pinnedSnapshotRef.current ?? null)
+      : getCompactRenderController(hoverSource).getCursorSnapshot(hoverCursorIndex);
+    if (snapshot && snapshot.revision < hoverCursorRevision) {
+      throw new Error('Compact tooltip cursor snapshot is older than the rendered hover state');
+    }
+    return snapshot;
+  }, [effectiveMode, hoverCursorIndex, hoverCursorRevision, hoverSource, pinned]);
   const filteredTooltipIndexes = useMemo(() => {
-    if (!hoverSource || hoverCursorIndex == null || effectiveMode === TooltipDisplayMode.Single) {
+    if (!cursorSnapshot || hoverCursorIndex == null) {
       return null;
     }
     const filtered = filterTooltipIndexes(
       baseIndexes,
-      hoverSource,
+      cursorSnapshot,
       plan.getStyle,
-      hoverCursorIndex,
       hideZeros,
-      filteredIndexesRef.current,
-      tooltipValueStorageRef.current
+      filteredIndexesRef.current
     );
     filteredIndexesRef.current = filtered.storage;
-    tooltipValueStorageRef.current = filtered.valueStorage;
     return filtered;
-  }, [baseIndexes, effectiveMode, hideZeros, hoverCursorIndex, hoverSource, plan.getStyle]);
+  }, [baseIndexes, cursorSnapshot, hideZeros, hoverCursorIndex, plan.getStyle]);
   const visibleIndexes = filteredTooltipIndexes ?? baseIndexes;
   const indexes = useMemo(() => {
     if (!filteredTooltipIndexes || sortOrder === SortOrder.None) {
@@ -129,7 +154,9 @@ export function CompactTooltipPlugin({
   }, [filteredTooltipIndexes, sortOrder, visibleIndexes]);
   const focusedValue =
     activeHover && activeHover.focusedSeries >= 0
-      ? activeHover.source.yAt(activeHover.focusedSeries, activeHover.focusedIndex)
+      ? cursorSnapshot
+        ? cursorSnapshot.valueAt(activeHover.focusedSeries)
+        : activeHover.source.yAt(activeHover.focusedSeries, activeHover.focusedIndex)
       : undefined;
   const focusedValueVisible =
     activeHover?.focusedSeries != null && activeHover.focusedSeries >= 0
@@ -141,12 +168,17 @@ export function CompactTooltipPlugin({
         ? 1
         : 0
       : indexes.length;
-  const virtualizer = useVirtualizer({
+  const isVirtualized = rowCount > VIRTUALIZE_THRESHOLD;
+  const virtualHeight = maxHeight ?? DEFAULT_VIRTUAL_HEIGHT;
+  const virtualWindow = useFixedVirtualWindow({
+    containerRef: scrollRef,
     count: rowCount,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 12,
+    itemSize: ROW_HEIGHT,
+    overscan: VIRTUAL_OVERSCAN,
+    enabled: isVirtualized && activeHover != null,
+    initialViewportSize: virtualHeight,
   });
+  const isTooltipVisible = activeHover != null && rowCount > 0;
 
   useLayoutEffect(() => {
     let initializedPlot: import('uplot') | undefined;
@@ -177,6 +209,11 @@ export function CompactTooltipPlugin({
     });
     config.addHook('init', (plot) => {
       initializedPlot = plot;
+      plotRef.current = plot;
+      if (pinnedRef.current) {
+        plot.root.setAttribute(COMPACT_TOOLTIP_PINNED_ATTRIBUTE, 'true');
+      }
+      plot.root.dispatchEvent(new CustomEvent(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, { bubbles: true }));
       clickHandler = (event: MouseEvent) => {
         if (event.target !== plot.over) {
           return;
@@ -189,6 +226,15 @@ export function CompactTooltipPlugin({
           return;
         }
         if (hoverRef.current != null) {
+          const multi = hoverRef.current.viaSync || modeRef.current !== TooltipDisplayMode.Single;
+          pinnedSnapshotRef.current = multi
+            ? copyCursorSnapshot(
+                getCompactRenderController(sourceRef.current).getCursorSnapshot(hoverRef.current.cursorIndex)
+              )
+            : undefined;
+          // uPlot's private lock is the same mechanism used by the legacy tooltip.
+          // @ts-ignore
+          plot.cursor._lock = true;
           pinnedRef.current = true;
           setPinned(true);
         }
@@ -210,6 +256,26 @@ export function CompactTooltipPlugin({
       };
       plot.over.addEventListener('click', clickHandler);
       plot.over.addEventListener('mousedown', mouseDownHandler, true);
+    });
+    config.addHook('destroy', (plot) => {
+      if (initializedPlot !== plot) {
+        return;
+      }
+      if (clickHandler) {
+        plot.over.removeEventListener('click', clickHandler);
+      }
+      if (mouseDownHandler) {
+        plot.over.removeEventListener('mousedown', mouseDownHandler, true);
+      }
+      // @ts-ignore
+      plot.cursor._lock = false;
+      plot.root.removeAttribute(COMPACT_TOOLTIP_PINNED_ATTRIBUTE);
+      plot.root.dispatchEvent(new CustomEvent(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, { bubbles: true }));
+      initializedPlot = undefined;
+      plotRef.current = undefined;
+      pinnedSnapshotRef.current = undefined;
+      shiftMouseUp?.();
+      clearTooltip();
     });
     config.addHook('setSelect', (plot) => {
       const event = plot.cursor.event;
@@ -251,6 +317,23 @@ export function CompactTooltipPlugin({
         }
         return;
       }
+      if (viaSync && !isCompactTooltipPlotVisible(plot)) {
+        if (hoverRef.current != null) {
+          clearHover();
+        }
+        return;
+      }
+      const controller = getCompactRenderController(sourceRef.current);
+      const snapshot =
+        viaSync || modeRef.current !== TooltipDisplayMode.Single
+          ? controller.getCursorSnapshot(index, plot)
+          : undefined;
+      if (viaSync && !snapshot) {
+        if (hoverRef.current != null) {
+          clearHover();
+        }
+        return;
+      }
 
       positionRef.current.left = plot.rect.left + plot.cursor.left;
       positionRef.current.top = plot.rect.top + (plot.cursor.top ?? 0);
@@ -261,6 +344,7 @@ export function CompactTooltipPlugin({
       const nextHover = {
         source: sourceRef.current,
         cursorIndex: index,
+        cursorRevision: !viaSync && modeRef.current === TooltipDisplayMode.Single ? 0 : snapshot!.revision,
         focusedIndex: cursor.dataIndex,
         focusedSeries: cursor.seriesIndex,
         viaSync,
@@ -269,6 +353,7 @@ export function CompactTooltipPlugin({
       if (
         previousHover?.source === nextHover.source &&
         previousHover.cursorIndex === nextHover.cursorIndex &&
+        previousHover.cursorRevision === nextHover.cursorRevision &&
         previousHover.focusedIndex === nextHover.focusedIndex &&
         previousHover.focusedSeries === nextHover.focusedSeries &&
         previousHover.viaSync === nextHover.viaSync
@@ -289,14 +374,41 @@ export function CompactTooltipPlugin({
       if (initializedPlot && mouseDownHandler) {
         initializedPlot.over.removeEventListener('mousedown', mouseDownHandler, true);
       }
+      if (initializedPlot) {
+        // @ts-ignore
+        initializedPlot.cursor._lock = false;
+        initializedPlot.root.removeAttribute(COMPACT_TOOLTIP_PINNED_ATTRIBUTE);
+        initializedPlot.root.dispatchEvent(new CustomEvent(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, { bubbles: true }));
+      }
+      plotRef.current = undefined;
       shiftMouseUp?.();
     };
   }, [clearHover, clearTooltip, config]);
 
   useLayoutEffect(() => {
+    const plot = plotRef.current;
+    if (!plot) {
+      return;
+    }
+    if (pinned) {
+      plot.root.setAttribute(COMPACT_TOOLTIP_PINNED_ATTRIBUTE, 'true');
+    } else {
+      // @ts-ignore
+      plot.cursor._lock = false;
+      pinnedSnapshotRef.current = undefined;
+      plot.root.removeAttribute(COMPACT_TOOLTIP_PINNED_ATTRIBUTE);
+    }
+    plot.root.dispatchEvent(new CustomEvent(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, { bubbles: true }));
+  }, [pinned]);
+
+  useLayoutEffect(() => {
+    clearTooltip();
+  }, [clearTooltip, config]);
+
+  useLayoutEffect(() => {
     sortedIndexesRef.current = undefined;
     filteredIndexesRef.current = undefined;
-    tooltipValueStorageRef.current = undefined;
+    pinnedSnapshotRef.current = undefined;
     clearTooltip();
   }, [clearTooltip, plan.source]);
 
@@ -338,7 +450,22 @@ export function CompactTooltipPlugin({
     };
   }, [clearTooltip, pinned]);
 
-  if (!activeHover) {
+  useLayoutEffect(() => {
+    const dismissIfOffscreen = () => {
+      const plot = plotRef.current;
+      if (!pinnedRef.current && hoverRef.current != null && plot && !isCompactTooltipPlotVisible(plot)) {
+        clearHover();
+      }
+    };
+    window.addEventListener('resize', dismissIfOffscreen);
+    window.addEventListener('scroll', dismissIfOffscreen, true);
+    return () => {
+      window.removeEventListener('resize', dismissIfOffscreen);
+      window.removeEventListener('scroll', dismissIfOffscreen, true);
+    };
+  }, [clearHover]);
+
+  if (!activeHover || rowCount === 0) {
     return null;
   }
 
@@ -346,16 +473,21 @@ export function CompactTooltipPlugin({
     effectiveMode === TooltipDisplayMode.Single ? activeHover.focusedSeries : indexes.at(rowIndex);
   const valueIndex = effectiveMode === TooltipDisplayMode.Single ? activeHover.focusedIndex : activeHover.cursorIndex;
   const timestamp = plan.source.xAt(valueIndex);
-  const isVirtualized = rowCount > VIRTUALIZE_THRESHOLD;
   const rowsStyle = isVirtualized
-    ? { height: maxHeight ?? DEFAULT_VIRTUAL_HEIGHT, overflowY: 'auto' as const }
+    ? { height: virtualHeight, maxHeight: virtualHeight, minHeight: 0, overflowY: 'auto' as const }
     : maxHeight != null
       ? { maxHeight, overflowY: 'auto' as const }
       : undefined;
   const renderRow = (rowIndex: number, virtualStart?: number) => {
     const seriesIndex = getSeriesIndex(rowIndex);
-    const value = resolveTooltipValue(plan.source, seriesIndex, valueIndex);
+    const displayName = plan.getDisplayName(seriesIndex);
+    const value =
+      effectiveMode === TooltipDisplayMode.Single
+        ? resolveTooltipValue(plan.source, seriesIndex, valueIndex)
+        : filteredTooltipIndexes?.valueAt(seriesIndex);
     const display = plan.getDisplay(seriesIndex)(value);
+    const formattedValue = formattedValueToString(display);
+    const accessibleText = `${displayName}: ${formattedValue}`;
     const planStyle = plan.getStyle(seriesIndex);
     const rendererStyle = plan.source.styles[plan.source.columns.styleIds[seriesIndex]];
     const colorMode = getFieldColorMode(planStyle.config.color?.mode);
@@ -363,18 +495,19 @@ export function CompactTooltipPlugin({
 
     return (
       <div
-        key={seriesIndex}
-        ref={virtualStart == null ? undefined : virtualizer.measureElement}
+        key={pinned ? seriesIndex : rowIndex}
         className={virtualStart == null ? undefined : styles.virtualRow}
         style={virtualStart == null ? undefined : { transform: `translateY(${virtualStart}px)` }}
         data-index={rowIndex}
+        title={accessibleText}
+        aria-label={accessibleText}
         role="listitem"
         aria-posinset={rowIndex + 1}
         aria-setsize={rowCount}
       >
         <VizTooltipRow
-          label={plan.getDisplayName(seriesIndex)}
-          value={formattedValueToString(display)}
+          label={displayName}
+          value={formattedValue}
           color={isByValue ? (display.color ?? rendererStyle.stroke) : rendererStyle.stroke}
           colorIndicator={isByValue ? ColorIndicator.value : ColorIndicator.series}
           colorPlacement={isByValue ? ColorPlacement.trailing : ColorPlacement.first}
@@ -403,8 +536,8 @@ export function CompactTooltipPlugin({
         <VizTooltipHeader item={{ label: '', value: dateTimeFormat(timestamp, { timeZone }) }} isPinned={pinned} />
         <div ref={scrollRef} className={styles.rows} style={rowsStyle} role="list">
           {isVirtualized ? (
-            <div className={styles.virtualContent} style={{ height: virtualizer.getTotalSize() }}>
-              {virtualizer.getVirtualItems().map((row) => renderRow(row.index, row.start))}
+            <div className={styles.virtualContent} style={{ height: virtualWindow.totalSize }}>
+              {virtualWindow.virtualItems.map((row) => renderRow(row.index, row.start))}
             </div>
           ) : (
             Array.from({ length: rowCount }, (_, rowIndex) => renderRow(rowIndex))
@@ -423,35 +556,98 @@ interface CompactTooltipIndexes {
 
 interface FilteredTooltipIndexes extends CompactTooltipIndexes {
   readonly storage: Uint32Array;
-  readonly valueStorage: Float64Array;
+  valueAt(seriesIndex: number): number | null | undefined;
 }
 
 interface SortedTooltipIndexes extends CompactTooltipIndexes {
   readonly storage: Uint32Array;
 }
 
+const enum TooltipValueState {
+  Undefined,
+  Null,
+  Number,
+}
+
+function copyCursorSnapshot(snapshot: CompactCursorSnapshot): CompactCursorSnapshot {
+  const cursorIndex = snapshot.cursorIndex;
+  const values = new Float64Array(snapshot.seriesCount);
+  const states = new Uint8Array(snapshot.seriesCount);
+  let dataIndexes: Int32Array | undefined;
+  for (let seriesIndex = 0; seriesIndex < snapshot.seriesCount; seriesIndex++) {
+    const value = snapshot.valueAt(seriesIndex);
+    const dataIndex = snapshot.dataIndexAt(seriesIndex);
+    if (dataIndex !== cursorIndex) {
+      if (!dataIndexes) {
+        dataIndexes = new Int32Array(snapshot.seriesCount);
+        dataIndexes.fill(cursorIndex);
+      }
+      dataIndexes[seriesIndex] = dataIndex;
+    }
+    if (value === undefined) {
+      states[seriesIndex] = TooltipValueState.Undefined;
+    } else if (value === null) {
+      states[seriesIndex] = TooltipValueState.Null;
+    } else {
+      states[seriesIndex] = TooltipValueState.Number;
+      values[seriesIndex] = value;
+    }
+  }
+  return {
+    source: snapshot.source,
+    seriesCount: snapshot.seriesCount,
+    cursorIndex,
+    timestamp: snapshot.timestamp,
+    revision: snapshot.revision,
+    valueAt: (seriesIndex) => {
+      switch (states[seriesIndex]) {
+        case TooltipValueState.Null:
+          return null;
+        case TooltipValueState.Number:
+          return values[seriesIndex];
+        default:
+          return undefined;
+      }
+    },
+    dataIndexAt: (seriesIndex) => dataIndexes?.[seriesIndex] ?? cursorIndex,
+  };
+}
+
+export function isCompactTooltipPlotVisible(plot: import('uplot')): boolean {
+  const width = window.innerWidth - VIEWPORT_SCROLLBAR_WIDTH;
+  const height = window.innerHeight - VIEWPORT_SCROLLBAR_WIDTH;
+  return plot.rect.bottom > 0 && plot.rect.top < height && plot.rect.right > 0 && plot.rect.left < width;
+}
+
 export function filterTooltipIndexes(
   indexes: CompactTooltipIndexes,
-  source: Pick<CompactNativeRenderPlan['source'], 'seriesCount' | 'yAt' | 'nearestPresent'>,
+  snapshot: Pick<CompactCursorSnapshot, 'seriesCount' | 'valueAt'>,
   getStyle: CompactNativeRenderPlan['getStyle'],
-  valueIndex: number,
   hideZeros: boolean,
-  target?: Uint32Array,
-  valueTarget?: Float64Array
+  target?: Uint32Array
 ): FilteredTooltipIndexes {
+  const startedAt = hoverStageProbe ? performance.now() : 0;
   const storage = target && target.length >= indexes.length ? target : new Uint32Array(indexes.length);
-  const valueStorage =
-    valueTarget && valueTarget.length >= source.seriesCount ? valueTarget : new Float64Array(source.seriesCount);
   let length = 0;
   for (let index = 0; index < indexes.length; index++) {
     const seriesIndex = indexes.at(index);
-    const value = resolveTooltipValue(source, seriesIndex, valueIndex);
-    valueStorage[seriesIndex] = value ?? Number.NaN;
+    const value = snapshot.valueAt(seriesIndex);
     if (shouldShowTooltipValue(value, getStyle(seriesIndex).config.noValue, hideZeros)) {
       storage[length++] = seriesIndex;
     }
   }
-  return { storage, valueStorage, length, at: (index) => storage[index] };
+  const filtered = {
+    storage,
+    length,
+    at: (index: number) => storage[index],
+    valueAt: (seriesIndex: number) => snapshot.valueAt(seriesIndex),
+  };
+  hoverStageProbe?.record('tooltipFilter', {
+    durationMs: performance.now() - startedAt,
+    seriesVisits: indexes.length,
+    visibleRows: length,
+  });
+  return filtered;
 }
 
 export function resolveTooltipValue(
@@ -497,6 +693,7 @@ export function sortTooltipIndexes(
   sortOrder: SortOrder,
   target?: Uint32Array
 ): SortedTooltipIndexes {
+  const startedAt = hoverStageProbe ? performance.now() : 0;
   const storage = target && target.length >= indexes.length ? target : new Uint32Array(indexes.length);
   const sorted = storage.length === indexes.length ? storage : storage.subarray(0, indexes.length);
   for (let index = 0; index < indexes.length; index++) {
@@ -504,16 +701,20 @@ export function sortTooltipIndexes(
   }
 
   if (sortOrder === SortOrder.None || indexes.length < 2) {
-    return { storage, length: sorted.length, at: (index) => sorted[index] };
+    const result = { storage, length: sorted.length, at: (index: number) => sorted[index] };
+    hoverStageProbe?.record('tooltipSort', {
+      durationMs: performance.now() - startedAt,
+      seriesVisits: sorted.length,
+    });
+    return result;
   }
 
   const direction = sortOrder === SortOrder.Descending ? -1 : 1;
-  const values = indexes.valueStorage;
   sorted.sort((leftSeries, rightSeries) => {
-    const left = values[leftSeries];
-    const right = values[rightSeries];
-    const leftMissing = Number.isNaN(left);
-    const rightMissing = Number.isNaN(right);
+    const left = indexes.valueAt(leftSeries);
+    const right = indexes.valueAt(rightSeries);
+    const leftMissing = left == null || Number.isNaN(left);
+    const rightMissing = right == null || Number.isNaN(right);
 
     if (leftMissing || rightMissing) {
       return leftMissing === rightMissing ? leftSeries - rightSeries : leftMissing ? 1 : -1;
@@ -527,7 +728,12 @@ export function sortTooltipIndexes(
     return leftSeries - rightSeries;
   });
 
-  return { storage, length: sorted.length, at: (index) => sorted[index] };
+  const result = { storage, length: sorted.length, at: (index: number) => sorted[index] };
+  hoverStageProbe?.record('tooltipSort', {
+    durationMs: performance.now() - startedAt,
+    seriesVisits: sorted.length,
+  });
+  return result;
 }
 
 export function getTooltipTransform(
@@ -567,20 +773,24 @@ const getStyles = (theme: import('@grafana/data').GrafanaTheme2, maxWidth?: numb
   rows: css({
     display: 'flex',
     flexDirection: 'column',
-    flex: 1,
+    flex: '0 1 auto',
     gap: 2,
+    minHeight: 0,
     borderTop: `1px solid ${theme.colors.border.weak}`,
     padding: theme.spacing(1),
   }),
   virtualContent: css({
+    flex: '0 0 auto',
     position: 'relative',
     width: '100%',
   }),
   virtualRow: css({
+    height: ROW_HEIGHT,
     left: 0,
-    minHeight: ROW_HEIGHT,
+    overflow: 'hidden',
     position: 'absolute',
     top: 0,
+    whiteSpace: 'nowrap',
     width: '100%',
   }),
 });

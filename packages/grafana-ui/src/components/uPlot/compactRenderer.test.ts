@@ -68,14 +68,17 @@ describe('CompactRenderController', () => {
     expect(controller.extent(plot, 'y', 0, 2)).toEqual([0, 3]);
   });
 
-  test('releases superseded response storage after transferring controller ownership', () => {
+  test('preserves query-owned response storage after transferring controller ownership', () => {
     const first = createSource([[1, 2]], [CompactSeriesFlag.Linear]);
+    const release = jest.fn(first.release);
+    first.release = release;
     const second = createSource([[3, 4]], [CompactSeriesFlag.Linear]);
     const controller = new CompactRenderController(first);
 
     controller.replaceSource(first, second);
     expect(getCompactRenderController(second)).toBe(controller);
-    expect(first.buffer.byteLength).toBe(0);
+    expect(release).not.toHaveBeenCalled();
+    expect(first.buffer.byteLength).toBeGreaterThan(0);
     expect(second.buffer.byteLength).toBeGreaterThan(0);
     expect(() => controller.replaceSource(first, second)).toThrow('ownership mismatch');
     expect(() => controller.replaceSource(second, createSource([[5, 6]], [CompactSeriesFlag.Stack], 1))).toThrow(
@@ -105,6 +108,19 @@ describe('CompactRenderController', () => {
     expect(second.buffer.byteLength).toBeGreaterThan(0);
     expect(getCompactRenderController(second)).toBe(controller);
     controller.destroy(second);
+  });
+
+  test('drops response ownership from snapshots when the renderer is destroyed', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Linear], 0, 'series', 'multi');
+    const controller = new CompactRenderController(source);
+    const snapshot = controller.getCursorSnapshot(0);
+
+    expect(snapshot.source).toBe(source);
+    controller.destroy(source);
+
+    expect(snapshot.source).not.toBe(source);
+    expect(snapshot.seriesCount).toBe(0);
+    expect(source.buffer.byteLength).toBeGreaterThan(0);
   });
 
   test.each(['focused visibility change', 'source replacement', 'destruction'] as const)(
@@ -211,6 +227,51 @@ describe('CompactRenderController', () => {
     expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
   });
 
+  test('matches legacy pointer proximity when a gap is between two samples', () => {
+    const source = createSource([[1, null, 3]], [CompactSeriesFlag.Linear], 0, 'series', 'multi');
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    plot.cursor.left = 1.25;
+    expect(controller.updateCursor(plot, 1, 3)).toMatchObject({ seriesIndex: 0, dataIndex: 2, top: 3 });
+    const rightSnapshot = controller.getCursorSnapshot(1);
+    expect(rightSnapshot.dataIndexAt(0)).toBe(2);
+    const rightRevision = rightSnapshot.revision;
+
+    plot.cursor.left = 0.75;
+    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+    const leftSnapshot = controller.getCursorSnapshot(1);
+    expect(leftSnapshot.dataIndexAt(0)).toBe(0);
+    expect(leftSnapshot.revision).toBeGreaterThan(rightRevision);
+
+    plot.cursor.left = 1.5;
+    plot.cursor.hover!.prox = 0.25;
+    expect(controller.updateCursor(plot, 1, 2)).toBeNull();
+  });
+
+  test('applies hover proximity when only one present sample borders a gap', () => {
+    const source = createSource([[1, null, null]], [CompactSeriesFlag.Linear], 0, 'series', 'multi');
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.valToPos = (value) => value * 100;
+    plot.posToVal = (value) => value / 100;
+    plot.cursor.left = 200;
+    plot.cursor.hover!.prox = 15;
+
+    expect(controller.updateCursor(plot, 2, 1)).toBeNull();
+    expect(controller.getCursorSnapshot(2).valueAt(0)).toBeNull();
+  });
+
+  test('applies explicit hover proximity to present samples', () => {
+    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear], 0, 'series', 'single');
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 1.5;
+    plot.cursor.hover!.prox = 0.25;
+
+    expect(controller.updateCursor(plot, 1, 2)).toBeNull();
+  });
+
   test('resolves the nearest series for a local multi-series tooltip cursor', () => {
     const source = createSource(
       [
@@ -230,6 +291,57 @@ describe('CompactRenderController', () => {
     expect(source.yAt).toHaveBeenCalledTimes(2);
   });
 
+  test('reuses resolved multi-tooltip values while the cursor remains on the same timestamp', () => {
+    const source = createSource(
+      [
+        [1, null, 3],
+        [10, 11, 12],
+      ],
+      [CompactSeriesFlag.Linear, CompactSeriesFlag.Linear],
+      0,
+      'series',
+      'multi'
+    );
+    source.yAt = jest.fn(source.yAt);
+    source.nearestPresent = jest.fn(source.nearestPresent);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    controller.updateCursor(plot, 1, 10);
+    const firstSnapshot = controller.getCursorSnapshot(1);
+    const firstRevision = firstSnapshot.revision;
+    expect(firstSnapshot.valueAt(0)).toBe(1);
+    expect(firstSnapshot.dataIndexAt(0)).toBe(0);
+    expect(firstSnapshot.valueAt(1)).toBe(11);
+    expect(source.yAt).toHaveBeenCalledTimes(3);
+    expect(source.nearestPresent).toHaveBeenCalledTimes(2);
+
+    controller.updateCursor(plot, 1, 2);
+    expect(controller.getCursorSnapshot(1)).toBe(firstSnapshot);
+    expect(firstSnapshot.revision).toBe(firstRevision);
+    expect(source.yAt).toHaveBeenCalledTimes(3);
+    expect(source.nearestPresent).toHaveBeenCalledTimes(2);
+
+    controller.updateCursor(plot, 2, 2);
+    expect(source.yAt).toHaveBeenCalledTimes(5);
+  });
+
+  test('preserves null, undefined, and NaN cursor values', () => {
+    const source = createSource(
+      [[null], [undefined], [Number.NaN]],
+      [CompactSeriesFlag.Linear, CompactSeriesFlag.Linear, CompactSeriesFlag.Linear],
+      0,
+      'series',
+      'multi'
+    );
+    source.nearestPresent = () => null;
+    const snapshot = new CompactRenderController(source).getCursorSnapshot(0);
+
+    expect(snapshot.valueAt(0)).toBeNull();
+    expect(snapshot.valueAt(1)).toBeUndefined();
+    expect(snapshot.valueAt(2)).toBeNaN();
+  });
+
   test('does not scan series for a synchronized cursor update', () => {
     const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear]);
     source.yAt = jest.fn(source.yAt);
@@ -239,11 +351,39 @@ describe('CompactRenderController', () => {
 
     expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
     expect(source.yAt).not.toHaveBeenCalled();
+
+    expect(controller.getCursorSnapshot(1).valueAt(0)).toBe(2);
+    expect(source.yAt).toHaveBeenCalledTimes(1);
+  });
+
+  test('applies plot-aware gap proximity when a synchronized tooltip resolves its snapshot', () => {
+    const source = createSource([[1, null, 3]], [CompactSeriesFlag.Linear], 0, 'series', 'single');
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    Reflect.set(plot, 'cursor', { left: 100, top: 1, event: null, hover: { prox: 15 } });
+
+    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
+    expect(controller.getCursorSnapshot(1, plot).valueAt(0)).toBeNull();
+
+    Reflect.set(plot, 'cursor', { left: 1.9, top: 1, event: null, hover: { prox: 15 } });
+    const snapshot = controller.getCursorSnapshot(1, plot);
+    expect(snapshot.valueAt(0)).toBe(3);
+    expect(snapshot.dataIndexAt(0)).toBe(2);
   });
 
   test('draws and clears a focused-series overlay without rebuilding the complete plot', () => {
-    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine]);
-    source.focusOverlayColor = 'rgba(0, 0, 0, 0.5)';
+    const source = createSource(
+      [
+        [1, 2, 3],
+        [3, 2, 1],
+      ],
+      [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine, CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine],
+      0,
+      'series',
+      'single',
+      undefined,
+      'rgba(0, 0, 0, 0.5)'
+    );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
     const parent = document.createElement('div');
@@ -258,7 +398,9 @@ describe('CompactRenderController', () => {
       fillRect: jest.fn(),
       stroke: jest.fn(),
     } as unknown as jest.Mocked<CanvasRenderingContext2D>;
-    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function () {
+    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+      this: HTMLCanvasElement
+    ) {
       Object.defineProperty(overlayContext, 'canvas', { value: this, configurable: true });
       return overlayContext;
     });
@@ -271,10 +413,86 @@ describe('CompactRenderController', () => {
       expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
       expect(overlayContext.fillRect).toHaveBeenCalledWith(0, 0, 100, 100);
 
+      expect(controller.setSeries(1, { show: false })).toBe(true);
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+      expect(controller.setSeries(1, { focus: true })).toBe(false);
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+
       expect(controller.setSeries(null, { focus: true })).toBe(false);
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
       controller.destroy(source);
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  test('does not create a focused-series overlay when only one series is visible', () => {
+    const source = createSource(
+      [[1, 2, 3]],
+      [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine],
+      0,
+      'series',
+      'single',
+      undefined,
+      'rgba(0, 0, 0, 0.5)'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const parent = document.createElement('div');
+    const mainCanvas = document.createElement('canvas');
+    const over = document.createElement('div');
+    parent.append(mainCanvas, over);
+    Object.defineProperty(context, 'canvas', { value: mainCanvas });
+    Reflect.set(plot, 'over', over);
+
+    controller.draw(plot, 0, 2);
+    expect(controller.setSeries(0, { focus: true })).toBe(false);
+    expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+  });
+
+  test('restores requested focus when a second series becomes visible', () => {
+    const source = createSource(
+      [
+        [1, 2, 3],
+        [3, 2, 1],
+      ],
+      [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine, CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine],
+      0,
+      'series',
+      'single',
+      undefined,
+      'rgba(0, 0, 0, 0.5)'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const parent = document.createElement('div');
+    const mainCanvas = document.createElement('canvas');
+    const over = document.createElement('div');
+    parent.append(mainCanvas, over);
+    Object.defineProperty(context, 'canvas', { value: mainCanvas });
+    Reflect.set(plot, 'over', over);
+    const overlayContext = {
+      ...context,
+      clearRect: jest.fn(),
+      fillRect: jest.fn(),
+      stroke: jest.fn(),
+    } as unknown as jest.Mocked<CanvasRenderingContext2D>;
+    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+      this: HTMLCanvasElement
+    ) {
+      Object.defineProperty(overlayContext, 'canvas', { value: this, configurable: true });
+      return overlayContext;
+    });
+
+    try {
+      controller.draw(plot, 0, 2);
+      controller.setSeries(1, { show: false });
+      controller.setSeries(0, { focus: true });
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+
+      controller.setSeries(1, { show: true });
+      expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
     } finally {
       getContext.mockRestore();
     }
@@ -657,7 +875,7 @@ function createVirtualSource(seriesCount: number, pointCount: number): TestSourc
     stackGroupCount: 0,
     cursorMode: 'single',
     visibilityState: { overrides: new Map() },
-    release: () => structuredClone(samples.buffer, { transfer: [samples.buffer] }),
+    release: () => undefined,
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
     yAt: (_series, index) => index,
@@ -674,7 +892,8 @@ function createSource(
   stackGroupCount = 0,
   identity = 'series',
   cursorMode: CompactRenderSource['cursorMode'] = 'single',
-  style: CompactStyleRecord = { stroke: '#f00', fill: '#fcc', lineWidth: 1, pointSize: 4 }
+  style: CompactStyleRecord = { stroke: '#f00', fill: '#fcc', lineWidth: 1, pointSize: 4 },
+  focusOverlayColor?: string
 ): TestSource {
   const pointCount = values[0].length;
   const samples = new Float64Array(values.length * pointCount);
@@ -717,10 +936,11 @@ function createSource(
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount,
     cursorMode,
+    focusOverlayColor,
     seriesIdentityAt: (seriesIndex) => `${identity}:${seriesIndex}`,
     seriesIdentityHashAt: (seriesIndex) => seriesIndex,
     visibilityState: { overrides: new Map() },
-    release: () => structuredClone(samples.buffer, { transfer: [samples.buffer] }),
+    release: () => undefined,
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
     yAt: valueAt,
@@ -796,6 +1016,12 @@ function createPlot(): {
     scales: {
       x: { min: 0, max: 4, distr: 1, dir: 1, ori: 0 },
       y: { min: 0, max: 4, distr: 1, dir: 1, ori: 1 },
+    },
+    cursor: {
+      left: 1,
+      top: 1,
+      event: {},
+      hover: { prox: 15 },
     },
     valToPos: (value: number) => value,
     posToVal: (value: number) => value,

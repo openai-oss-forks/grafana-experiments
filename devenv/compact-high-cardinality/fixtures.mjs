@@ -40,9 +40,15 @@ const SCENARIOS = {
   },
 };
 
-export async function createDashboardFixture({ scenario: scenarioName, dashboardJson, panelId, pointCount }) {
+export async function createDashboardFixture({
+  scenario: scenarioName,
+  dashboardJson,
+  panelId,
+  pointCount,
+  preservePanelGrid = false,
+}) {
   return dashboardJson
-    ? await createDashboardFromExport(dashboardJson, panelId, pointCount)
+    ? await createDashboardFromExport(dashboardJson, panelId, pointCount, preservePanelGrid)
     : createBuiltInDashboard(scenarioName, pointCount);
 }
 
@@ -87,7 +93,7 @@ function createBuiltInDashboard(scenarioName, pointCount) {
   };
 }
 
-async function createDashboardFromExport(filePath, panelId, pointCount) {
+async function createDashboardFromExport(filePath, panelId, pointCount, preservePanelGrid) {
   const exported = JSON.parse(await fs.readFile(filePath, 'utf8'));
   const sourceDashboard = exported.dashboard ?? exported;
   const panels = flattenPanels(sourceDashboard.panels ?? []);
@@ -105,7 +111,8 @@ async function createDashboardFromExport(filePath, panelId, pointCount) {
   }
   const panel = structuredClone(sourcePanel);
   panel.id = 1;
-  panel.gridPos = { h: 18, w: 24, x: 0, y: 0 };
+  panel.gridPos =
+    preservePanelGrid && sourcePanel.gridPos ? { ...sourcePanel.gridPos, x: 0, y: 0 } : { h: 18, w: 24, x: 0, y: 0 };
   panel.datasource = rewriteDatasource(panel.datasource);
   panel.targets = (panel.targets ?? []).map((query) => ({
     ...query,

@@ -18,7 +18,8 @@ if (!dashboardJson || process.argv.includes('--help')) {
   console.log(`Usage: DASHBOARD_JSON=/path/to/dashboard.json node devenv/compact-high-cardinality/full-dashboard-run.mjs
 
 Environment:
-  GRAFANA_URL             Local Grafana URL (default: http://127.0.0.1:3000)
+  GRAFANA_URL             Compact Grafana URL (default: http://127.0.0.1:3000)
+  LEGACY_GRAFANA_URL      Unmodified Grafana URL required by RESPONSE_FORMAT=legacy-json
   RESPONSE_FORMAT         auto or legacy-json (default: auto)
   SERIES_PER_QUERY        Generated series for each query (default: 20)
   POINT_COUNT             Samples generated for each series (default: 120)
@@ -26,6 +27,7 @@ Environment:
   SCROLL_SETTLE_MS        Delay after layout before checking query idleness (default: 250)
   MAX_SCROLL_STEPS        Stop after this many steps; 0 reaches the bottom (default: 0)
   SAMPLE_EVERY            Retain a full sample every N steps (default: 5)
+  SCROLL_CYCLES           Full refresh-and-scroll cycles in one browser session (default: 1)
   GC_MODE                 none or retained (default: none)
   OFFSCREEN_SETTLE_MS     Wait at the bottom before the final sample (default: 0)
   HEAP_SNAPSHOT           Set to 1 to capture the active dashboard heap
@@ -35,17 +37,23 @@ Environment:
   process.exit(dashboardJson ? 0 : 1);
 }
 
+const responseFormat = readResponseFormat();
+const legacyGrafanaUrl = process.env.LEGACY_GRAFANA_URL;
+if (responseFormat === 'legacy-json' && !legacyGrafanaUrl) {
+  throw new Error('LEGACY_GRAFANA_URL is required for a true legacy JSON dashboard run');
+}
 const options = {
-  baseUrl: process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000',
+  baseUrl: responseFormat === 'legacy-json' ? legacyGrafanaUrl : (process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000'),
   username: process.env.GRAFANA_USER ?? 'admin',
   password: process.env.GRAFANA_PASSWORD ?? 'admin',
-  responseFormat: readResponseFormat(),
+  responseFormat,
   seriesPerQuery: readPositiveInteger('SERIES_PER_QUERY', 20),
   pointCount: readPositiveInteger('POINT_COUNT', 120),
   scrollStepViewports: readPositiveNumber('SCROLL_STEP_VIEWPORTS', 0.8),
   scrollSettleMs: readNonNegativeInteger('SCROLL_SETTLE_MS', 250),
   maxScrollSteps: readNonNegativeInteger('MAX_SCROLL_STEPS', 0),
   sampleEvery: readPositiveInteger('SAMPLE_EVERY', 5),
+  scrollCycles: readPositiveInteger('SCROLL_CYCLES', 1),
   gcMode: readGcMode(),
   offscreenSettleMs: readNonNegativeInteger('OFFSCREEN_SETTLE_MS', 0),
   heapSnapshot: process.env.HEAP_SNAPSHOT === '1',
@@ -66,7 +74,6 @@ const browser = await chromium.launch({
 });
 const context = await browser.newContext({ viewport: { width: 1800, height: 1100 } });
 await installCanvasActivityProbe(context);
-await installResponseMode(context);
 const page = await context.newPage();
 const cdp = await context.newCDPSession(page);
 await cdp.send('Performance.enable');
@@ -164,7 +171,6 @@ await context.route('**/api/ds/query**', async (route) => {
     lastRequestActivityAt = performance.now();
   }
 });
-
 const report = {
   config: { ...options, password: '<redacted>' },
   fixture: fixture.source,
@@ -193,11 +199,28 @@ try {
   report.interactions = {
     initial: await verifyVisibleChartInteraction(page),
   };
+  report.scrollCycles = [];
 
-  const scroll = await scrollDashboard(page, cdp, report);
-  report.scroll = scroll;
-  if (scroll.reachedBottom) {
-    report.interactions.bottom = await verifyVisibleChartInteraction(page, false);
+  for (let cycle = 1; cycle <= options.scrollCycles; cycle++) {
+    if (cycle > 1) {
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
+      await waitForQueryIdle(120_000);
+      await waitForCanvasIdle(page, 120_000);
+      await waitForVisibleCharts(page);
+      report.samples.push(
+        await collectBrowserSample(cdp, page, `cycle-${cycle}-refresh`, options.gcMode === 'retained')
+      );
+    }
+
+    const scroll = await scrollDashboard(page, cdp, report, cycle);
+    report.scrollCycles.push(scroll);
+    report.scroll ??= scroll;
+    if (scroll.reachedBottom) {
+      const bottomInteraction = await verifyVisibleChartInteraction(page, false);
+      report.interactions[`cycle-${cycle}-bottom`] = bottomInteraction;
+      report.interactions.bottom = bottomInteraction;
+    }
   }
 
   if (options.offscreenSettleMs > 0) {
@@ -233,6 +256,9 @@ try {
     throw new Error(`${failedRequests.length} local query responses failed`);
   }
   report.summary = summarize(report);
+  if (options.responseFormat === 'auto' && report.summary.compactRequestCount === 0) {
+    throw new Error('Compact dashboard run did not issue any compact-v1 requests');
+  }
   if (options.heapSnapshot) {
     report.heapSnapshot = path.join(options.outputDir, 'dashboard.heapsnapshot');
     await takeHeapSnapshot(cdp, report.heapSnapshot);
@@ -256,7 +282,7 @@ try {
   await browser.close();
 }
 
-async function scrollDashboard(page, cdp, report) {
+async function scrollDashboard(page, cdp, report, cycle) {
   const dimensions = await page.evaluate(() => ({
     viewportHeight: window.innerHeight,
     documentHeight: document.documentElement.scrollHeight,
@@ -284,7 +310,8 @@ async function scrollDashboard(page, cdp, report) {
     await waitForQueryIdle(120_000);
     await waitForCanvasIdle(page, 120_000);
     await assertNoVisiblePanelErrors(page);
-    const light = await collectBrowserSample(cdp, page, `scroll-${index + 1}`, false);
+    const label = cycle === 1 ? `scroll-${index + 1}` : `cycle-${cycle}-scroll-${index + 1}`;
+    const light = await collectBrowserSample(cdp, page, label, false);
     if (Math.abs(light.dom.scrollY - positions[index]) > 2) {
       throw new Error(`Dashboard stopped at scroll position ${light.dom.scrollY}, expected ${positions[index]}`);
     }
@@ -303,7 +330,7 @@ async function scrollDashboard(page, cdp, report) {
         await collectBrowserSample(
           cdp,
           page,
-          `scroll-${index + 1}${options.gcMode === 'retained' ? '-gc' : ''}`,
+          `${label}${options.gcMode === 'retained' ? '-gc' : ''}`,
           options.gcMode === 'retained'
         )
       );
@@ -453,11 +480,13 @@ function summarize(report) {
   const samples = report.samples;
   const measurements = [
     ...samples,
-    ...report.scroll.steps.map((step) => ({
-      usedHeapMB: step.usedHeapMB,
-      backingStorageMB: step.backingStorageMB,
-      dom: step.dom,
-    })),
+    ...report.scrollCycles
+      .flatMap((scroll) => scroll.steps)
+      .map((step) => ({
+        usedHeapMB: step.usedHeapMB,
+        backingStorageMB: step.backingStorageMB,
+        dom: step.dom,
+      })),
   ];
   const retainedSamples = samples.filter((sample) => sample.collectedAfterGC);
   return {
@@ -486,8 +515,8 @@ function summarize(report) {
         to: request.to,
       }))
       .sort((left, right) => String(left.panelId).localeCompare(String(right.panelId))),
-    maxScrollStepMs: Math.max(...report.scroll.steps.map((step) => step.durationMs)),
-    medianScrollStepMs: median(report.scroll.steps.map((step) => step.durationMs)),
+    maxScrollStepMs: Math.max(...report.scrollCycles.flatMap((scroll) => scroll.steps.map((step) => step.durationMs))),
+    medianScrollStepMs: median(report.scrollCycles.flatMap((scroll) => scroll.steps.map((step) => step.durationMs))),
   };
 }
 
@@ -502,16 +531,6 @@ async function installCanvasActivityProbe(context) {
         return original.apply(this, args);
       };
     }
-  });
-}
-
-async function installResponseMode(context) {
-  if (options.responseFormat !== 'legacy-json') {
-    return;
-  }
-
-  await context.addInitScript(() => {
-    window.localStorage.setItem('grafana.featureToggles', 'queryServiceRewrite=1');
   });
 }
 

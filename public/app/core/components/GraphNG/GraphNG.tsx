@@ -144,7 +144,7 @@ const defaultMatchers = {
  */
 export function GraphNG(props: GraphNGProps) {
   return (
-    <GraphNGRendererGate suspendWhenInactive>
+    <GraphNGRendererGate suspendWhenInactive={props.compactSeries != null}>
       <GraphNGRenderer {...props} />
     </GraphNGRendererGate>
   );

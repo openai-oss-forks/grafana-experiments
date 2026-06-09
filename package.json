@@ -9,6 +9,7 @@
     "check-frontend-dev": "./scripts/check-frontend-dev.sh",
     "benchmark:compact": "node devenv/compact-high-cardinality/suite.mjs",
     "benchmark:compact:dashboard": "node devenv/compact-high-cardinality/dashboard-suite.mjs",
+    "benchmark:compact:hover": "node devenv/compact-high-cardinality/hover-benchmark.mjs",
     "benchmark:compact:parity": "node devenv/compact-high-cardinality/parity-suite.mjs",
     "benchmark:compact:uplot": "node devenv/compact-high-cardinality/uplot-upstream-benchmark.mjs",
     "build": "NODE_ENV=production nx exec --verbose -- webpack --config scripts/webpack/webpack.prod.js",

@@ -6,7 +6,9 @@ import { GraphNGRenderVisibilityProvider } from 'app/core/components/GraphNG/Gra
 export const OFFSCREEN_GRAPHNG_SUSPEND_DELAY = 60_000;
 export const FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY = 1_000;
 export const MIN_GRAPHNG_PREWARM_MARGIN = 800;
-export const GRAPHNG_RETENTION_MARGIN_VIEWPORTS = 4;
+export const GRAPHNG_RETENTION_MARGIN_VIEWPORTS = 2;
+const COMPACT_TOOLTIP_PIN_CHANGE_EVENT = 'grafana-compact-tooltip-pin-change';
+const COMPACT_TOOLTIP_PINNED_SELECTOR = '[data-compact-tooltip-pinned="true"]';
 
 const graphNGVisibilityCallbacks = new Map<Element, (isIntersecting: boolean) => void>();
 const graphNGRetentionCallbacks = new Map<Element, (isIntersecting: boolean) => void>();
@@ -66,7 +68,6 @@ interface DashboardPanelRenderSuspensionProps {
   children: ReactNode;
   className?: string;
   suspendGraphNGOffscreen?: boolean;
-  onRenderMarginChange?: (isWithinRenderMargin: boolean) => void;
 }
 
 interface GraphNGRenderSuspensionState {
@@ -78,18 +79,16 @@ interface GraphNGRenderSuspensionState {
 
 function useGraphNGRenderSuspension(
   suspendGraphNGOffscreen: boolean,
-  onRenderMarginChange: ((isWithinRenderMargin: boolean) => void) | undefined,
   ref: ForwardedRef<HTMLDivElement>
 ): GraphNGRenderSuspensionState {
   const [graphNGRendererActive, setGraphNGRendererActive] = useState(true);
   const suspendTimer = useRef<number>();
+  const blurTimer = useRef<number>();
   const isWithinRenderMargin = useRef(true);
   const suspensionEnabled = useRef(suspendGraphNGOffscreen);
   const wrapper = useRef<HTMLDivElement | null>(null);
-  const onRenderMarginChangeRef = useRef(onRenderMarginChange);
   const isWithinRetentionMargin = useRef(true);
   const rendererActive = useRef(true);
-  onRenderMarginChangeRef.current = onRenderMarginChange;
 
   const clearSuspendTimer = useCallback(() => {
     if (suspendTimer.current !== undefined) {
@@ -98,7 +97,20 @@ function useGraphNGRenderSuspension(
     }
   }, []);
 
-  useEffect(() => clearSuspendTimer, [clearSuspendTimer]);
+  const clearBlurTimer = useCallback(() => {
+    if (blurTimer.current !== undefined) {
+      window.clearTimeout(blurTimer.current);
+      blurTimer.current = undefined;
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      clearSuspendTimer();
+      clearBlurTimer();
+    },
+    [clearBlurTimer, clearSuspendTimer]
+  );
 
   const setRendererActive = useCallback((active: boolean) => {
     rendererActive.current = active;
@@ -121,7 +133,10 @@ function useGraphNGRenderSuspension(
       : FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY;
     suspendTimer.current = window.setTimeout(() => {
       suspendTimer.current = undefined;
-      if (wrapper.current?.contains(document.activeElement)) {
+      if (
+        wrapper.current?.contains(document.activeElement) ||
+        wrapper.current?.querySelector(COMPACT_TOOLTIP_PINNED_SELECTOR)
+      ) {
         return;
       }
       setRendererActive(false);
@@ -155,7 +170,6 @@ function useGraphNGRenderSuspension(
       element,
       (isIntersecting) => {
         isWithinRenderMargin.current = isIntersecting;
-        onRenderMarginChangeRef.current?.(isIntersecting);
         updateRendererActivity();
       },
       (isIntersecting) => {
@@ -165,29 +179,36 @@ function useGraphNGRenderSuspension(
     );
   }, [updateRendererActivity]);
 
-  const onBlurCapture = useCallback(() => {
-    window.setTimeout(() => {
-      if (!isWithinRenderMargin.current) {
-        onRenderMarginChangeRef.current?.(false);
-      }
-      updateRendererActivity();
-    }, 0);
+  useEffect(() => {
+    const element = wrapper.current;
+    if (!element) {
+      return;
+    }
+    element.addEventListener(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, updateRendererActivity);
+    return () => element.removeEventListener(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, updateRendererActivity);
   }, [updateRendererActivity]);
 
+  const onBlurCapture = useCallback(() => {
+    clearBlurTimer();
+    blurTimer.current = window.setTimeout(() => {
+      blurTimer.current = undefined;
+      updateRendererActivity();
+    }, 0);
+  }, [clearBlurTimer, updateRendererActivity]);
+
   const onFocusCapture = useCallback(() => {
+    clearBlurTimer();
     clearSuspendTimer();
-    onRenderMarginChangeRef.current?.(true);
     setRendererActive(true);
-  }, [clearSuspendTimer, setRendererActive]);
+  }, [clearBlurTimer, clearSuspendTimer, setRendererActive]);
 
   return { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture };
 }
 
 export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPanelRenderSuspensionProps>(
-  ({ children, className, suspendGraphNGOffscreen = true, onRenderMarginChange }, ref) => {
+  ({ children, className, suspendGraphNGOffscreen = true }, ref) => {
     const { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture } = useGraphNGRenderSuspension(
       suspendGraphNGOffscreen,
-      onRenderMarginChange,
       ref
     );
 
@@ -208,10 +229,9 @@ export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPane
 DashboardPanelLazyLoader.displayName = 'DashboardPanelLazyLoader';
 
 export const DashboardPanelRenderSuspender = forwardRef<HTMLDivElement, DashboardPanelRenderSuspensionProps>(
-  ({ children, className, suspendGraphNGOffscreen = true, onRenderMarginChange }, ref) => {
+  ({ children, className, suspendGraphNGOffscreen = true }, ref) => {
     const { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture } = useGraphNGRenderSuspension(
       suspendGraphNGOffscreen,
-      onRenderMarginChange,
       ref
     );
 

@@ -140,13 +140,7 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
   }
 
   release(): void {
-    if (this.data.buffer.byteLength === 0) {
-      return;
-    }
-
-    structuredClone(this.data.buffer, { transfer: [this.data.buffer] });
-    this.rankCheckpoints.clear();
-    this.constantIndexes.clear();
+    // Query state owns the response buffer and may share this source across panels.
   }
 
   xAt(index: number): number {

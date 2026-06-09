@@ -1,8 +1,10 @@
 import uPlot from 'uplot';
 
-import { createTheme, type DataQuery, FieldConfigOptionsRegistry } from '@grafana/data';
+import { createTheme, dateTime, type DataQuery, FieldConfigOptionsRegistry } from '@grafana/data';
 import { toDataQueryResponse } from '@grafana/runtime';
 import { installCompactRenderer, UPlotConfigBuilder } from '@grafana/ui/internal';
+
+import { prepareCompactPlotConfigBuilder } from '../TimeSeries/utils';
 
 import { createCompactNativeRenderPlan } from './compactNativePlan';
 
@@ -14,6 +16,7 @@ const COMPACT_FIXTURE =
 describe('compact binary rendering pipeline', () => {
   test('keeps the response buffer as sample storage through uPlot replacement and destruction', async () => {
     const firstBuffer = decodeFixture();
+    const firstBufferBytes = firstBuffer.byteLength;
     const firstPlan = createPlan(firstBuffer);
     const builder = new UPlotConfigBuilder('utc');
     const controller = installCompactRenderer(builder, firstPlan.source);
@@ -44,13 +47,40 @@ describe('compact binary rendering pipeline', () => {
     await flushCommit();
 
     expect(secondPlan.source.buffer).toBe(secondBuffer);
-    expect(firstBuffer.byteLength).toBe(0);
+    expect(firstBuffer.byteLength).toBe(firstBufferBytes);
+    expect(firstPlan.source.yAt(0, 2)).toBe(4);
     expect(plot.compactSource).toBe(secondPlan.source);
     expect(plot.compactSource?.buffer).not.toBe(firstBuffer);
 
     plot.destroy();
     expect(plot.compactSource).toBeNull();
+    expect(secondBuffer.byteLength).toBe(firstBufferBytes);
     expect(target.contains(plot.root)).toBe(false);
+  });
+
+  test('reads default gap proximity from the active compact source after replacement', () => {
+    const plan = createPlan(decodeFixture());
+    const builder = prepareCompactPlotConfigBuilder({
+      plan,
+      theme: createTheme(),
+      timeZones: ['utc'],
+      getTimeRange: () => ({
+        from: dateTime(1000),
+        to: dateTime(3000),
+        raw: { from: dateTime(1000), to: dateTime(3000) },
+      }),
+    });
+    const proximity = builder.getConfig().cursor?.hover?.prox;
+    if (typeof proximity !== 'function') {
+      throw new Error('Expected compact default cursor proximity callback');
+    }
+    const plot = {
+      compactSource: { yAt: jest.fn(() => null) },
+    } as unknown as uPlot;
+
+    expect(proximity(plot, 1, 1, 2000)).toBe(15);
+    Reflect.set(plot, 'compactSource', { yAt: jest.fn(() => 4) });
+    expect(proximity(plot, 1, 1, 2000)).toBeNull();
   });
 });
 

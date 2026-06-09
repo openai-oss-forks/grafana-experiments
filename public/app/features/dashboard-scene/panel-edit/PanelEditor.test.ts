@@ -168,6 +168,106 @@ describe('PanelEditor', () => {
 
       expect(runQueries).toHaveBeenCalled();
       expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
+
+      deactivate();
+      deactivate = undefined;
+
+      expect(panel.state.$data).toBe(queryRunner);
+    });
+
+    it('does not wrap legacy dashboard data when entering panel edit', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+
+      expect(panel.state.$data).toBe(queryRunner);
+    });
+
+    it('keeps transformations added to the compact edit wrapper', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries: {
+            kind: 'compact-response-view',
+            format: COMPACT_TIME_SERIES_FORMAT,
+            buffer: new ArrayBuffer(0),
+            metadata: {
+              getLabel: () => undefined,
+              forEachLabel: () => undefined,
+              materializeLabels: () => undefined,
+            },
+            decodeStats: {
+              responseBytes: 0,
+              axisCount: 0,
+              resultCount: 0,
+              stringCount: 0,
+              stringBytes: 0,
+              seriesCount: 0,
+            },
+            axes: [],
+            series: [],
+          },
+        },
+      });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+      const transformer = panel.state.$data;
+      expect(transformer).toBeInstanceOf(SceneDataTransformer);
+      (transformer as SceneDataTransformer).setState({
+        transformations: [{ id: 'organize', options: {} }],
+      });
+
+      deactivate();
+      deactivate = undefined;
+
+      expect(panel.state.$data).toBe(transformer);
+    });
+
+    it('does not unwrap an existing data transformer when leaving panel edit', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const transformer = new SceneDataTransformer({ $data: queryRunner, transformations: [] });
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: transformer });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+      deactivate();
+      deactivate = undefined;
+
+      expect(panel.state.$data).toBe(transformer);
     });
 
     it('should clear edit pane selection', () => {

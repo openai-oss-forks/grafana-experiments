@@ -90,6 +90,71 @@ export interface CompactVisibilityState {
   readonly overrides: Map<number, CompactVisibilityOverride[]>;
 }
 
+const releasedBuffer = new ArrayBuffer(0);
+const releasedSource: CompactRenderSource = {
+  kind: 'compact-v1',
+  buffer: releasedBuffer,
+  pointCount: 0,
+  seriesCount: 0,
+  columns: {
+    styleIds: new Uint8Array(0),
+    scaleIds: new Uint8Array(0),
+    flags: new Uint8Array(0),
+    visibility: new Uint8Array(0),
+  },
+  styles: [],
+  scales: [],
+  stackGroupCount: 0,
+  cursorMode: 'none',
+  visibilityState: { overrides: new Map() },
+  release: () => {},
+  xAt: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
+  closestXIndex: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
+  yAt: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
+  scan: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
+  prepareBufferScan: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
+  extent: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
+  nearestPresent: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
+};
+
+export interface CompactCursorSnapshot {
+  readonly source: CompactRenderSource;
+  readonly seriesCount: number;
+  readonly cursorIndex: number;
+  readonly timestamp: number;
+  readonly revision: number;
+  valueAt(seriesIndex: number): CompactPlotValue;
+  dataIndexAt(seriesIndex: number): number;
+}
+
+interface MutableCompactCursorSnapshot extends CompactCursorSnapshot {
+  source: CompactRenderSource;
+  seriesCount: number;
+  cursorIndex: number;
+  timestamp: number;
+  revision: number;
+}
+
+const enum CursorValueState {
+  Undefined,
+  Null,
+  Number,
+}
+
 const enum ScanOperation {
   None,
   Area,
@@ -106,6 +171,28 @@ const enum ScanOperation {
 const controllers = new WeakMap<CompactRenderSource, CompactRenderController>();
 const PROGRESSIVE_SAMPLE_THRESHOLD = 1_000_000;
 const PROGRESSIVE_POINT_BUDGET = 32_000;
+const hoverStageProbe = getCompactHoverStageProbe();
+
+export function getCompactHoverStageProbe():
+  | { record(stage: string, sample: Record<string, number | boolean>): void }
+  | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+  const candidate: unknown = Reflect.get(window, '__compactHoverStageProbe');
+  if (
+    candidate == null ||
+    typeof candidate !== 'object' ||
+    !('record' in candidate) ||
+    typeof candidate.record !== 'function'
+  ) {
+    return undefined;
+  }
+  const record = candidate.record;
+  return {
+    record: (stage, sample) => Reflect.apply(record, candidate, [stage, sample]),
+  };
+}
 
 export function isCompactRenderSource(source: CompactPlotSource): source is CompactRenderSource {
   return 'columns' in source && 'styles' in source && 'scales' in source;
@@ -161,6 +248,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private bufferView: DataView;
   private bufferBytes: Uint8Array;
   private focusedSeries = -1;
+  private requestedFocusedSeries = -1;
+  private visibleSeriesCount = 0;
   private renderedPlot: uPlot | null = null;
   private focusCanvas: HTMLCanvasElement | null = null;
   private focusContext: CanvasRenderingContext2D | null = null;
@@ -172,6 +261,12 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private percentTotals = new Float64Array(0);
   private cursorStacks = new Float64Array(0);
   private cursorPercentTotals = new Float64Array(0);
+  private cursorSnapshotValues = new Float64Array(0);
+  private cursorSnapshotStates = new Uint8Array(0);
+  private cursorSnapshotDataIndexes: Int32Array | null = null;
+  private cursorSnapshotIndex = -1;
+  private cursorSnapshotMouseX = Number.NaN;
+  private readonly cursorSnapshot: MutableCompactCursorSnapshot;
   private gradientCache: Array<CanvasGradient | undefined> = [];
   private stackFrom = 0;
   private stackPointCount = 0;
@@ -272,8 +367,17 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.source = source;
     this.bufferView = new DataView(source.buffer);
     this.bufferBytes = new Uint8Array(source.buffer);
+    this.cursorSnapshot = {
+      source,
+      seriesCount: source.seriesCount,
+      cursorIndex: -1,
+      timestamp: Number.NaN,
+      revision: 0,
+      valueAt: (seriesIndex) => this.readCursorSnapshotValue(seriesIndex),
+      dataIndexAt: (seriesIndex) => this.readCursorSnapshotDataIndex(seriesIndex),
+    };
     this.applyVisibilityState(source);
-    this.ensureCursorScratch();
+    this.ensureStackCursorScratch();
   }
 
   replaceSource(oldSource: uPlot.CompactPlotSource, nextSource: uPlot.CompactPlotSource): void {
@@ -290,18 +394,22 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.source = nextSource;
     this.bufferView = new DataView(nextSource.buffer);
     this.bufferBytes = new Uint8Array(nextSource.buffer);
+    this.cursorSnapshot.source = nextSource;
+    this.cursorSnapshot.seriesCount = nextSource.seriesCount;
+    this.invalidateCursorSnapshot();
     copyVisibilityState(previousSource.visibilityState, nextSource.visibilityState);
     this.applyVisibilityState(nextSource);
     this.focusedSeries = -1;
+    this.requestedFocusedSeries = -1;
     this.removeFocusOverlay();
     this.stackScratch = new Float64Array(0);
     this.percentTotals = new Float64Array(0);
+    this.cursorSnapshotValues = new Float64Array(0);
+    this.cursorSnapshotStates = new Uint8Array(0);
+    this.cursorSnapshotDataIndexes = null;
     this.gradientCache.length = 0;
-    this.ensureCursorScratch();
+    this.ensureStackCursorScratch();
     controllers.set(nextSource, this);
-    if (previousSource.buffer !== nextSource.buffer) {
-      previousSource.release();
-    }
   }
 
   destroy(source: uPlot.CompactPlotSource): void {
@@ -317,8 +425,19 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.percentTotals = new Float64Array(0);
     this.cursorStacks = new Float64Array(0);
     this.cursorPercentTotals = new Float64Array(0);
+    this.cursorSnapshotValues = new Float64Array(0);
+    this.cursorSnapshotStates = new Uint8Array(0);
+    this.cursorSnapshotDataIndexes = null;
+    this.invalidateCursorSnapshot();
     this.gradientCache.length = 0;
     controllers.delete(this.source);
+    this.source = releasedSource;
+    this.bufferView = new DataView(releasedBuffer);
+    this.bufferBytes = new Uint8Array(releasedBuffer);
+    this.cursorSnapshot.source = releasedSource;
+    this.cursorSnapshot.seriesCount = 0;
+    this.focusedSeries = -1;
+    this.requestedFocusedSeries = -1;
   }
 
   extent(_plot: uPlot, scaleKey: string, from: number, to: number): [number | null, number | null] {
@@ -526,24 +645,50 @@ export class CompactRenderController implements uPlot.CompactRenderController {
             redraw = true;
           }
         }
+        this.visibleSeriesCount = visibility === 1 ? this.source.seriesCount : 0;
         this.source.visibilityState.globalVisibility = visibility;
         this.source.visibilityState.overrides.clear();
       } else {
         this.assertSeriesIndex(seriesIndex);
         const visibility = options.show ? 1 : 0;
-        redraw = this.source.columns.visibility[seriesIndex] !== visibility;
+        const previousVisibility = this.source.columns.visibility[seriesIndex];
+        redraw = previousVisibility !== visibility;
         this.source.columns.visibility[seriesIndex] = visibility;
+        if (redraw) {
+          this.visibleSeriesCount += visibility === 1 ? 1 : -1;
+        }
         this.updateVisibilityOverride(seriesIndex, visibility);
+      }
+      if (this.visibleSeriesCount < 2 || (this.focusedSeries >= 0 && !this.isVisible(this.focusedSeries))) {
+        this.focusedSeries = -1;
+        this.removeFocusOverlay();
+      }
+      if (
+        this.visibleSeriesCount > 1 &&
+        this.requestedFocusedSeries >= 0 &&
+        this.isVisible(this.requestedFocusedSeries)
+      ) {
+        this.focusedSeries = this.requestedFocusedSeries;
+        this.drawFocusOverlay();
       }
     }
     if (options.focus != null) {
-      const nextFocus = options.focus && seriesIndex != null ? seriesIndex : -1;
-      if (nextFocus >= 0) {
-        this.assertSeriesIndex(nextFocus);
+      this.requestedFocusedSeries = options.focus && seriesIndex != null ? seriesIndex : -1;
+      let nextFocus = -1;
+      if (options.focus && seriesIndex != null && this.visibleSeriesCount > 1) {
+        this.assertSeriesIndex(seriesIndex);
+        if (this.isVisible(seriesIndex)) {
+          nextFocus = seriesIndex;
+        }
       }
       if (this.focusedSeries !== nextFocus) {
         this.focusedSeries = nextFocus;
+        const redrawStartedAt = hoverStageProbe ? performance.now() : 0;
         this.drawFocusOverlay();
+        hoverStageProbe?.record('focusRedraw', {
+          durationMs: performance.now() - redrawStartedAt,
+          focused: nextFocus >= 0,
+        });
       }
     }
     if (redraw) {
@@ -582,20 +727,24 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (state.globalVisibility != null) {
       source.columns.visibility.fill(state.globalVisibility);
     }
-    if (!source.seriesIdentityAt || !source.seriesIdentityHashAt || state.overrides.size === 0) {
-      return;
+    if (source.seriesIdentityAt && source.seriesIdentityHashAt && state.overrides.size > 0) {
+      for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
+        const overrides = state.overrides.get(source.seriesIdentityHashAt(seriesIndex));
+        if (!overrides) {
+          continue;
+        }
+        const identity = source.seriesIdentityAt(seriesIndex);
+        const override = overrides.find((candidate) => candidate.identity === identity);
+        if (override) {
+          source.columns.visibility[seriesIndex] = override.visibility;
+        }
+      }
     }
+    let visibleSeriesCount = 0;
     for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
-      const overrides = state.overrides.get(source.seriesIdentityHashAt(seriesIndex));
-      if (!overrides) {
-        continue;
-      }
-      const identity = source.seriesIdentityAt(seriesIndex);
-      const override = overrides.find((candidate) => candidate.identity === identity);
-      if (override) {
-        source.columns.visibility[seriesIndex] = override.visibility;
-      }
+      visibleSeriesCount += source.columns.visibility[seriesIndex] === 1 ? 1 : 0;
     }
+    this.visibleSeriesCount = visibleSeriesCount;
   }
 
   updateCursor(plot: uPlot, index: number | null, mouseY: number): uPlot.CompactCursorState | null {
@@ -619,6 +768,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       return state;
     }
 
+    const cursorSnapshot = this.source.cursorMode === 'multi' ? this.getCursorSnapshot(index, plot) : null;
+    const focusStartedAt = hoverStageProbe ? performance.now() : 0;
     if (this.source.stackGroupCount > 0) {
       this.cursorStacks.fill(0);
       this.cursorPercentTotals.fill(0);
@@ -640,16 +791,22 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         continue;
       }
       let dataIndex = index;
-      let rawValue = this.source.yAt(series, dataIndex);
-      if (rawValue == null) {
-        const nearest = this.source.nearestPresent(series, index, 0);
-        if (nearest == null) {
-          continue;
-        }
-        dataIndex = nearest;
+      let rawValue: CompactPlotValue;
+      if (cursorSnapshot) {
+        rawValue = cursorSnapshot.valueAt(series);
+        dataIndex = cursorSnapshot.dataIndexAt(series);
+      } else {
         rawValue = this.source.yAt(series, dataIndex);
+        if (rawValue == null) {
+          const nearest = this.nearestPresentAtCursor(plot, series, index);
+          if (nearest == null) {
+            continue;
+          }
+          dataIndex = nearest;
+          rawValue = this.source.yAt(series, dataIndex);
+        }
       }
-      if (rawValue == null) {
+      if (rawValue == null || !this.isWithinCursorProximity(plot, series, index, dataIndex)) {
         continue;
       }
       const value = this.stackCursorValue(series, rawValue);
@@ -668,7 +825,24 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         state.stroke = style.stroke;
       }
     }
+    hoverStageProbe?.record('focusSelection', {
+      durationMs: performance.now() - focusStartedAt,
+      seriesVisits: this.source.seriesCount,
+      found: state.seriesIndex >= 0,
+    });
     return state.seriesIndex < 0 ? null : state;
+  }
+
+  getCursorSnapshot(index: number, plot?: uPlot): CompactCursorSnapshot {
+    if (!Number.isInteger(index) || index < 0 || index >= this.source.pointCount) {
+      throw new Error(`Compact cursor index ${index} is outside the source`);
+    }
+    this.ensureCursorSnapshotScratch();
+    const mouseX = plot?.cursor.left;
+    if (this.cursorSnapshotIndex !== index || (mouseX != null && mouseX !== this.cursorSnapshotMouseX)) {
+      this.populateCursorSnapshot(index, plot);
+    }
+    return this.cursorSnapshot;
   }
 
   private drawFocusOverlay(): void {
@@ -676,6 +850,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (
       !plot ||
       this.focusedSeries < 0 ||
+      this.visibleSeriesCount < 2 ||
       this.source.focusOverlayColor == null ||
       !this.isVisible(this.focusedSeries) ||
       this.source.pointCount === 0
@@ -1453,7 +1628,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.operation = ScanOperation.None;
   }
 
-  private ensureCursorScratch(): void {
+  private ensureStackCursorScratch(): void {
     const required = this.source.stackGroupCount * 2;
     if (this.cursorStacks.length !== required) {
       this.cursorStacks = new Float64Array(required);
@@ -1461,6 +1636,163 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (this.cursorPercentTotals.length !== required) {
       this.cursorPercentTotals = new Float64Array(required);
     }
+  }
+
+  private ensureCursorSnapshotScratch(): void {
+    if (this.cursorSnapshotValues.length !== this.source.seriesCount) {
+      this.cursorSnapshotValues = new Float64Array(this.source.seriesCount);
+      this.cursorSnapshotStates = new Uint8Array(this.source.seriesCount);
+      this.cursorSnapshotDataIndexes = null;
+      this.invalidateCursorSnapshot();
+    }
+  }
+
+  private populateCursorSnapshot(index: number, plot?: uPlot): void {
+    const source = this.source;
+    const startedAt = hoverStageProbe ? performance.now() : 0;
+    let valueReads = 0;
+    let nearestReads = 0;
+    const previousIndex = this.cursorSnapshotIndex;
+    const existingDataIndexes = this.cursorSnapshotDataIndexes;
+    let changed = previousIndex !== index;
+
+    for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
+      const previousState = this.cursorSnapshotStates[seriesIndex];
+      const previousValue = this.cursorSnapshotValues[seriesIndex];
+      const previousDataIndex = existingDataIndexes?.[seriesIndex] ?? previousIndex;
+      let dataIndex = index;
+      let value = source.yAt(seriesIndex, dataIndex);
+      valueReads++;
+      if (value == null) {
+        const nearestIndex = plot
+          ? this.nearestPresentAtCursor(plot, seriesIndex, index)
+          : source.nearestPresent(seriesIndex, index, 0);
+        nearestReads++;
+        if (nearestIndex != null) {
+          dataIndex = nearestIndex;
+          value = source.yAt(seriesIndex, dataIndex);
+          valueReads++;
+        }
+      }
+
+      if (dataIndex !== index) {
+        if (!this.cursorSnapshotDataIndexes) {
+          this.cursorSnapshotDataIndexes = new Int32Array(source.seriesCount);
+          this.cursorSnapshotDataIndexes.fill(index);
+        }
+        this.cursorSnapshotDataIndexes[seriesIndex] = dataIndex;
+      } else if (this.cursorSnapshotDataIndexes) {
+        this.cursorSnapshotDataIndexes[seriesIndex] = index;
+      }
+
+      let state: CursorValueState;
+      if (value === undefined) {
+        state = CursorValueState.Undefined;
+      } else if (value === null) {
+        state = CursorValueState.Null;
+      } else {
+        state = CursorValueState.Number;
+        this.cursorSnapshotValues[seriesIndex] = value;
+      }
+      this.cursorSnapshotStates[seriesIndex] = state;
+      if (
+        !changed &&
+        (state !== previousState ||
+          dataIndex !== previousDataIndex ||
+          (state === CursorValueState.Number && !Object.is(value, previousValue)))
+      ) {
+        changed = true;
+      }
+    }
+
+    this.cursorSnapshotIndex = index;
+    this.cursorSnapshotMouseX = plot?.cursor.left ?? Number.NaN;
+    this.cursorSnapshot.cursorIndex = index;
+    this.cursorSnapshot.timestamp = source.xAt(index);
+    if (changed) {
+      this.cursorSnapshot.revision++;
+    }
+    hoverStageProbe?.record('sampleResolution', {
+      durationMs: performance.now() - startedAt,
+      seriesVisits: source.seriesCount,
+      valueReads,
+      nearestReads,
+    });
+  }
+
+  private readCursorSnapshotValue(seriesIndex: number): CompactPlotValue {
+    this.assertSeriesIndex(seriesIndex);
+    switch (this.cursorSnapshotStates[seriesIndex]) {
+      case CursorValueState.Null:
+        return null;
+      case CursorValueState.Number:
+        return this.cursorSnapshotValues[seriesIndex];
+      default:
+        return undefined;
+    }
+  }
+
+  private readCursorSnapshotDataIndex(seriesIndex: number): number {
+    this.assertSeriesIndex(seriesIndex);
+    return this.cursorSnapshotDataIndexes?.[seriesIndex] ?? this.cursorSnapshotIndex;
+  }
+
+  private invalidateCursorSnapshot(): void {
+    this.cursorSnapshotIndex = -1;
+    this.cursorSnapshotMouseX = Number.NaN;
+    this.cursorSnapshot.cursorIndex = -1;
+    this.cursorSnapshot.timestamp = Number.NaN;
+  }
+
+  private nearestPresentAtCursor(plot: uPlot, seriesIndex: number, index: number): number | null {
+    const source = this.source;
+    const left = source.nearestPresent(seriesIndex, index, -1);
+    const right = source.nearestPresent(seriesIndex, index, 1);
+    if (left == null && right == null) {
+      return null;
+    }
+    if (left == null) {
+      return this.isWithinCursorProximity(plot, seriesIndex, index, right!) ? right : null;
+    }
+    if (right == null) {
+      return this.isWithinCursorProximity(plot, seriesIndex, index, left) ? left : null;
+    }
+    if (this.getCursorProximity(plot, seriesIndex, index) == null) {
+      return index - left <= right - index ? left : right;
+    }
+    const mouseX = this.requireCursorLeft(plot);
+    const leftDistance = mouseX - plot.valToPos(source.xAt(left), 'x');
+    const rightDistance = plot.valToPos(source.xAt(right), 'x') - mouseX;
+
+    if (leftDistance <= rightDistance) {
+      return this.isWithinCursorProximity(plot, seriesIndex, index, left) ? left : null;
+    }
+    return this.isWithinCursorProximity(plot, seriesIndex, index, right) ? right : null;
+  }
+
+  private isWithinCursorProximity(plot: uPlot, seriesIndex: number, hoveredIndex: number, dataIndex: number): boolean {
+    const maxDistance = this.getCursorProximity(plot, seriesIndex, hoveredIndex);
+    return (
+      maxDistance == null ||
+      Math.abs(this.requireCursorLeft(plot) - plot.valToPos(this.source.xAt(dataIndex), 'x')) <= maxDistance
+    );
+  }
+
+  private getCursorProximity(plot: uPlot, seriesIndex: number, hoveredIndex: number): number | null {
+    const proximity = plot.cursor.hover?.prox;
+    const maxDistance =
+      typeof proximity === 'function'
+        ? proximity(plot, seriesIndex + 1, hoveredIndex, plot.posToVal(this.requireCursorLeft(plot), 'x'))
+        : proximity;
+    return maxDistance == null || maxDistance < 0 || !Number.isFinite(maxDistance) ? null : maxDistance;
+  }
+
+  private requireCursorLeft(plot: uPlot): number {
+    const left = plot.cursor.left;
+    if (left == null) {
+      throw new Error('Compact cursor resolution requires a horizontal cursor position');
+    }
+    return left;
   }
 
   private isVisible(series: number): boolean {

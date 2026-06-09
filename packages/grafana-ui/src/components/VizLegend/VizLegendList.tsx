@@ -1,5 +1,4 @@
 import { css, cx } from '@emotion/css';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { KeyboardEvent, useMemo, useRef } from 'react';
 
 import { GrafanaTheme2 } from '@grafana/data';
@@ -7,6 +6,7 @@ import { GrafanaTheme2 } from '@grafana/data';
 import { useStyles2 } from '../../themes/ThemeContext';
 import { InlineList } from '../List/InlineList';
 import { List } from '../List/List';
+import { useFixedVirtualWindow } from '../Virtualization/useFixedVirtualWindow';
 
 import { VizLegendListItem } from './VizLegendListItem';
 import { VizLegendBaseProps, VizLegendItem, VizLegendItemSource } from './types';
@@ -15,6 +15,8 @@ export interface Props<T> extends VizLegendBaseProps<T> {}
 
 const VIRTUALIZE_THRESHOLD = 200;
 const VIRTUAL_ROW_HEIGHT = 28;
+const VIRTUAL_COLUMN_WIDTH = 180;
+const VIRTUAL_OVERSCAN = 12;
 
 /**
  * @internal
@@ -58,25 +60,11 @@ export const VizLegendList = <T extends unknown>({
         onLabelMouseOver={onLabelMouseOver}
         onLabelMouseOut={onLabelMouseOut}
         readonly={readonly}
-        displayValues={getItemDisplayValues?.(item)}
       />
     );
   }
 
-  const getItemKey = (item: VizLegendItem<T>) =>
-    `${item.itemKey ?? (item.getItemKey ? item.getItemKey() : item.label)}`;
-
-  if (placement === 'right' && items.length > VIRTUALIZE_THRESHOLD) {
-    return (
-      <VirtualizedVizLegendList
-        className={className}
-        itemCount={items.length}
-        itemRenderer={itemRenderer}
-        getItem={(index) => items[index]}
-        getItemKey={(index) => getItemKey(items[index])}
-      />
-    );
-  }
+  const getItemKey = (item: VizLegendItem<T>) => `${item.getItemKey ? item.getItemKey() : item.label}`;
 
   switch (placement) {
     case 'right': {
@@ -257,17 +245,18 @@ function VirtualizedVizLegendList<T>({
 }) {
   const styles = useStyles2(getStyles);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
+  const itemSize = horizontal ? VIRTUAL_COLUMN_WIDTH : VIRTUAL_ROW_HEIGHT;
+  const virtualWindow = useFixedVirtualWindow({
+    containerRef: scrollRef,
     count: itemCount,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => (horizontal ? 180 : VIRTUAL_ROW_HEIGHT),
-    getItemKey,
     horizontal,
-    overscan: 12,
+    itemSize,
+    overscan: VIRTUAL_OVERSCAN,
+    initialViewportSize: horizontal ? VIRTUAL_COLUMN_WIDTH * 5 : VIRTUAL_ROW_HEIGHT * 12,
   });
   const focusItem = (index: number) => {
     const nextIndex = Math.max(0, Math.min(itemCount - 1, index));
-    virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+    virtualWindow.scrollToIndex(nextIndex);
     window.requestAnimationFrame(() => {
       scrollRef.current?.querySelector<HTMLButtonElement>(`[data-index="${nextIndex}"] button`)?.focus();
     });
@@ -301,19 +290,22 @@ function VirtualizedVizLegendList<T>({
     >
       <div
         className={horizontal ? styles.virtualContentHorizontal : styles.virtualContent}
-        style={horizontal ? { width: virtualizer.getTotalSize() } : { height: virtualizer.getTotalSize() }}
+        style={horizontal ? { width: virtualWindow.totalSize } : { height: virtualWindow.totalSize }}
       >
-        {virtualizer.getVirtualItems().map((row) => (
-          <div
-            key={row.key}
-            ref={virtualizer.measureElement}
-            data-index={row.index}
-            className={horizontal ? styles.virtualRowHorizontal : styles.virtualRow}
-            style={{ transform: horizontal ? `translateX(${row.start}px)` : `translateY(${row.start}px)` }}
-          >
-            {itemRenderer(getItem(row.index), row.index)}
-          </div>
-        ))}
+        {virtualWindow.virtualItems.map((row) => {
+          const item = getItem(row.index);
+          return (
+            <div
+              key={getItemKey(row.index)}
+              data-index={row.index}
+              className={horizontal ? styles.virtualRowHorizontal : styles.virtualRow}
+              style={{ transform: horizontal ? `translateX(${row.start}px)` : `translateY(${row.start}px)` }}
+              title={item.label}
+            >
+              {itemRenderer(item, row.index)}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -396,8 +388,10 @@ const getStyles = (theme: GrafanaTheme2) => {
       display: 'flex',
       height: VIRTUAL_ROW_HEIGHT,
       left: 0,
+      overflow: 'hidden',
       position: 'absolute',
       top: 0,
+      width: VIRTUAL_COLUMN_WIDTH,
     }),
   };
 };

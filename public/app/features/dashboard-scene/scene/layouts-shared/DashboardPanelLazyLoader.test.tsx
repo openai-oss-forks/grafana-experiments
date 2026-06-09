@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { ReactNode, Ref, useEffect } from 'react';
 
 import { useGraphNGRenderVisibility } from 'app/core/components/GraphNG/GraphNGRenderVisibility';
@@ -150,21 +150,6 @@ describe('DashboardPanelLazyLoader', () => {
     });
   });
 
-  test('tracks deferred panel data visibility with the GraphNG prewarm margin', () => {
-    const onRenderMarginChange = jest.fn();
-    render(
-      <DashboardPanelLazyLoader onRenderMarginChange={onRenderMarginChange}>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    act(() => mockOnChange(false));
-    expect(onRenderMarginChange).toHaveBeenLastCalledWith(false);
-
-    act(() => mockOnChange(true));
-    expect(onRenderMarginChange).toHaveBeenLastCalledWith(true);
-  });
-
   test('shares the prewarm and retention observers across dashboard panels', () => {
     render(
       <>
@@ -269,6 +254,28 @@ describe('DashboardPanelLazyLoader', () => {
     expect(screen.getByRole('button')).toHaveAttribute('data-graphng-active', 'true');
   });
 
+  test('does not suspend a compact renderer while its tooltip is pinned', () => {
+    render(
+      <DashboardPanelLazyLoader>
+        <PanelLifecycleProbe />
+      </DashboardPanelLazyLoader>
+    );
+    const panel = screen.getByTestId('panel');
+    panel.setAttribute('data-compact-tooltip-pinned', 'true');
+
+    act(() => mockOnChange(false));
+    act(() => mockOnRetentionChange(false));
+    act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
+
+    expect(panel).toHaveAttribute('data-graphng-active', 'true');
+
+    panel.removeAttribute('data-compact-tooltip-pinned');
+    act(() => panel.dispatchEvent(new CustomEvent('grafana-compact-tooltip-pin-change', { bubbles: true })));
+    act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
+
+    expect(panel).toHaveAttribute('data-graphng-active', 'false');
+  });
+
   test('reactivates GraphNG when focus enters a suspended panel', () => {
     render(
       <DashboardPanelLazyLoader>
@@ -282,6 +289,21 @@ describe('DashboardPanelLazyLoader', () => {
 
     act(() => screen.getByRole('button').focus());
     expect(screen.getByRole('button')).toHaveAttribute('data-graphng-active', 'true');
+  });
+
+  test('cancels deferred blur work when the panel wrapper unmounts', () => {
+    const { container, unmount } = render(
+      <DashboardPanelLazyLoader>
+        <FocusedControlProbe />
+      </DashboardPanelLazyLoader>
+    );
+
+    fireEvent.blur(container.firstElementChild!);
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   test('suspends a preloaded renderer without lazy mounting the panel', () => {

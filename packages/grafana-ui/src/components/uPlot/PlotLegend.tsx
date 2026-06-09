@@ -1,6 +1,6 @@
 import { memo } from 'react';
 
-import { DataFrame, Field, fieldReducers, getFieldDisplayName, getFieldSeriesColor } from '@grafana/data';
+import { DataFrame, getFieldDisplayName, getFieldSeriesColor } from '@grafana/data';
 import { VizLegendOptions, AxisPlacement } from '@grafana/schema';
 
 import { useTheme2 } from '../../themes/ThemeContext';
@@ -44,7 +44,7 @@ export const PlotLegend = memo(
     const theme = useTheme2();
     const legendItems = config
       .getSeries()
-      .map<VizLegendItem<Field> | undefined>((s) => {
+      .map<VizLegendItem | undefined>((s) => {
         const seriesConfig = s.props;
         const fieldIndex = seriesConfig.dataFrameFieldIndex;
         const axisPlacement = config.getAxisPlacement(s.props.scaleKey);
@@ -69,27 +69,22 @@ export const PlotLegend = memo(
           color: seriesColor,
           label,
           yAxis: axisPlacement === AxisPlacement.Left || axisPlacement === AxisPlacement.Bottom ? 1 : 2,
-          itemKey: `${label}-${fieldIndex.frameIndex}-${fieldIndex.fieldIndex}`,
-          data: field,
+          getDisplayValues: () => getDisplayValuesForCalcs(calcs, field, theme),
+          getItemKey: () => `${label}-${fieldIndex.frameIndex}-${fieldIndex.fieldIndex}`,
           lineStyle: seriesConfig.lineStyle,
         };
       })
-      .filter((i): i is VizLegendItem<Field> => i !== undefined);
+      .filter((i): i is VizLegendItem => i !== undefined);
 
     return (
       <VizLayout.Legend placement={placement} {...vizLayoutLegendProps}>
-        <VizLegend<Field>
+        <VizLegend
           placement={placement}
           items={legendItems}
           displayMode={displayMode}
           sortBy={vizLayoutLegendProps.sortBy}
           sortDesc={vizLayoutLegendProps.sortDesc}
           isSortable={true}
-          getItemDisplayValues={(item) => getDisplayValuesForCalcs(calcs, item.data!, theme)}
-          displayValueColumns={calcs.map((reducerId) => {
-            const reducer = fieldReducers.get(reducerId);
-            return { title: reducer.name, description: reducer.description };
-          })}
         />
       </VizLayout.Legend>
     );

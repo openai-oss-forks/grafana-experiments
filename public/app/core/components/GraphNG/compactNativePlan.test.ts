@@ -4,12 +4,15 @@ import {
   CompactTimeSeriesData,
   CompactTimeSeriesSeriesCollection,
   createTheme,
+  Field,
   FieldColorModeId,
   FieldConfigOptionsRegistry,
   FieldOverrideContext,
   FieldMatcherID,
   FieldType,
+  getFieldSeriesColor,
   Labels,
+  NullValueMode,
   ReducerID,
 } from '@grafana/data';
 import {
@@ -77,6 +80,49 @@ describe('CompactNativeRenderPlan', () => {
     expect(getSeries).not.toHaveBeenCalled();
   });
 
+  test('keeps per-series variable configuration on the descriptor path', () => {
+    const displayName = {
+      ...compactProperty('displayName', 'displayName', false),
+      process: (value: unknown, context: FieldOverrideContext) => context.replaceVariables!(String(value)),
+    };
+    const { source } = columnarSource([
+      series('A', 'requests', [1], { region: 'east' }),
+      series('A', 'requests', [2], { region: 'west' }),
+    ]);
+
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [displayName]),
+      fieldConfig: {
+        defaults: { displayName: '${__field.labels.region}' },
+        overrides: [],
+      },
+    });
+
+    expect(plan.getDisplayName(0)).toBe('east');
+    expect(plan.getDisplayName(1)).toBe('west');
+  });
+
+  test('does not reuse context-sensitive field processor results across series', () => {
+    const displayName = {
+      ...compactProperty('displayName', 'displayName', false),
+      process: (_value: unknown, context: FieldOverrideContext) => context.target!.name,
+    };
+    const { source } = columnarSource([series('A', 'requests-east', [1]), series('A', 'requests-west', [2])]);
+
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [displayName]),
+      fieldConfig: {
+        defaults: { displayName: 'unused' },
+        overrides: [],
+      },
+    });
+
+    expect(plan.getDisplayName(0)).toBe('requests-east');
+    expect(plan.getDisplayName(1)).toBe('requests-west');
+  });
+
   test('matches refIds, label-derived names, regexes, and values without materializing series records', () => {
     const registry = new FieldConfigOptionsRegistry(() => [
       compactProperty('custom.drawStyle', 'drawStyle', true),
@@ -129,6 +175,67 @@ describe('CompactNativeRenderPlan', () => {
     expect(plan.getLabels(1)).toEqual({ region: 'region-b' });
     expect(plan.source.yAt(1, 0)).toBe(-10);
     expect(getSeries).not.toHaveBeenCalled();
+  });
+
+  test('evaluates value matchers against returned rows rather than synthetic axis gaps', () => {
+    const registry = new FieldConfigOptionsRegistry(() => [
+      compactProperty('nullValueMode', 'nullValueMode', false),
+      compactProperty('custom.lineWidth', 'lineWidth', true),
+      compactProperty('custom.transform', 'transform', true),
+    ]);
+    const { source } = columnarSource([series('A', 'requests', [4, 8], undefined, new Uint8Array([0b00000101]), 3)]);
+
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: registry,
+      fieldConfig: {
+        defaults: { nullValueMode: NullValueMode.AsZero, custom: { lineWidth: 1 } },
+        overrides: [
+          {
+            matcher: {
+              id: FieldMatcherID.byValue,
+              options: { reducer: ReducerID.countAll, op: ComparisonOperation.EQ, value: 2 },
+            },
+            properties: [{ id: 'custom.lineWidth', value: 2 }],
+          },
+          {
+            matcher: {
+              id: FieldMatcherID.byValue,
+              options: { reducer: ReducerID.min, op: ComparisonOperation.EQ, value: 0 },
+            },
+            properties: [{ id: 'custom.transform', value: GraphTransform.NegativeY }],
+          },
+        ],
+      },
+    });
+
+    expect(plan.getStyle(0).config.custom).toMatchObject({ lineWidth: 2 });
+    expect(plan.getStyle(0).config.custom?.transform).toBeUndefined();
+  });
+
+  test('calculates by-value color ranges from returned rows before graph gap insertion', () => {
+    const config = {
+      color: { mode: FieldColorModeId.ContinuousGrYlRd, seriesBy: 'last' as const },
+      nullValueMode: NullValueMode.AsZero,
+    };
+    const { source } = columnarSource([series('A', 'requests', [4, 6, 5], undefined, new Uint8Array([0b00001101]), 4)]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('color', 'color', false),
+        compactProperty('nullValueMode', 'nullValueMode', false),
+      ]),
+      fieldConfig: { defaults: config, overrides: [] },
+    });
+    const legacyField: Field = {
+      name: 'requests',
+      type: FieldType.number,
+      config,
+      values: [4, null, 6, 5],
+      state: { range: { min: 4, max: 6, delta: 2 } },
+    };
+
+    expect(plan.source.styles[0].stroke).toBe(getFieldSeriesColor(legacyField, baseOptions.theme).color);
   });
 
   test('uses an exact and stable topology key for configuration reuse', () => {
@@ -239,6 +346,24 @@ describe('CompactNativeRenderPlan', () => {
     expect(plan.reduce(0, ReducerID.allIsZero)).toBe(false);
     expect(() => plan.reduce(0, ReducerID.median)).toThrow('unsupported');
     expect(getSeries).not.toHaveBeenCalled();
+  });
+
+  test('preserves null-mode semantics when min and max share one cached scan', () => {
+    const { source } = columnarSource([series('A', 'requests', [4, 8], undefined, new Uint8Array([0b00000101]), 3)]);
+    const ignored = createCompactNativeRenderPlan(source, baseOptions);
+    const zeroFilled = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('nullValueMode', 'nullValueMode', false),
+      ]),
+      fieldConfig: {
+        defaults: { nullValueMode: NullValueMode.AsZero },
+        overrides: [],
+      },
+    });
+
+    expect([ignored.reduce(0, ReducerID.min), ignored.reduce(0, ReducerID.max)]).toEqual([4, 8]);
+    expect([zeroFilled.reduce(0, ReducerID.min), zeroFilled.reduce(0, ReducerID.max)]).toEqual([0, 8]);
   });
 
   test('uses positive-only extents for logarithmic scales', () => {

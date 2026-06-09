@@ -30,7 +30,7 @@ import {
   StreamingDataFrame,
   DataTopic,
 } from '@grafana/data';
-import { config, locationService, toDataQueryError } from '@grafana/runtime';
+import { toDataQueryError } from '@grafana/runtime';
 import { ExpressionDatasourceRef } from '@grafana/runtime/internal';
 import { isStreamingDataFrame } from 'app/features/live/data/utils';
 import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
@@ -40,7 +40,6 @@ import { isSharedDashboardQuery, runSharedRequest } from '../../../plugins/datas
 import { PanelModel } from '../../dashboard/state/PanelModel';
 
 import { getDashboardQueryRunner } from './DashboardQueryRunner/DashboardQueryRunner';
-import { getPreferredDashboardQueryFormat } from './compactQueryPolicy';
 import { mergePanelAndDashData } from './mergePanelAndDashData';
 import { runRequest } from './runRequest';
 
@@ -333,19 +332,6 @@ export class PanelQueryRunner {
       startTime: Date.now(),
       rangeRaw: timeRange.raw,
     };
-
-    const inspectedPanelId = new URLSearchParams(locationService.getLocation().search).get('inspect');
-    const panelModel = this.dataConfigSource instanceof PanelModel ? this.dataConfigSource : undefined;
-    request.preferredQueryResultFormat = getPreferredDashboardQueryFormat({
-      app: request.app,
-      panelPluginId: request.panelPluginId,
-      transformations: options.transformations ?? this.dataConfigSource.getTransformations(),
-      fieldConfig: this.dataConfigSource.getFieldOverrideOptions()?.fieldConfig,
-      isInspecting: inspectedPanelId != null && inspectedPanelId === String(request.panelId),
-      isPublicDashboard: Boolean(config.publicDashboardAccessToken),
-      legendCalcs: panelModel?.options?.legend?.calcs,
-      panelOptions: panelModel?.options,
-    });
 
     try {
       const ds = await getDataSource(datasource, request.scopedVars);
