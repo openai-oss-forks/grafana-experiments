@@ -23,12 +23,11 @@ export const MULTIBATCH_ACCEPT_HEADER = `${MULTIBATCH_CONTENT_TYPE}; version=1, 
 const FRAME_HEADER_SIZE = 12;
 const FINAL_BATCH_FLAG = 1;
 const RESERVED_FLAGS_MASK = 0xfe;
-const PAYLOAD_TYPE_STREAM_HEADER = 0;
 const PAYLOAD_TYPE_JSONL = 1;
 const PAYLOAD_ENCODING_IDENTITY = 0;
 const PAYLOAD_ENCODING_ZSTD = 1;
-const MAGIC = 'OQPB';
-const LEGACY_MAGIC = 'MBPB';
+const RESPONSE_HEADER_MAGIC = 'MBRH';
+const BATCH_FRAME_MAGIC = 'MBBF';
 
 type BatchHandler = (payload: string, isFinal: boolean) => Promise<void> | void;
 
@@ -142,7 +141,7 @@ class ZstdPayloadDecoder {
 
 export class MultiBatchFrameDecoder {
   private buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
-  private sawStreamHeader = false;
+  private sawResponseHeader = false;
   private sawFinalBatch = false;
 
   push(chunk: Uint8Array): MultiBatchFrame[] {
@@ -152,7 +151,27 @@ export class MultiBatchFrameDecoder {
     while (this.buffer.byteLength >= FRAME_HEADER_SIZE) {
       const header = this.buffer.subarray(0, FRAME_HEADER_SIZE);
       const magic = String.fromCharCode(...header.subarray(0, 4));
-      if (magic !== MAGIC && magic !== LEGACY_MAGIC) {
+
+      if (magic === RESPONSE_HEADER_MAGIC) {
+        const version = header[4];
+        if (version !== 1) {
+          throw new Error(`Unsupported Prometheus multi-batch response header version: ${version}`);
+        }
+
+        if (this.sawResponseHeader || frames.length > 0) {
+          throw new Error('Prometheus multi-batch response included a duplicate response header');
+        }
+
+        if (header.subarray(5).some((byte) => byte !== 0)) {
+          throw new Error('Unsupported Prometheus multi-batch response header');
+        }
+
+        this.sawResponseHeader = true;
+        this.buffer = this.buffer.subarray(FRAME_HEADER_SIZE);
+        continue;
+      }
+
+      if (magic !== BATCH_FRAME_MAGIC) {
         throw new Error('Invalid Prometheus multi-batch frame magic');
       }
 
@@ -186,22 +205,11 @@ export class MultiBatchFrameDecoder {
         throw new Error(`Unsupported Prometheus multi-batch payload encoding: ${frame.payloadEncoding}`);
       }
 
-      if (frame.payloadType === PAYLOAD_TYPE_STREAM_HEADER) {
-        if (this.sawStreamHeader || frames.length > 0) {
-          throw new Error('Prometheus multi-batch response included a duplicate stream header');
-        }
-        if ((frame.flags & FINAL_BATCH_FLAG) !== 0) {
-          throw new Error('Prometheus multi-batch stream header cannot be final');
-        }
-        this.sawStreamHeader = true;
-      } else if (frame.payloadType === PAYLOAD_TYPE_JSONL) {
-        if (!this.sawStreamHeader) {
-          if (magic !== LEGACY_MAGIC) {
-            throw new Error('Prometheus multi-batch response missing stream header');
-          }
-          this.sawStreamHeader = true;
-        }
-      } else {
+      if (!this.sawResponseHeader) {
+        throw new Error('Prometheus multi-batch response missing response header');
+      }
+
+      if (frame.payloadType !== PAYLOAD_TYPE_JSONL) {
         throw new Error(`Unsupported Prometheus multi-batch payload type: ${frame.payloadType}`);
       }
 
@@ -242,11 +250,6 @@ export async function decodeMultiBatchFrames(chunks: Uint8Array[], onBatch: Batc
 
   for (const chunk of chunks) {
     for (const frame of frameDecoder.push(chunk)) {
-      if (frame.payloadType === PAYLOAD_TYPE_STREAM_HEADER) {
-        await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
-        continue;
-      }
-
       const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
       await onBatch(textDecoder.decode(payload), (frame.flags & FINAL_BATCH_FLAG) !== 0);
     }
@@ -335,11 +338,6 @@ async function streamQueryRange(
       }
 
       for (const frame of frameDecoder.push(result.value)) {
-        if (frame.payloadType === PAYLOAD_TYPE_STREAM_HEADER) {
-          await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
-          continue;
-        }
-
         const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
         accumulator.pushText(textDecoder.decode(payload));
         const isFinal = (frame.flags & FINAL_BATCH_FLAG) !== 0;
