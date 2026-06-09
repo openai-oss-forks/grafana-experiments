@@ -843,6 +843,8 @@ export enum DashboardCursorSync {
 
 export const defaultDashboardCursorSync: DashboardCursorSync = DashboardCursorSync.Off;
 
+export type QueryStepSize = "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h";
+
 /**
  * Dashboard panels are the basic visualization building blocks.
  */
@@ -887,6 +889,10 @@ export interface Panel {
    * See: https://grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/#query-options
    */
   interval?: string;
+  /**
+   * The query step size setting requests one datapoint per selected interval.
+   */
+  stepSize?: QueryStepSize;
   /**
    * Dynamically load the panel
    */

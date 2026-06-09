@@ -495,6 +495,7 @@ export type DashboardQueryOptionsSpec = {
   interval?: string;
   maxDataPoints?: number;
   queryCachingTTL?: number;
+  stepSize?: '1m' | '5m' | '10m' | '20m' | '30m' | '1h' | '2h' | '5h';
   timeCompare?: string;
   timeFrom?: string;
   timeShift?: string;

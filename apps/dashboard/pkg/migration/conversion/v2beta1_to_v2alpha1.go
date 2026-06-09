@@ -284,6 +284,7 @@ func convertQueryOptions_V2beta1_to_V2alpha1(in *dashv2beta1.DashboardQueryOptio
 	out.TimeShift = in.TimeShift
 	out.QueryCachingTTL = in.QueryCachingTTL
 	out.Interval = in.Interval
+	out.StepSize = (*dashv2alpha1.DashboardQueryStepSize)(in.StepSize)
 	out.CacheTimeout = in.CacheTimeout
 	out.HideTimeOverride = in.HideTimeOverride
 }

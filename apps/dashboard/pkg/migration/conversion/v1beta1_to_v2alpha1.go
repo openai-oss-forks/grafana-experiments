@@ -2298,6 +2298,10 @@ func buildQueryOptions(panelMap map[string]interface{}) dashv2alpha1.DashboardQu
 	if interval := schemaversion.GetStringValue(panelMap, "interval"); interval != "" {
 		queryOptions.Interval = &interval
 	}
+	if stepSize := schemaversion.GetStringValue(panelMap, "stepSize"); stepSize != "" {
+		queryStepSize := dashv2alpha1.DashboardQueryStepSize(stepSize)
+		queryOptions.StepSize = &queryStepSize
+	}
 	if hideTimeOverride := getBoolField(panelMap, "hideTimeOverride", false); hideTimeOverride {
 		queryOptions.HideTimeOverride = &hideTimeOverride
 	}

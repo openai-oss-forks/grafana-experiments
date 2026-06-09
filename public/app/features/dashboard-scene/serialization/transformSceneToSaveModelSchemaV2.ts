@@ -469,6 +469,10 @@ function getVizPanelQueryOptions(vizPanel: VizPanel): QueryOptionsSpec {
     if (queryRunner.state.minInterval) {
       queryOptions.interval = queryRunner.state.minInterval;
     }
+    const stepSize = (queryRunner.state as { stepSize?: QueryOptionsSpec['stepSize'] | null }).stepSize;
+    if (stepSize) {
+      queryOptions.stepSize = stepSize;
+    }
   }
 
   const panelTime = vizPanel.state.$timeRange;

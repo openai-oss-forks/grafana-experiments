@@ -298,14 +298,34 @@ const (
 )
 
 // +k8s:openapi-gen=true
+type DashboardQueryStepSize string
+
+const (
+	DashboardQueryStepSize1m  DashboardQueryStepSize = "1m"
+	DashboardQueryStepSize5m  DashboardQueryStepSize = "5m"
+	DashboardQueryStepSize10m DashboardQueryStepSize = "10m"
+	DashboardQueryStepSize20m DashboardQueryStepSize = "20m"
+	DashboardQueryStepSize30m DashboardQueryStepSize = "30m"
+	DashboardQueryStepSize1h  DashboardQueryStepSize = "1h"
+	DashboardQueryStepSize2h  DashboardQueryStepSize = "2h"
+	DashboardQueryStepSize5h  DashboardQueryStepSize = "5h"
+)
+
+// OpenAPIModelName returns the OpenAPI model name for DashboardQueryStepSize.
+func (DashboardQueryStepSize) OpenAPIModelName() string {
+	return "com.github.grafana.grafana.apps.dashboard.pkg.apis.dashboard.v2alpha1.DashboardQueryStepSize"
+}
+
+// +k8s:openapi-gen=true
 type DashboardQueryOptionsSpec struct {
-	TimeFrom         *string `json:"timeFrom,omitempty"`
-	MaxDataPoints    *int64  `json:"maxDataPoints,omitempty"`
-	TimeShift        *string `json:"timeShift,omitempty"`
-	QueryCachingTTL  *int64  `json:"queryCachingTTL,omitempty"`
-	Interval         *string `json:"interval,omitempty"`
-	CacheTimeout     *string `json:"cacheTimeout,omitempty"`
-	HideTimeOverride *bool   `json:"hideTimeOverride,omitempty"`
+	TimeFrom         *string                 `json:"timeFrom,omitempty"`
+	MaxDataPoints    *int64                  `json:"maxDataPoints,omitempty"`
+	TimeShift        *string                 `json:"timeShift,omitempty"`
+	QueryCachingTTL  *int64                  `json:"queryCachingTTL,omitempty"`
+	Interval         *string                 `json:"interval,omitempty"`
+	StepSize         *DashboardQueryStepSize `json:"stepSize,omitempty"`
+	CacheTimeout     *string                 `json:"cacheTimeout,omitempty"`
+	HideTimeOverride *bool                   `json:"hideTimeOverride,omitempty"`
 }
 
 // NewDashboardQueryOptionsSpec creates a new DashboardQueryOptionsSpec object.

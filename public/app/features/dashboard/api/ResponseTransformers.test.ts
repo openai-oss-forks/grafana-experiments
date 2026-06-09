@@ -379,6 +379,7 @@ describe('ResponseTransformers', () => {
             transformations: [],
             repeat: 'var1',
             repeatDirection: 'h',
+            stepSize: '30m',
           },
           {
             id: 2,
@@ -522,7 +523,9 @@ describe('ResponseTransformers', () => {
                   },
                 },
               ],
-              queryOptions: {},
+              queryOptions: {
+                stepSize: '30m',
+              },
               transformations: [],
             },
           },
@@ -934,6 +937,8 @@ describe('ResponseTransformers', () => {
         },
       };
 
+      dashboardV2.spec.elements = JSON.parse(JSON.stringify(dashboardV2.spec.elements));
+      (dashboardV2.spec.elements['panel-1'] as PanelKind).spec.data.spec.queryOptions.stepSize = '30m';
       const transformed = ResponseTransformers.ensureV1Response(dashboardV2);
 
       expect(transformed.meta.created).toBe(dashboardV2.metadata.creationTimestamp);
@@ -1129,6 +1134,7 @@ describe('ResponseTransformers', () => {
     expect(v1.cacheTimeout).toBe(v2Spec.data.spec.queryOptions.cacheTimeout);
     expect(v1.maxDataPoints).toBe(v2Spec.data.spec.queryOptions.maxDataPoints);
     expect(v1.interval).toBe(v2Spec.data.spec.queryOptions.interval);
+    expect(v1.stepSize).toBe(v2Spec.data.spec.queryOptions.stepSize);
     expect(v1.hideTimeOverride).toBe(v2Spec.data.spec.queryOptions.hideTimeOverride);
     expect(v1.queryCachingTTL).toBe(v2Spec.data.spec.queryOptions.queryCachingTTL);
     expect(v1.timeFrom).toBe(v2Spec.data.spec.queryOptions.timeFrom);

@@ -359,7 +359,7 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
       return;
     }
 
-    const dataObjStateUpdate: Partial<SceneQueryRunner['state']> = {};
+    const dataObjStateUpdate: Partial<SceneQueryRunner['state']> & { stepSize?: string | null } = {};
     const panelStateUpdate: Partial<VizPanel['state']> = {};
 
     if (options.maxDataPoints !== queryRunner.state.maxDataPoints) {
@@ -368,6 +368,10 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
 
     if (options.minInterval !== queryRunner.state.minInterval) {
       dataObjStateUpdate.minInterval = options.minInterval ?? undefined;
+    }
+
+    if (options.stepSize !== (queryRunner.state as { stepSize?: string | null }).stepSize) {
+      dataObjStateUpdate.stepSize = options.stepSize ?? undefined;
     }
 
     const timeFrom = options.timeRange?.from ?? undefined;

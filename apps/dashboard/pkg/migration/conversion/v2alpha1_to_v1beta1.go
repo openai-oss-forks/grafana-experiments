@@ -1143,6 +1143,9 @@ func convertPanelKindToV1(panelKind *dashv2alpha1.DashboardPanelKind, panel map[
 	if queryOptions.Interval != nil {
 		panel["interval"] = *queryOptions.Interval
 	}
+	if queryOptions.StepSize != nil {
+		panel["stepSize"] = *queryOptions.StepSize
+	}
 	if queryOptions.HideTimeOverride != nil {
 		panel["hideTimeOverride"] = *queryOptions.HideTimeOverride
 	}

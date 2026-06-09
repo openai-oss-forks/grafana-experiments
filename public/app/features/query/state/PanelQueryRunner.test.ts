@@ -78,6 +78,8 @@ interface ScenarioContext {
   maxDataPoints?: number | null;
   dsInterval?: string;
   minInterval?: string;
+  stepSize?: string | null;
+  timeRange?: grafanaData.TimeRange;
   scopedVars: grafanaData.ScopedVars;
 
   // Filled in by the Scenario runner
@@ -154,8 +156,9 @@ function describeQueryRunnerScenario(
         datasource,
         scopedVars: ctx.scopedVars,
         minInterval: ctx.minInterval,
+        stepSize: ctx.stepSize,
         maxDataPoints: ctx.maxDataPoints ?? Infinity,
-        timeRange: {
+        timeRange: ctx.timeRange ?? {
           from: dateTime('2023-01-01T12:00:00Z'),
           to: dateTime('2023-01-02T12:00:00Z'),
           raw: { from: '1d', to: 'now' },
@@ -255,6 +258,47 @@ describe('PanelQueryRunner', () => {
 
     it('should limit interval to panel min interval', async () => {
       expect(ctx.queryCalledWith?.interval).toBe('30s');
+      expect(ctx.queryCalledWith?.minInterval).toBe('30s');
+    });
+  });
+
+  describeQueryRunnerScenario('with fixed step size', (ctx) => {
+    ctx.setup(() => {
+      ctx.maxDataPoints = 200;
+      ctx.stepSize = '30m';
+      ctx.timeRange = {
+        from: dateTime('2023-01-01T00:00:00Z'),
+        to: dateTime('2023-01-08T00:00:00Z'),
+        raw: { from: '7d', to: 'now' },
+      };
+    });
+
+    it('should use the requested step size as the request interval', async () => {
+      expect(ctx.queryCalledWith?.interval).toBe('30m');
+      expect(ctx.queryCalledWith?.intervalMs).toBe(1800000);
+      expect(ctx.queryCalledWith?.maxDataPoints).toBe(337);
+      expect(ctx.queryCalledWith?.stepSize).toBe('30m');
+      expect(ctx.queryCalledWith?.scopedVars.__interval!.value).toBe('30m');
+      expect(ctx.queryCalledWith?.scopedVars.__interval_ms!.value).toBe(1800000);
+    });
+  });
+
+  describeQueryRunnerScenario('with fixed step size above datapoint cap', (ctx) => {
+    ctx.setup(() => {
+      ctx.maxDataPoints = 2000;
+      ctx.stepSize = '1m';
+      ctx.timeRange = {
+        from: dateTime('2023-01-01T00:00:00Z'),
+        to: dateTime('2023-01-08T00:00:00Z'),
+        raw: { from: '7d', to: 'now' },
+      };
+    });
+
+    it('should clamp to the next allowed step size under 1500 datapoints', async () => {
+      expect(ctx.queryCalledWith?.interval).toBe('10m');
+      expect(ctx.queryCalledWith?.intervalMs).toBe(600000);
+      expect(ctx.queryCalledWith?.maxDataPoints).toBe(1009);
+      expect(ctx.queryCalledWith?.stepSize).toBe('1m');
     });
   });
 

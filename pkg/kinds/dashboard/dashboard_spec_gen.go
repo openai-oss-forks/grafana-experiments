@@ -175,6 +175,8 @@ type Panel struct {
 	// identifier like: "40s", "3d", etc.
 	// See: https://grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/#query-options
 	Interval *string `json:"interval,omitempty"`
+	// The query step size setting requests one datapoint per selected interval.
+	StepSize *string `json:"stepSize,omitempty"`
 	// Overrides the relative time range for individual panels,
 	// which causes them to be different than what is selected in
 	// the dashboard time picker in the top-right corner of the dashboard. You can use this to show metrics from different

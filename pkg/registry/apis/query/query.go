@@ -210,14 +210,17 @@ func (r *queryREST) Connect(connectCtx context.Context, name string, _ runtime.O
 			} else {
 				var errorDataResponse backend.DataResponse
 
-				badRequestErrors := []error{
-					service.ErrInvalidDatasourceID,
-					service.ErrNoQueriesFound,
-					service.ErrMissingDataSourceInfo,
-					service.ErrQueryParamMismatch,
-					service.ErrDuplicateRefId,
-					datasources.ErrDataSourceNotFound,
-				}
+					badRequestErrors := []error{
+						service.ErrInvalidDatasourceID,
+						service.ErrNoQueriesFound,
+						service.ErrMissingDataSourceInfo,
+						service.ErrQueryParamMismatch,
+						service.ErrDuplicateRefId,
+						service.ErrInvalidStepSize,
+						service.ErrInvalidMinInterval,
+						service.ErrStepSizeBelowMinInterval,
+						datasources.ErrDataSourceNotFound,
+					}
 				isTypedBadRequestError := false
 				for _, badRequestError := range badRequestErrors {
 					if errors.Is(err, badRequestError) {

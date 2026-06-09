@@ -4,19 +4,20 @@ import { first } from 'rxjs/operators';
 
 import {
   CoreApp,
-  DataQueryRequest,
-  DataSourceApi,
-  PanelData,
-  rangeUtil,
-  ScopedVars,
-  QueryRunnerOptions,
-  QueryRunner as QueryRunnerSrv,
+  type DataQueryRequest,
+  type DataSourceApi,
+  type PanelData,
+  type ScopedVars,
+  type QueryRunnerOptions,
+  type QueryRunner as QueryRunnerSrv,
   LoadingState,
-  DataSourceRef,
+  type DataSourceRef,
   preProcessPanelData,
 } from '@grafana/data';
 import { getTemplateSrv } from '@grafana/runtime';
 import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
+
+import { resolveQueryIntervalWithStepSize } from '../utils/stepSize';
 
 import { getNextRequestId } from './PanelQueryRunner';
 import { setStructureRevision } from './processing/revision';
@@ -50,6 +51,7 @@ export class QueryRunner implements QueryRunnerSrv {
       maxDataPoints,
       scopedVars,
       minInterval,
+      stepSize,
     } = options;
 
     if (this.subscription) {
@@ -92,7 +94,12 @@ export class QueryRunner implements QueryRunnerSrv {
           const lowerIntervalLimit = minInterval
             ? getTemplateSrv().replace(minInterval, request.scopedVars)
             : ds.interval;
-          const norm = rangeUtil.calculateInterval(timeRange, maxDataPoints, lowerIntervalLimit);
+          const norm = resolveQueryIntervalWithStepSize({
+            range: timeRange,
+            maxDataPoints,
+            minInterval: lowerIntervalLimit,
+            stepSize,
+          });
 
           // make shallow copy of scoped vars,
           // and add built in variables interval and interval_ms
@@ -103,6 +110,9 @@ export class QueryRunner implements QueryRunnerSrv {
 
           request.interval = norm.interval;
           request.intervalMs = norm.intervalMs;
+          request.maxDataPoints = norm.maxDataPoints;
+          request.stepSize = stepSize;
+          request.minInterval = lowerIntervalLimit;
 
           this.subscription = runRequest(ds, request).subscribe({
             next: (data) => {
