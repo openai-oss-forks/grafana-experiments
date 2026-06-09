@@ -33,7 +33,7 @@ jobs:
           repositories: '["grafana"]'
           permissions: '{"contents": "write", "pull_requests": "write", "workflows": "write"}'
       - name: Checkout Grafana
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           token: ${{ steps.generate_token.outputs.token }}
       - name: Update package.json versions

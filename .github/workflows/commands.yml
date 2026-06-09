@@ -53,7 +53,7 @@ jobs:
           private-key: ${{ env.GITHUB_APP_PRIVATE_KEY }}
 
       - name: Checkout Actions
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: "grafana/grafana-github-actions"
           path: ./actions

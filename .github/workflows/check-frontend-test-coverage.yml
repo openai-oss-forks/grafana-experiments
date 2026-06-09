@@ -39,7 +39,7 @@ jobs:
     outputs:
       changed-files: ${{ steps.changed-files.outputs.all_changed_files }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: true
           fetch-depth: 2
@@ -184,7 +184,7 @@ jobs:
         branch: [pr, main]
     steps:
       - name: Checkout PR branch
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -209,7 +209,7 @@ jobs:
 
       - name: Checkout target branch
         if: steps.check-affected.outputs.affected == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           ref: ${{ matrix.branch == 'main' && github.event.pull_request.base.sha || github.event.pull_request.head.sha }}
           persist-credentials: false
@@ -265,7 +265,7 @@ jobs:
       matrix:
         codeowner: ${{ fromJSON(needs.setup.outputs.opted-in-teams) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 

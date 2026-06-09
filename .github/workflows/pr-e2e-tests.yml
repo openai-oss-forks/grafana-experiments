@@ -30,7 +30,7 @@ jobs:
       changed: ${{ steps.detect-changes.outputs.e2e }}
       cloud_plugins_changed: ${{ steps.detect-changes.outputs.e2e-cloud-plugins }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -53,7 +53,7 @@ jobs:
         if: github.event.pull_request.head.repo.fork == false
       - uses: grafana/shared-workflows/actions/login-to-gar@main
         if: github.event.pull_request.head.repo.fork == false
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -125,7 +125,7 @@ jobs:
     outputs:
       artifact: ${{ steps.artifact.outputs.artifact }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Setup Go
@@ -225,7 +225,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v6
@@ -269,7 +269,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -302,7 +302,7 @@ jobs:
         shardTotal: [8]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v6
@@ -331,7 +331,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -398,7 +398,7 @@ jobs:
     name: All Playwright tests complete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -483,7 +483,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v6
@@ -528,7 +528,7 @@ jobs:
           repo_secrets: |
             GRAFANA_MISC_STATS_API_KEY=grafana-misc-stats:api_key
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Setup Node.js
@@ -565,7 +565,7 @@ jobs:
     name: All E2E tests complete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
