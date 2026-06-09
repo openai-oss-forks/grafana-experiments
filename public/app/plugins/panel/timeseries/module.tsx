@@ -15,6 +15,16 @@ export const plugin = new PanelPlugin<Options, FieldConfig>(TimeSeriesPanel)
   .useFieldConfig(getGraphFieldConfig(defaultGraphConfig))
   .setPanelOptions((builder) => {
     commonOptionsBuilder.addTooltipOptions(builder, false, true, optsWithHideZeros);
+    builder.addBooleanSwitch({
+      path: 'highlightSeriesOnHover',
+      name: t('timeseries.tooltip.name-highlight-series-on-hover', 'Highlight hovered series'),
+      description: t(
+        'timeseries.tooltip.description-highlight-series-on-hover',
+        'Emphasize the closest series while hovering over the visualization'
+      ),
+      category: [t('timeseries.tooltip.category', 'Tooltip')],
+      defaultValue: true,
+    });
     commonOptionsBuilder.addLegendOptions(builder);
 
     builder.addCustomEditor({

@@ -120,8 +120,18 @@ export const TimeSeriesPanel = ({
       timeZone,
       dataLinkPostProcessor,
       cursorMode: options.tooltip.mode,
+      highlightSeriesOnHover: options.highlightSeriesOnHover !== false,
     };
-  }, [dataLinkPostProcessor, fieldConfig, hasCompactSeries, options.tooltip.mode, replaceVariables, theme, timeZone]);
+  }, [
+    dataLinkPostProcessor,
+    fieldConfig,
+    hasCompactSeries,
+    options.highlightSeriesOnHover,
+    options.tooltip.mode,
+    replaceVariables,
+    theme,
+    timeZone,
+  ]);
 
   const timezones = useMemo(() => getTimezones(options.timezone, timeZone), [options.timezone, timeZone]);
   const suggestions = useMemo(() => {

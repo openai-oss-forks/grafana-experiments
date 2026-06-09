@@ -21,6 +21,7 @@ import {
   SceneVariableSet,
   VizPanel,
 } from '@grafana/scenes';
+import { VizOrientation } from '@grafana/schema';
 import { mockDataSource } from 'app/features/alerting/unified/mocks';
 import { setupDataSources } from 'app/features/alerting/unified/testSetup/datasources';
 import { DataSourceType } from 'app/features/alerting/unified/utils/datasource';
@@ -175,11 +176,35 @@ describe('PanelEditor', () => {
       expect(panel.state.$data).toBe(queryRunner);
     });
 
-    it('does not wrap legacy dashboard data when entering panel edit', () => {
+    it('wraps eligible compact dashboard data before the first response arrives', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
       jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
       const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+
+      expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
+    });
+
+    it('does not wrap dashboard data when compact rendering is unsupported', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({
+        key: 'panel-1',
+        pluginId: 'timeseries',
+        options: { orientation: VizOrientation.Vertical },
+        $data: queryRunner,
+      });
       const gridItem = new DashboardGridItem({ body: panel });
       const panelEditor = buildPanelEditScene(panel);
       const dashboard = new DashboardScene({

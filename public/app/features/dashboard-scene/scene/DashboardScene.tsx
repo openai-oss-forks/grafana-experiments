@@ -936,7 +936,6 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
       app: CoreApp.Dashboard,
       panelPluginId: panel?.state.pluginId,
       transformations,
-      isEditing: dashboard.state.isEditing,
       isInspecting: dashboard.state.overlay instanceof PanelInspectDrawer,
       isPublicDashboard: Boolean(config.publicDashboardAccessToken),
       hasTimeComparison,

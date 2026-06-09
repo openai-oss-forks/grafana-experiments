@@ -16,4 +16,5 @@ export interface CompactFieldConfigOptions {
   timeZone?: TimeZone;
   dataLinkPostProcessor?: DataLinkPostProcessor;
   cursorMode?: 'single' | 'multi' | 'none';
+  highlightSeriesOnHover?: boolean;
 }

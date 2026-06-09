@@ -99,7 +99,9 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     const hasCompactData =
       queryRunner?.state.data?.compactSeries !== undefined ||
       queryRunner?.state.data?.request?.preferredQueryResultFormat === 'compact-v1';
-    const compactDataSource = hasCompactData ? panel.state.$data : undefined;
+    const requestsCompactData =
+      queryRunner != null && dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat === 'compact-v1';
+    const compactDataSource = hasCompactData || requestsCompactData ? panel.state.$data : undefined;
     let compactEditWrapper: SceneDataTransformer | undefined;
 
     if (compactDataSource && !(compactDataSource instanceof SceneDataTransformer)) {

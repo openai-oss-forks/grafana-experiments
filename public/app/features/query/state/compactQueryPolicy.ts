@@ -9,7 +9,6 @@ interface CompactDashboardQueryContext {
   app?: string;
   panelPluginId?: string;
   transformations?: readonly unknown[];
-  isEditing?: boolean;
   isInspecting?: boolean;
   isPublicDashboard?: boolean;
   hasTimeComparison?: boolean;
@@ -22,7 +21,6 @@ export function getPreferredDashboardQueryFormat({
   app,
   panelPluginId,
   transformations = [],
-  isEditing = false,
   isInspecting = false,
   isPublicDashboard = false,
   hasTimeComparison = false,
@@ -33,7 +31,6 @@ export function getPreferredDashboardQueryFormat({
   if (
     app !== CoreApp.Dashboard ||
     panelPluginId !== 'timeseries' ||
-    isEditing ||
     isInspecting ||
     isPublicDashboard ||
     hasTimeComparison ||

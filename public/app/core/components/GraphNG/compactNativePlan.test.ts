@@ -42,6 +42,19 @@ const baseOptions: CompactFieldConfigOptions = {
 };
 
 describe('CompactNativeRenderPlan', () => {
+  test('omits the focus overlay without disabling compact cursor selection', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2]), series('A', 'errors', [2, 1])]);
+
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      cursorMode: 'single',
+      highlightSeriesOnHover: false,
+    });
+
+    expect(plan.source.cursorMode).toBe('single');
+    expect(plan.source.focusOverlayColor).toBeUndefined();
+  });
+
   test('uses typed columns, interns shared records, reuses one scratch target, and retains the response buffer', () => {
     const scratchTargets = new Set<unknown>();
     const registry = new FieldConfigOptionsRegistry(() => [

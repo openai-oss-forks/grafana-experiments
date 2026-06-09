@@ -53,7 +53,6 @@ describe('compact dashboard query policy', () => {
   test.each([
     { app: CoreApp.Explore, panelPluginId: 'timeseries' },
     { app: CoreApp.Dashboard, panelPluginId: 'table' },
-    { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isEditing: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isInspecting: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isPublicDashboard: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', hasTimeComparison: true },

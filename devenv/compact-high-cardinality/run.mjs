@@ -46,6 +46,8 @@ const options = {
   hoverPattern: readHoverPattern(),
   hoverYFraction: readOptionalUnitFraction('HOVER_Y_FRACTION'),
   headless: process.env.HEADLESS === '1',
+  editPanel: process.env.EDIT_PANEL === '1',
+  highlightSeriesOnHover: readOptionalBoolean('HIGHLIGHT_SERIES_ON_HOVER'),
   preservePanelGrid: process.env.PRESERVE_PANEL_GRID === '1',
   deviceScaleFactor: readPositiveNumber('DEVICE_SCALE_FACTOR', 1),
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-high-cardinality',
@@ -85,6 +87,9 @@ Environment:
   PRESERVE_PANEL_GRID     Set to 1 to keep the source panel width and height
   DEVICE_SCALE_FACTOR     Browser device scale factor (default: 1)
   HEADLESS                Set to 1 for headless Chromium
+  EDIT_PANEL              Set to 1 to open the selected panel in edit mode
+  HIGHLIGHT_SERIES_ON_HOVER
+                          Override the selected panel's hover highlighting with true or false
   CHROMIUM_PATH           Optional Chromium executable
   OUTPUT_DIR              Metrics and screenshot directory
 
@@ -97,6 +102,10 @@ Examples:
 
 const fixture = await createDashboardFixture(options);
 fixture.dashboard.uid = options.dashboardUid;
+if (options.highlightSeriesOnHover != null) {
+  fixture.dashboard.panels[0].options ??= {};
+  fixture.dashboard.panels[0].options.highlightSeriesOnHover = options.highlightSeriesOnHover;
+}
 const capturedResponse = options.responseJson ? await loadCapturedResponse(options.responseJson) : undefined;
 await fs.mkdir(options.outputDir, { recursive: true });
 
@@ -277,7 +286,8 @@ try {
       : options.dashboardFrom != null && options.dashboardTo != null
         ? `from=${options.dashboardFrom}&to=${options.dashboardTo}`
         : 'from=now-1h&to=now';
-  const dashboardUrl = `${options.baseUrl}/d/${options.dashboardUid}/compact-high-cardinality-local?orgId=1&${dashboardRange}`;
+  const editPanelQuery = options.editPanel ? '&editPanel=1' : '';
+  const dashboardUrl = `${options.baseUrl}/d/${options.dashboardUid}/compact-high-cardinality-local?orgId=1&${dashboardRange}${editPanelQuery}`;
   if (options.cpuProfile) {
     await startCpuProfile(cdp);
   }
@@ -812,7 +822,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     responseFormat,
     options.hoverSteps,
     tooltip.totalRows > 1,
-    seriesCount > 1
+    seriesCount > 1 && options.highlightSeriesOnHover !== false
   );
   if (options.verifyTooltipDigest) {
     await restoreTooltipDigestPosition(page, bounds);
@@ -1396,7 +1406,7 @@ async function verifyFocusOverlay(page, bounds, responseFormat, expectFocusOverl
     throw new Error(`Compact hover expected one focus overlay, found ${overlayCount}`);
   }
   if (responseFormat === 'compact-v1' && !expectFocusOverlay && overlayCount !== 0) {
-    throw new Error(`Single-series compact hover unexpectedly created ${overlayCount} focus overlays`);
+    throw new Error(`Compact hover unexpectedly created ${overlayCount} focus overlays`);
   }
   if (responseFormat === 'json' && overlayCount !== 0) {
     throw new Error('Legacy JSON hover unexpectedly created a compact focus overlay');
@@ -1687,6 +1697,20 @@ function readOptionalUnitFraction(name) {
     throw new Error(`${name} must be a finite number from 0 through 1`);
   }
   return value;
+}
+
+function readOptionalBoolean(name) {
+  const value = process.env[name];
+  if (value == null || value === '') {
+    return undefined;
+  }
+  if (value === 'true' || value === '1') {
+    return true;
+  }
+  if (value === 'false' || value === '0') {
+    return false;
+  }
+  throw new Error(`${name} must be true, false, 1, or 0`);
 }
 
 function readExpectedFormat() {
