@@ -43,7 +43,7 @@ jobs:
       version: ${{ steps.build_frontend.outputs.version }}
     steps:
       - name: checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
       - name: Verify inputs

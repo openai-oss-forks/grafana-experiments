@@ -13,7 +13,7 @@ jobs:
       contents: read
     steps:
       # Checks-out your repository, which is validated in the next step
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
       - name: GitHub CODEOWNERS Validator
