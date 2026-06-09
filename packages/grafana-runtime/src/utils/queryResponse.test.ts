@@ -107,6 +107,12 @@ interface CompactTestResult {
   error?: string;
   executedQueryString?: string;
   calculatedMinStep?: number;
+  notices?: Array<{
+    severity: 'info' | 'warning' | 'error';
+    text: string;
+    link?: string;
+    inspect?: 'meta' | 'error' | 'data' | 'stats';
+  }>;
   frames: CompactTestFrame[];
 }
 
@@ -135,6 +141,10 @@ function makeCompactResponse(input: {
     intern(refId);
     intern(result.error);
     intern(result.executedQueryString);
+    for (const notice of result.notices ?? []) {
+      intern(notice.text);
+      intern(notice.link);
+    }
     for (const frame of result.frames) {
       intern(frame.frameName);
       intern(frame.refId ?? refId);
@@ -192,7 +202,16 @@ function makeCompactResponse(input: {
     resultWriter.writeUint16(result.frames.length > 0 ? 0 : 0);
     resultWriter.writeUint16(result.frames.length > 0 ? 1 : 0);
     resultWriter.writeUint32(result.calculatedMinStep ? 1 : 0);
-    resultWriter.writeUint32(0);
+    resultWriter.writeUint32(result.notices?.length ?? 0);
+
+    for (const notice of result.notices ?? []) {
+      resultWriter.writeUint32(intern(notice.text));
+      resultWriter.writeUint32(intern(notice.link));
+      resultWriter.writeUint8({ info: 0, warning: 1, error: 2 }[notice.severity]);
+      resultWriter.writeUint8(notice.inspect == null ? 0 : { meta: 1, error: 2, data: 3, stats: 4 }[notice.inspect]);
+      resultWriter.writeUint16(0);
+      resultWriter.writeUint32(0);
+    }
 
     for (const frame of result.frames) {
       const axisID = frame.axis ?? 0;
@@ -254,6 +273,10 @@ class CompactTestWriter {
 
   writeUint16(value: number) {
     this.writeNumber(2, (view) => view.setUint16(0, value, true));
+  }
+
+  writeUint8(value: number) {
+    this.bytes.push(value);
   }
 
   writeUint32(value: number) {
@@ -416,6 +439,7 @@ describe('Query Response parser', () => {
         axes: [[0, 1000, 5]],
         results: {
           A: {
+            notices: [{ severity: 'warning', text: 'Partial response', link: '/inspect', inspect: 'stats' }],
             frames: [
               compactTestFrame('A-series', [1, 2, 3, 4, 5]),
               { ...compactTestFrame('B-series', [0, NaN, Infinity], [0, 2, 4]), labels: { host: 'a' } },
@@ -437,6 +461,15 @@ describe('Query Response parser', () => {
 
     expect(response.data).toEqual([]);
     expect(compact.axes).toEqual([{ start: 0, step: 1000, count: 5 }]);
+    expect(compact.notices).toEqual([
+      {
+        refId: 'A',
+        severity: 'warning',
+        text: 'Partial response',
+        link: '/inspect',
+        inspect: 'stats',
+      },
+    ]);
     expect(compact.series).toHaveLength(2);
     expect(secondSeries).toMatchObject({
       refId: 'A',

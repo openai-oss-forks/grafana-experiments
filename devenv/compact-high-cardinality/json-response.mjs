@@ -36,6 +36,12 @@ export function buildJsonResponse({
       frames.push({
         schema: {
           refId,
+          meta: {
+            type: 'timeseries-multi',
+            typeVersion: [0, 1],
+            custom: { resultType: 'matrix' },
+            preferredVisualisationType: 'graph',
+          },
           fields: [
             { name: 'Time', type: 'time', typeInfo: { frame: 'time.Time', nullable: true } },
             {

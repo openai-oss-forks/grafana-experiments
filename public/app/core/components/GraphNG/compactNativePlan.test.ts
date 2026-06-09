@@ -14,6 +14,7 @@ import {
   Labels,
   NullValueMode,
   ReducerID,
+  reduceField,
 } from '@grafana/data';
 import {
   AxisColorMode,
@@ -359,7 +360,112 @@ describe('CompactNativeRenderPlan', () => {
     expect(plan.reduce(0, ReducerID.first)).toBe(0);
     expect(plan.reduce(0, ReducerID.last)).toBe(4);
     expect(plan.reduce(0, ReducerID.allIsZero)).toBe(false);
-    expect(() => plan.reduce(0, ReducerID.median)).toThrow('unsupported');
+    expect(plan.reduce(0, ReducerID.median)).toBe(2);
+    expect(getSeries).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [NullValueMode.Ignore, [3, null, 2, 1, 4]],
+    [NullValueMode.Null, [3, null, 2, 1, 4]],
+    [NullValueMode.AsZero, [3, null, 2, 1, 4]],
+    [NullValueMode.Null, [0, null, 1]],
+    [NullValueMode.Null, [null, 0, 1]],
+    [NullValueMode.Null, [null, null]],
+    [NullValueMode.Ignore, [null, null, null]],
+    [NullValueMode.Null, [null, null, null]],
+    [NullValueMode.AsZero, [null, null, null]],
+    [NullValueMode.Ignore, [-5, -1, 0, 7]],
+    [NullValueMode.Ignore, [2, 2, 2, 9]],
+    [NullValueMode.Ignore, [7]],
+    [NullValueMode.Ignore, []],
+    [NullValueMode.Ignore, [1, Number.NaN, Number.POSITIVE_INFINITY, 3]],
+    [NullValueMode.Null, [1, Number.NaN, Number.POSITIVE_INFINITY, 3]],
+    [NullValueMode.AsZero, [1, Number.NaN, Number.POSITIVE_INFINITY, 3]],
+  ] as Array<[NullValueMode, Array<number | null>]>)(
+    'matches the legacy median for null mode %s and values %p',
+    (nullValueMode, values) => {
+      const compactValues = values.map((value) => (value != null && Number.isFinite(value) ? value : null));
+      const { source, getSeries } = columnarSource([seriesFromLogicalValues('A', 'requests', values)]);
+      const plan = createCompactNativeRenderPlan(source, {
+        ...baseOptions,
+        fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+          compactProperty('nullValueMode', 'nullValueMode', false),
+        ]),
+        fieldConfig: { defaults: { nullValueMode }, overrides: [] },
+      });
+      const legacyField: Field<number | null> = {
+        name: 'requests',
+        type: FieldType.number,
+        config: { nullValueMode },
+        values: compactValues,
+      };
+      const expected = reduceField({ field: legacyField, reducers: [ReducerID.median] }).median;
+
+      expect(Object.is(plan.reduce(0, ReducerID.median), expected)).toBe(true);
+      expect(plan.source.buffer).toBe(source.buffer);
+      expect(getSeries).not.toHaveBeenCalled();
+    }
+  );
+
+  test('reuses exact median results across ordered value matchers and by-value colors', () => {
+    const registry = new FieldConfigOptionsRegistry(() => [
+      compactProperty('color', 'color', false),
+      compactProperty('nullValueMode', 'nullValueMode', false),
+      compactProperty('custom.lineWidth', 'lineWidth', true),
+    ]);
+    const { source, getSeries } = columnarSource([
+      series('A', 'requests', [Number.NaN, 4, 8]),
+      series('B', 'requests', [1, 100, 3]),
+    ]);
+    const color = { mode: FieldColorModeId.ContinuousGrYlRd };
+    Reflect.set(color, 'seriesBy', ReducerID.median);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: registry,
+      fieldConfig: {
+        defaults: {
+          color,
+          custom: { lineWidth: 1 },
+        },
+        overrides: [
+          {
+            matcher: {
+              id: FieldMatcherID.byValue,
+              options: { reducer: ReducerID.median, op: ComparisonOperation.EQ, value: 6 },
+            },
+            properties: [{ id: 'nullValueMode', value: NullValueMode.AsZero }],
+          },
+          {
+            matcher: {
+              id: FieldMatcherID.byValue,
+              options: { reducer: ReducerID.median, op: ComparisonOperation.EQ, value: 4 },
+            },
+            properties: [{ id: 'custom.lineWidth', value: 2 }],
+          },
+        ],
+      },
+    });
+    const legacyColor = { mode: FieldColorModeId.ContinuousGrYlRd };
+    Reflect.set(legacyColor, 'seriesBy', ReducerID.median);
+    const legacyField: Field = {
+      name: 'requests',
+      type: FieldType.number,
+      config: {
+        color: legacyColor,
+      },
+      values: [1, 100, 3],
+      state: { range: { min: 1, max: 100, delta: 99 } },
+    };
+
+    expect(plan.getStyle(0).config).toMatchObject({
+      nullValueMode: NullValueMode.AsZero,
+      custom: { lineWidth: 2 },
+    });
+    expect(plan.reduce(0, ReducerID.median)).toBe(4);
+    expect(plan.reduce(1, ReducerID.median)).toBe(3);
+    expect(plan.source.styles[plan.source.columns.styleIds[1]].stroke).toBe(
+      getFieldSeriesColor(legacyField, baseOptions.theme).color
+    );
     expect(getSeries).not.toHaveBeenCalled();
   });
 
@@ -413,6 +519,22 @@ describe('CompactNativeRenderPlan', () => {
     expect(style.areaFill).toBe(colorManipulator.alpha(style.stroke, 0.35));
     expect(style.fill).toBe(style.stroke);
     expect(style.lineWidth).toBe(0);
+  });
+
+  test('normalizes the legacy sqrt scale value to linear', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.scaleDistribution', 'scaleDistribution', true),
+      ]),
+      fieldConfig: {
+        defaults: { custom: { scaleDistribution: { type: 'sqrt' as ScaleDistribution } } },
+        overrides: [],
+      },
+    });
+
+    expect(plan.source.scales[0].distribution).toBe(ScaleDistribution.Linear);
   });
 
   test('compiles normal stacks into stable groups without materializing sample arrays', () => {
@@ -740,6 +862,30 @@ function series(
   axisCount = values.length
 ): TestSeries {
   return { refId, valueName, values, labels, presence, axisCount };
+}
+
+function seriesFromLogicalValues(
+  refId: string,
+  valueName: string,
+  logicalValues: Array<number | null>,
+  labels: Labels = {}
+): TestSeries {
+  const values: number[] = [];
+  const hasGaps = logicalValues.some((value) => value == null);
+  const presence = hasGaps ? new Uint8Array(Math.ceil(logicalValues.length / 8)) : undefined;
+
+  for (let index = 0; index < logicalValues.length; index++) {
+    const value = logicalValues[index];
+    if (value == null) {
+      continue;
+    }
+    values.push(value);
+    if (presence) {
+      presence[index >> 3] |= 1 << (index & 7);
+    }
+  }
+
+  return series(refId, valueName, values, labels, presence, logicalValues.length);
 }
 
 function columnarSource(definitions: TestSeries[], onLabelRead: jest.Mock = jest.fn()) {

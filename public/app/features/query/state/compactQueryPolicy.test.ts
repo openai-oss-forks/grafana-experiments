@@ -104,44 +104,33 @@ describe('compact dashboard query policy', () => {
         ],
       },
     },
-    {
-      app: CoreApp.Dashboard,
-      panelPluginId: 'timeseries',
-      fieldConfig: {
-        defaults: {},
-        overrides: [
-          {
-            matcher: { id: FieldMatcherID.byValue, options: { reducer: ReducerID.median } },
-            properties: [],
-          },
-        ],
-      },
-    },
-    {
-      app: CoreApp.Dashboard,
-      panelPluginId: 'timeseries',
-      legendCalcs: [ReducerID.median],
-    },
-    {
-      app: CoreApp.Dashboard,
-      panelPluginId: 'timeseries',
-      fieldConfig: {
-        defaults: {},
-        overrides: [
-          {
-            matcher: { id: FieldMatcherID.byName, options: 'requests' },
-            properties: [
-              {
-                id: FieldConfigProperty.Color,
-                value: { mode: 'continuous-blues', seriesBy: ReducerID.median },
-              },
-            ],
-          },
-        ],
-      },
-    },
   ])('keeps unsupported request context on JSON: %p', (context) => {
     expect(getPreferredDashboardQueryFormat(context)).toBeUndefined();
+  });
+
+  test('supports median in legends, value matchers, and color reducers', () => {
+    const fieldConfig: FieldConfigSource = {
+      defaults: { color: { mode: 'continuous-blues' } },
+      overrides: [
+        {
+          matcher: {
+            id: FieldMatcherID.byValue,
+            options: { reducer: ReducerID.median, value: 10 },
+          },
+          properties: [],
+        },
+      ],
+    };
+    Reflect.set(fieldConfig.defaults.color!, 'seriesBy', ReducerID.median);
+
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        legendCalcs: [ReducerID.median],
+        fieldConfig,
+      })
+    ).toBe('compact-v1');
   });
 
   test('supports normal line stacking without leaving the compact path', () => {
@@ -180,12 +169,12 @@ describe('compact dashboard query policy', () => {
     ).toBe('compact-v1');
   });
 
-  test('rejects unsupported default color reducers from runtime dashboard JSON', () => {
+  test('rejects unsupported percentile color reducers from runtime dashboard JSON', () => {
     const fieldConfig: FieldConfigSource = {
       defaults: { color: { mode: 'continuous-blues' } },
       overrides: [],
     };
-    Reflect.set(fieldConfig.defaults.color!, 'seriesBy', ReducerID.median);
+    Reflect.set(fieldConfig.defaults.color!, 'seriesBy', ReducerID.p95);
 
     expect(
       getPreferredDashboardQueryFormat({ app: CoreApp.Dashboard, panelPluginId: 'timeseries', fieldConfig })
@@ -309,6 +298,16 @@ describe('compact dashboard query policy', () => {
         fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
       })
     ).toBeUndefined();
+  });
+
+  test('treats the legacy sqrt scale value as linear', () => {
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        fieldConfig: { defaults: { custom: { scaleDistribution: { type: 'sqrt' } } }, overrides: [] },
+      })
+    ).toBe('compact-v1');
   });
 
   test('supports opacity gradients and keeps unsupported gradient modes on JSON', () => {

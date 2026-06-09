@@ -47,6 +47,7 @@ const options = {
   hoverYFraction: readOptionalUnitFraction('HOVER_Y_FRACTION'),
   headless: process.env.HEADLESS === '1',
   editPanel: process.env.EDIT_PANEL === '1',
+  verifyPanelEditor: process.env.VERIFY_PANEL_EDITOR === '1',
   highlightSeriesOnHover: readOptionalBoolean('HIGHLIGHT_SERIES_ON_HOVER'),
   preservePanelGrid: process.env.PRESERVE_PANEL_GRID === '1',
   deviceScaleFactor: readPositiveNumber('DEVICE_SCALE_FACTOR', 1),
@@ -88,6 +89,7 @@ Environment:
   DEVICE_SCALE_FACTOR     Browser device scale factor (default: 1)
   HEADLESS                Set to 1 for headless Chromium
   EDIT_PANEL              Set to 1 to open the selected panel in edit mode
+  VERIFY_PANEL_EDITOR     Set to 1 to require the time-series panel editor and hover control
   HIGHLIGHT_SERIES_ON_HOVER
                           Override the selected panel's hover highlighting with true or false
   CHROMIUM_PATH           Optional Chromium executable
@@ -286,13 +288,19 @@ try {
       : options.dashboardFrom != null && options.dashboardTo != null
         ? `from=${options.dashboardFrom}&to=${options.dashboardTo}`
         : 'from=now-1h&to=now';
-  const editPanelQuery = options.editPanel ? '&editPanel=1' : '';
+  const editPanelQuery = options.editPanel ? `&editPanel=panel-${fixture.dashboard.panels[0].id}` : '';
   const dashboardUrl = `${options.baseUrl}/d/${options.dashboardUid}/compact-high-cardinality-local?orgId=1&${dashboardRange}${editPanelQuery}`;
   if (options.cpuProfile) {
     await startCpuProfile(cdp);
   }
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await recordRender(page, cdp, report, 1, 'initial-render');
+  if (options.verifyPanelEditor) {
+    if (!options.editPanel) {
+      throw new Error('VERIFY_PANEL_EDITOR requires EDIT_PANEL=1');
+    }
+    report.panelEditor = await verifyPanelEditor(page);
+  }
   await captureChart(page, path.join(options.outputDir, 'chart.png'));
   if (options.cpuProfile) {
     await stopCpuProfile(cdp, path.join(options.outputDir, 'initial-render.cpuprofile'));
@@ -438,6 +446,15 @@ async function recordRender(page, cdp, report, requestNumber, label) {
   );
   assertCanvasRendered(sample);
   report.samples.push(sample);
+}
+
+async function verifyPanelEditor(page) {
+  const highlightControl = page.getByText('Highlight hovered series', { exact: true });
+  await highlightControl.waitFor({ state: 'visible', timeout: 30_000 });
+  return {
+    url: page.url(),
+    highlightControlVisible: true,
+  };
 }
 
 async function installPaintProbe(context, hoverStageProfile) {
@@ -774,16 +791,22 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
             const row = icon.closest('tr') ?? icon.parentElement?.parentElement;
             return row ? [row] : [];
           });
+    const focusedRow =
+      format === 'compact-v1' ? element?.querySelector('[data-testid="compact-tooltip-focused-series"]') : undefined;
+    const focusedText = focusedRow?.textContent?.trim().replace(/^Focused series\s*/, '') ?? '';
     const bounds = rows.map((row) => row.getBoundingClientRect());
     const declaredRowCount = Number(rows[0]?.getAttribute('aria-setsize'));
-    const totalRows = Number.isFinite(declaredRowCount) && declaredRowCount > 0 ? declaredRowCount : rows.length;
+    const listTotalRows = Number.isFinite(declaredRowCount) && declaredRowCount > 0 ? declaredRowCount : rows.length;
+    const focusedRows = focusedRow ? 1 : 0;
     const scrollContainer = element?.querySelector('[role="list"]');
     const scrollBounds = scrollContainer?.getBoundingClientRect();
     const virtualContent = scrollContainer?.firstElementChild;
     return {
       visible: Boolean(element),
-      totalRows,
-      mountedRows: rows.length,
+      totalRows: listTotalRows + focusedRows,
+      listTotalRows,
+      focusedRows,
+      mountedRows: rows.length + focusedRows,
       scrollViewportHeight: Math.round((scrollBounds?.height ?? 0) * 10) / 10,
       scrollHeight: scrollContainer?.scrollHeight ?? 0,
       virtualContentHeight: Math.round((virtualContent?.getBoundingClientRect().height ?? 0) * 10) / 10,
@@ -792,7 +815,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
       mountedIndexRange: rows.length
         ? [Number(rows[0].getAttribute('data-index')), Number(rows.at(-1)?.getAttribute('data-index'))]
         : null,
-      sampleRows: rows.slice(0, 3).map((row) => row.textContent?.trim() ?? ''),
+      sampleRows: [focusedText, ...rows.map((row) => row.textContent?.trim() ?? '')].filter(Boolean).slice(0, 3),
       textLength: element?.textContent?.length ?? 0,
       overlappingRows: bounds.some((rowBounds, index) => index > 0 && rowBounds.top < bounds[index - 1].bottom - 1),
     };
@@ -803,7 +826,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
   if (responseFormat === 'compact-v1' && tooltip.overlappingRows) {
     throw new Error('Compact tooltip rows overlap');
   }
-  if (responseFormat === 'compact-v1' && tooltip.totalRows > tooltip.mountedRows) {
+  if (responseFormat === 'compact-v1' && tooltip.listTotalRows > tooltip.mountedRows - tooltip.focusedRows) {
     const expectedScrollHeight = Number.parseFloat(tooltip.virtualContentStyleHeight);
     if (!Number.isFinite(expectedScrollHeight) || tooltip.scrollHeight + 1 < expectedScrollHeight) {
       throw new Error(
@@ -828,11 +851,11 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     await restoreTooltipDigestPosition(page, bounds);
   }
   const tooltipRowDigest = options.verifyTooltipDigest
-    ? await collectTooltipRowDigest(page, responseFormat, tooltip.totalRows)
+    ? await collectTooltipRowDigests(page, responseFormat, tooltip.listTotalRows, tooltip.focusedRows)
     : undefined;
   const scrollReachedLastRow =
-    responseFormat === 'compact-v1' && tooltip.totalRows > tooltip.mountedRows
-      ? await verifyVirtualTooltipScroll(page, tooltip.totalRows)
+    responseFormat === 'compact-v1' && tooltip.listTotalRows > tooltip.mountedRows - tooltip.focusedRows
+      ? await verifyVirtualTooltipScroll(page, tooltip.listTotalRows)
       : null;
   const pinning = await verifyCompactTooltipPinning(page, bounds, responseFormat);
 
@@ -892,7 +915,10 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     hoverToTooltipMs,
     firstHover,
     tooltip,
-    tooltipRowDigest,
+    tooltipRowDigest: tooltipRowDigest?.ordered,
+    tooltipContentDigest: tooltipRowDigest?.content,
+    tooltipRowHashes: tooltipRowDigest?.rows,
+    tooltipFocusedHash: tooltipRowDigest?.focused,
     scrollReachedLastRow,
     repeatedHover,
     pinning,
@@ -900,9 +926,9 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
   };
 }
 
-async function collectTooltipRowDigest(page, responseFormat, totalRows) {
+async function collectTooltipRowDigests(page, responseFormat, listTotalRows, focusedRows) {
   return page.evaluate(
-    async ({ responseFormat, totalRows }) => {
+    async ({ responseFormat, listTotalRows, focusedRows }) => {
       const tooltip =
         document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
         Array.from(document.body.querySelectorAll('div')).find((candidate) => {
@@ -913,8 +939,11 @@ async function collectTooltipRowDigest(page, responseFormat, totalRows) {
         throw new Error('Tooltip disappeared before row digest collection');
       }
 
-      const values = new Array(totalRows);
+      const values = new Array(listTotalRows);
+      let focusedValue = '';
       if (responseFormat === 'compact-v1') {
+        const focused = tooltip.querySelector('[data-testid="compact-tooltip-focused-series"]');
+        focusedValue = focused?.textContent?.trim().replace(/^Focused series\s*/, '') ?? '';
         const rows = tooltip.querySelector('[role="list"]');
         if (!(rows instanceof HTMLElement)) {
           throw new Error('Compact tooltip has no scroll container');
@@ -951,13 +980,33 @@ async function collectTooltipRowDigest(page, responseFormat, totalRows) {
 
       const missing = values.findIndex((value) => value == null);
       if (missing >= 0) {
-        throw new Error(`Tooltip digest did not visit row ${missing} of ${totalRows}`);
+        throw new Error(`Tooltip digest did not visit row ${missing} of ${listTotalRows}`);
       }
-      const bytes = new TextEncoder().encode(values.map((value, index) => `${index}\0${value}\n`).join(''));
-      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-      return Array.from(digest, (value) => value.toString(16).padStart(2, '0')).join('');
+      if (focusedRows > 0 && !focusedValue) {
+        throw new Error('Compact tooltip focused row disappeared before digest collection');
+      }
+      const orderedValues = focusedValue ? [focusedValue, ...values] : values;
+      const hashText = (value) => {
+        let hash = 0x811c9dc5;
+        for (let index = 0; index < value.length; index++) {
+          hash ^= value.charCodeAt(index);
+          hash = Math.imul(hash, 0x01000193);
+        }
+        return (hash >>> 0).toString(16).padStart(8, '0');
+      };
+      const digest = async (entries) => {
+        const bytes = new TextEncoder().encode(entries.map((value, index) => `${index}\0${value}\n`).join(''));
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+        return Array.from(hash, (value) => value.toString(16).padStart(2, '0')).join('');
+      };
+      return {
+        ordered: await digest(orderedValues),
+        content: await digest([...orderedValues].sort()),
+        rows: values.map(hashText),
+        focused: focusedValue ? hashText(focusedValue) : null,
+      };
     },
-    { responseFormat, totalRows }
+    { responseFormat, listTotalRows, focusedRows }
   );
 }
 

@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { dateTimeFormat, formattedValueToString, getFieldColorMode, TimeZone } from '@grafana/data';
+import { t } from '@grafana/i18n';
 import { DashboardCursorSync, LineStyle, SortOrder, TooltipDisplayMode } from '@grafana/schema';
 import { getPortalContainer, useStyles2 } from '@grafana/ui';
 import {
@@ -129,20 +130,30 @@ export function CompactTooltipPlugin({
     }
     return snapshot;
   }, [effectiveMode, hoverCursorIndex, hoverCursorRevision, hoverSource, pinned]);
+  const tooltipSnapshot = useMemo(
+    () =>
+      cursorSnapshot
+        ? {
+            seriesCount: cursorSnapshot.seriesCount,
+            valueAt: (seriesIndex: number) => resolveMultiTooltipValue(plan.source, cursorSnapshot, seriesIndex),
+          }
+        : null,
+    [cursorSnapshot, plan.source]
+  );
   const filteredTooltipIndexes = useMemo(() => {
-    if (!cursorSnapshot || hoverCursorIndex == null) {
+    if (!tooltipSnapshot || hoverCursorIndex == null) {
       return null;
     }
     const filtered = filterTooltipIndexes(
       baseIndexes,
-      cursorSnapshot,
+      tooltipSnapshot,
       plan.getStyle,
       hideZeros,
       filteredIndexesRef.current
     );
     filteredIndexesRef.current = filtered.storage;
     return filtered;
-  }, [baseIndexes, cursorSnapshot, hideZeros, hoverCursorIndex, plan.getStyle]);
+  }, [baseIndexes, hideZeros, hoverCursorIndex, plan.getStyle, tooltipSnapshot]);
   const visibleIndexes = filteredTooltipIndexes ?? baseIndexes;
   const indexes = useMemo(() => {
     if (!filteredTooltipIndexes || sortOrder === SortOrder.None) {
@@ -154,8 +165,8 @@ export function CompactTooltipPlugin({
   }, [filteredTooltipIndexes, sortOrder, visibleIndexes]);
   const focusedValue =
     activeHover && activeHover.focusedSeries >= 0
-      ? cursorSnapshot
-        ? cursorSnapshot.valueAt(activeHover.focusedSeries)
+      ? tooltipSnapshot
+        ? tooltipSnapshot.valueAt(activeHover.focusedSeries)
         : activeHover.source.yAt(activeHover.focusedSeries, activeHover.focusedIndex)
       : undefined;
   const focusedValueVisible =
@@ -560,11 +571,15 @@ export function CompactTooltipPlugin({
             className={styles.focusedSeries}
             style={{ borderLeftColor: focusedSeriesRow.color }}
             title={focusedSeriesRow.accessibleText}
-            aria-label={`Focused series: ${focusedSeriesRow.accessibleText}`}
+            aria-label={t('timeseries.compact-tooltip.focused-series-label', 'Focused series: {{series}}', {
+              series: focusedSeriesRow.accessibleText,
+            })}
             data-testid="compact-tooltip-focused-series"
             data-series-index={activeHover.focusedSeries}
           >
-            <div className={styles.focusedSeriesHeading}>Focused series</div>
+            <div className={styles.focusedSeriesHeading}>
+              {t('timeseries.compact-tooltip.focused-series-heading', 'Focused series')}
+            </div>
             <VizTooltipRow
               label={focusedSeriesRow.displayName}
               value={focusedSeriesRow.formattedValue}
@@ -717,6 +732,21 @@ export function resolveTooltipValue(
   }
   const nearestIndex = source.nearestPresent(seriesIndex, valueIndex, 0);
   return nearestIndex == null ? value : source.yAt(seriesIndex, nearestIndex);
+}
+
+export function resolveMultiTooltipValue(
+  source: {
+    yAt(seriesIndex: number, index: number): number | null | undefined;
+  },
+  snapshot: Pick<CompactCursorSnapshot, 'cursorIndex' | 'valueAt' | 'dataIndexAt'>,
+  seriesIndex: number
+) {
+  const value = snapshot.valueAt(seriesIndex);
+  if (value !== undefined) {
+    return value;
+  }
+  const resolvedIndex = snapshot.dataIndexAt(seriesIndex);
+  return resolvedIndex === snapshot.cursorIndex ? value : source.yAt(seriesIndex, resolvedIndex);
 }
 
 function shouldShowTooltipValue(value: number | null | undefined, noValue: unknown, hideZeros: boolean): boolean {

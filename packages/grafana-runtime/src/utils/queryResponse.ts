@@ -3,6 +3,7 @@ import {
   CompactTimeSeriesAxis,
   CompactTimeSeriesData,
   CompactTimeSeriesMetadata,
+  CompactTimeSeriesNotice,
   CompactTimeSeriesSeries,
   DataQueryResponse,
   KeyValue,
@@ -37,6 +38,7 @@ const COMPACT_RESPONSE_HEADER_SIZE = 32;
 const COMPACT_AXIS_RECORD_SIZE = 24;
 const COMPACT_STRING_RECORD_SIZE = 8;
 const COMPACT_RESULT_HEADER_SIZE = 48;
+const COMPACT_NOTICE_RECORD_SIZE = 16;
 const COMPACT_FRAME_HEADER_SIZE = 48;
 const COMPACT_LABEL_RECORD_SIZE = 8;
 const COMPACT_BINARY_VERSION = 1;
@@ -325,6 +327,7 @@ function decodeCompactQueryDataResponse(response: unknown, queries?: DataQuery[]
             axes: decoded.axes,
             series,
             metadata: decoded.metadata,
+            notices: orderedResults.flatMap((result) => result.notices),
             decodeStats: decoded.stats,
           }
         : undefined,
@@ -353,6 +356,7 @@ interface CompactV1Result {
   refId: string;
   status: number;
   error?: string;
+  notices: CompactTimeSeriesNotice[];
   seriesStart: number;
   seriesCount: number;
 }
@@ -480,10 +484,13 @@ class CompactV1Reader {
       }
       const recordLength = this.binary.getUint32At(offset);
       const resultFrameCount = this.binary.getUint32At(offset + 20);
+      const noticeCount = this.binary.getUint32At(offset + 44);
+      const metadataLength = COMPACT_RESULT_HEADER_SIZE + noticeCount * COMPACT_NOTICE_RECORD_SIZE;
       if (
-        recordLength < COMPACT_RESULT_HEADER_SIZE ||
+        !Number.isSafeInteger(metadataLength) ||
+        recordLength < metadataLength ||
         offset + recordLength > this.binary.byteLength ||
-        resultFrameCount > Math.floor((recordLength - COMPACT_RESULT_HEADER_SIZE) / COMPACT_FRAME_HEADER_SIZE) ||
+        resultFrameCount > Math.floor((recordLength - metadataLength) / COMPACT_FRAME_HEADER_SIZE) ||
         frameCount + resultFrameCount > Math.floor(this.binary.byteLength / COMPACT_FRAME_HEADER_SIZE)
       ) {
         throw new Error('Invalid compact query response');
@@ -532,11 +539,13 @@ class CompactV1Reader {
     const versionMajor = this.binary.readUint16();
     const versionMinor = this.binary.readUint16();
     const flags = this.binary.readUint32();
+    const noticeCount = this.binary.readUint32();
     const resultEnd = resultStart + recordLength;
+    const metadataLength = COMPACT_RESULT_HEADER_SIZE + noticeCount * COMPACT_NOTICE_RECORD_SIZE;
     if (
-      this.binary.readUint32() !== 0 ||
-      recordLength < COMPACT_RESULT_HEADER_SIZE ||
-      frameCount > Math.floor((recordLength - COMPACT_RESULT_HEADER_SIZE) / COMPACT_FRAME_HEADER_SIZE) ||
+      !Number.isSafeInteger(metadataLength) ||
+      recordLength < metadataLength ||
+      frameCount > Math.floor((recordLength - metadataLength) / COMPACT_FRAME_HEADER_SIZE) ||
       resultEnd > this.binary.byteLength ||
       refIDStringID >= strings.count ||
       errorStringID >= strings.count ||
@@ -556,6 +565,7 @@ class CompactV1Reader {
     if ((error !== '' && frameCount !== 0) || (error === '' && status !== 0 && status !== 200)) {
       throw new Error('Invalid compact query response');
     }
+    const notices = this.readNotices(noticeCount, strings, refId);
 
     let firstMetaId = 0;
     let sharedMetaId = 0;
@@ -569,6 +579,7 @@ class CompactV1Reader {
           calculatedMinStep,
           flags,
           executedQueryString,
+          notices,
           frameIndex: 0,
         })
       );
@@ -583,6 +594,7 @@ class CompactV1Reader {
                 calculatedMinStep,
                 flags,
                 executedQueryString,
+                notices,
                 frameIndex: 1,
               })
             )
@@ -601,7 +613,39 @@ class CompactV1Reader {
     }
     this.assertOffset(resultEnd);
 
-    return { refId, status, error: error || undefined, seriesStart, seriesCount: frameCount };
+    return { refId, status, error: error || undefined, notices, seriesStart, seriesCount: frameCount };
+  }
+
+  private readNotices(noticeCount: number, strings: CompactV1StringTable, refId: string): CompactTimeSeriesNotice[] {
+    this.binary.ensureRemaining(noticeCount * COMPACT_NOTICE_RECORD_SIZE);
+    const notices: CompactTimeSeriesNotice[] = [];
+    const severities = ['info', 'warning', 'error'] as const;
+    const inspectTypes = [undefined, 'meta', 'error', 'data', 'stats'] as const;
+    for (let noticeIndex = 0; noticeIndex < noticeCount; noticeIndex++) {
+      const textStringID = this.binary.readUint32();
+      const linkStringID = this.binary.readUint32();
+      const severity = this.binary.readUint8();
+      const inspect = this.binary.readUint8();
+      if (
+        this.binary.readUint16() !== 0 ||
+        this.binary.readUint32() !== 0 ||
+        textStringID >= strings.count ||
+        linkStringID >= strings.count ||
+        severity >= severities.length ||
+        inspect >= inspectTypes.length
+      ) {
+        throw new Error('Invalid compact query response');
+      }
+      const link = strings.get(linkStringID);
+      notices.push({
+        refId,
+        severity: severities[severity],
+        text: strings.get(textStringID),
+        link: link || undefined,
+        inspect: inspectTypes[inspect],
+      });
+    }
+    return notices;
   }
 
   private readFrame(
@@ -689,6 +733,7 @@ class CompactV1Reader {
     calculatedMinStep: number;
     flags: number;
     executedQueryString: string;
+    notices: CompactTimeSeriesNotice[];
     frameIndex: number;
   }): QueryResultMeta {
     const custom: Record<string, unknown> = { resultType: 'matrix' };
@@ -700,6 +745,7 @@ class CompactV1Reader {
       typeVersion: [result.versionMajor, result.versionMinor],
       custom,
       executedQueryString: result.frameIndex === 0 ? result.executedQueryString || undefined : undefined,
+      notices: result.notices,
     };
   }
 

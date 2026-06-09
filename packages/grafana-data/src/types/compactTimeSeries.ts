@@ -1,4 +1,4 @@
-import { Labels, QueryResultMeta } from './data';
+import { Labels, QueryResultMeta, QueryResultMetaNotice } from './data';
 
 /** @internal */
 export const COMPACT_TIME_SERIES_FORMAT = 'grafana-querydata-compact-v1' as const;
@@ -87,6 +87,11 @@ export interface CompactTimeSeriesMetadata {
   materializeLabels(series: CompactTimeSeriesSeries, additional?: Labels): Labels | undefined;
 }
 
+/** Result-scoped notice retained without creating a DataFrame. @internal */
+export interface CompactTimeSeriesNotice extends QueryResultMetaNotice {
+  refId: string;
+}
+
 /**
  * Buffer-backed Prometheus range-query response. Sample values remain encoded
  * until a visualization explicitly materializes its renderer input.
@@ -100,6 +105,7 @@ export interface CompactTimeSeriesData {
   axes: readonly CompactTimeSeriesAxis[];
   series: CompactTimeSeriesSeriesList;
   metadata: CompactTimeSeriesMetadata;
+  notices?: readonly CompactTimeSeriesNotice[];
   decodeStats: {
     responseBytes: number;
     axisCount: number;

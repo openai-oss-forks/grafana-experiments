@@ -63,7 +63,7 @@ export function WarningBadges() {
     const severityTypes: SeverityType[] = ['warning', 'info'];
 
     severityTypes.forEach((type) => {
-      const allNotices = dataFilteredByRefId.reduce((acc: QueryResultMetaNotice[], series) => {
+      const frameNotices = dataFilteredByRefId.reduce((acc: QueryResultMetaNotice[], series) => {
         if (!series.meta?.notices) {
           return acc;
         }
@@ -71,8 +71,10 @@ export function WarningBadges() {
         const notices = filter(series.meta.notices, (item: QueryResultMetaNotice) => item.severity === type);
         return acc.concat(notices);
       }, []);
+      const compactNotices =
+        data.compactSeries?.notices?.filter((notice) => notice.refId === queryRefId && notice.severity === type) ?? [];
 
-      const uniqueNotices = uniqBy(allNotices, 'text');
+      const uniqueNotices = uniqBy([...frameNotices, ...compactNotices], 'text');
 
       if (uniqueNotices.length > 0) {
         groups.push({ type, notices: uniqueNotices });

@@ -65,11 +65,20 @@ for (const panel of selected) {
     compactReport.interactions?.tooltip?.sampleRows,
     jsonReport.interactions?.tooltip?.sampleRows
   );
+  const tooltipRowCountParity =
+    compactReport.interactions?.tooltip?.totalRows === jsonReport.interactions?.tooltip?.totalRows;
   const tooltipDigestParity =
     compactReport.interactions?.tooltipRowDigest === jsonReport.interactions?.tooltipRowDigest;
+  const tooltipContentParity =
+    compactReport.interactions?.tooltipContentDigest === jsonReport.interactions?.tooltipContentDigest;
+  const tooltipOrderParity = normalizedTooltipRowsEqual(
+    compactReport.interactions?.tooltipRowHashes,
+    compactReport.interactions?.tooltipFocusedHash,
+    jsonReport.interactions?.tooltipRowHashes
+  );
   const passed =
     comparison.mismatchRatio <= maxMismatchRatio &&
-    (!verifyInteractions || (tooltipSampleParity && tooltipDigestParity));
+    (!verifyInteractions || (tooltipRowCountParity && tooltipContentParity && tooltipOrderParity));
   results.push({
     panelId: panel.id,
     title: panel.title,
@@ -82,7 +91,10 @@ for (const panel of selected) {
     compactTooltipRows: compactReport.interactions?.tooltip?.totalRows,
     jsonTooltipRows: jsonReport.interactions?.tooltip?.totalRows,
     tooltipSampleParity,
+    tooltipRowCountParity,
     tooltipDigestParity,
+    tooltipContentParity,
+    tooltipOrderParity,
     visualParity: passed ? 'passed' : 'failed',
     ...comparison,
   });
@@ -114,6 +126,21 @@ function arraysEqual(left, right) {
     left.length === right.length &&
     left.every((value, index) => value === right[index])
   );
+}
+
+function normalizedTooltipRowsEqual(compactRows, focusedHash, jsonRows) {
+  if (!Array.isArray(compactRows) || !Array.isArray(jsonRows)) {
+    return false;
+  }
+  const normalizedJsonRows = [...jsonRows];
+  if (focusedHash) {
+    const focusedIndex = normalizedJsonRows.indexOf(focusedHash);
+    if (focusedIndex < 0) {
+      return false;
+    }
+    normalizedJsonRows.splice(focusedIndex, 1);
+  }
+  return arraysEqual(compactRows, normalizedJsonRows);
 }
 
 function runPanel(panel, panelOutput, expectedFormat, responseFormat, grafanaUrl) {

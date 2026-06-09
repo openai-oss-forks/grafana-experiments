@@ -5,6 +5,7 @@ import {
   findTooltipIndex,
   getTooltipTransform,
   isCompactTooltipPlotVisible,
+  resolveMultiTooltipValue,
   resolveTooltipValue,
   sortTooltipIndexes,
 } from './CompactTooltipPlugin';
@@ -96,6 +97,22 @@ describe('compact tooltip indexes', () => {
     expect(filtered.valueAt(0)).toBe(1);
     expect(filtered.valueAt(1)).toBe(11);
     expect(resolveTooltipValue(source, 0, 1)).toBe(1);
+  });
+
+  it.each([
+    ['line span gap', undefined, 3],
+    ['retained null gap', null, null],
+  ])('matches legacy multi-tooltip resolution for %s', (_name, exactValue, expected) => {
+    const source = {
+      yAt: (_seriesIndex: number, valueIndex: number) => (valueIndex === 2 ? 3 : exactValue),
+    };
+    const snapshot = {
+      cursorIndex: 1,
+      valueAt: () => exactValue,
+      dataIndexAt: () => 2,
+    };
+
+    expect(resolveMultiTooltipValue(source, snapshot, 0)).toBe(expected);
   });
 
   it('keeps the focused series outside the virtualized bulk rows', () => {

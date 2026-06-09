@@ -58,7 +58,7 @@ export function PanelHeaderTitleItems(props: Props) {
         <PanelLinks onShowPanelLinks={onShowPanelLinks} panelLinks={panelLinks} />
       )}
 
-      {<PanelHeaderNotices panelId={panelId} frames={data.series} />}
+      {<PanelHeaderNotices panelId={panelId} frames={data.series} notices={data.compactSeries?.notices} />}
       {timeshift}
       {alertState && alertStateItem}
     </>

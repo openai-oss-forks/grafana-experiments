@@ -57,6 +57,7 @@ export async function createFullDashboardFixture(filePath, pointCount) {
   const sourceDashboard = exported.dashboard ?? exported;
   const dashboard = structuredClone(sourceDashboard);
   const sourcePanels = flattenPanels(sourceDashboard.panels ?? []);
+  const sourcePanelsById = new Map(sourcePanels.map((panel) => [String(panel.id), panel]));
 
   dashboard.id = null;
   dashboard.uid = DASHBOARD_UID;
@@ -68,6 +69,21 @@ export async function createFullDashboardFixture(filePath, pointCount) {
   dashboard.panels = rewriteFullDashboardPanels(sourceDashboard.panels ?? [], pointCount);
 
   const replayPanels = flattenPanels(dashboard.panels);
+  const replayTimeSeriesPanels = replayPanels
+    .filter((panel) => panel.type === 'timeseries')
+    .map((panel) => {
+      const sourcePanel = sourcePanelsById.get(String(panel.id)) ?? panel;
+      const enabledTargets = (sourcePanel.targets ?? []).filter((target) => target.hide !== true);
+      const compactIneligibility = getCompactTransportIneligibility(sourcePanel, enabledTargets);
+      return {
+        id: String(panel.id),
+        title: panel.title ?? '',
+        enabledTargetCount: enabledTargets.length,
+        enabledRefIds: enabledTargets.map((target) => String(target.refId ?? '')),
+        compactTransportEligible: compactIneligibility.length === 0,
+        compactIneligibility,
+      };
+    });
   return {
     dashboard,
     source: {
@@ -78,8 +94,48 @@ export async function createFullDashboardFixture(filePath, pointCount) {
       replayPanelCount: replayPanels.length,
       omittedPanelCount: sourcePanels.length - replayPanels.length,
       replayTimeSeriesPanelCount: replayPanels.filter((panel) => panel.type === 'timeseries').length,
+      replayTimeSeriesPanels,
     },
   };
+}
+
+function getCompactTransportIneligibility(panel, targets) {
+  const reasons = [];
+  if (usesBarRendering(panel.fieldConfig)) {
+    reasons.push('bar-rendering');
+  }
+  if (targets.length === 0) {
+    reasons.push('no-enabled-targets');
+    return reasons;
+  }
+  for (const target of targets) {
+    const datasourceType = target.datasource?.type ?? panel.datasource?.type;
+    if (datasourceType !== 'prometheus') {
+      reasons.push('non-prometheus');
+    }
+    if (typeof target.expr !== 'string' || target.expr.length === 0) {
+      reasons.push('missing-promql');
+    }
+    if (target.instant === true || target.range === false) {
+      reasons.push('instant-query');
+    }
+    if (target.exemplar === true) {
+      reasons.push('exemplars');
+    }
+    if (target.format != null && target.format !== '' && target.format !== 'time_series') {
+      reasons.push('non-timeseries-format');
+    }
+  }
+  return [...new Set(reasons)];
+}
+
+function usesBarRendering(fieldConfig) {
+  if (fieldConfig?.defaults?.custom?.drawStyle === 'bars') {
+    return true;
+  }
+  return (fieldConfig?.overrides ?? []).some((override) =>
+    (override.properties ?? []).some((property) => property.id === 'custom.drawStyle' && property.value === 'bars')
+  );
 }
 
 function createBuiltInDashboard(scenarioName, pointCount) {

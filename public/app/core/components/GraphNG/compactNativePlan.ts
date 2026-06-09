@@ -135,6 +135,11 @@ interface ReductionCacheChunk {
   readonly values: Float64Array;
 }
 
+interface MedianMatcherMemo {
+  seriesIndex: number;
+  readonly cache: ReductionCacheChunk;
+}
+
 interface RangeCacheChunk {
   readonly states: Uint8Array;
   readonly mins: Float64Array;
@@ -226,6 +231,14 @@ export function createCompactNativeRenderPlan(
   const configuredDisplayNameKeys = new Map<string, number>();
   const dataView = new DataView(data.buffer);
   const dataBytes = new Uint8Array(data.buffer);
+  const medianWorkspace = new CompactMedianWorkspace();
+  const medianMatcherMemo: MedianMatcherMemo = {
+    seriesIndex: -1,
+    cache: {
+      states: new Uint8Array(3),
+      values: new Float64Array(3),
+    },
+  };
   let visibilityState = visibilityStates.get(data);
   if (!visibilityState) {
     visibilityState = { overrides: new Map() };
@@ -298,7 +311,9 @@ export function createCompactNativeRenderPlan(
           dataBytes,
           access,
           getFrameNamesDiffer,
-          getLabelProfile
+          getLabelProfile,
+          medianWorkspace,
+          medianMatcherMemo
         )
       ) {
         continue;
@@ -413,7 +428,8 @@ export function createCompactNativeRenderPlan(
         access,
         seriesIndex,
         getStyle(seriesIndex).config,
-        reducer
+        reducer,
+        medianWorkspace
       );
       writeReduction(cacheChunk, chunkIndex, value);
     }
@@ -1240,7 +1256,9 @@ function matchesSeries(
   dataBytes: Uint8Array,
   access: CompactSeriesAccess,
   getFrameNamesDiffer: () => boolean,
-  getLabelProfile: () => LabelProfile
+  getLabelProfile: () => LabelProfile,
+  medianWorkspace: CompactMedianWorkspace,
+  medianMatcherMemo: MedianMatcherMemo
 ): boolean {
   switch (matcherId) {
     case FieldMatcherID.numeric:
@@ -1293,7 +1311,17 @@ function matchesSeries(
       if (!valueMatcher) {
         throw new Error('Compact native value matcher was not compiled');
       }
-      return matchesValue(valueMatcher, data, dataView, dataBytes, access, seriesIndex, config);
+      return matchesValue(
+        valueMatcher,
+        data,
+        dataView,
+        dataBytes,
+        access,
+        seriesIndex,
+        config,
+        medianWorkspace,
+        medianMatcherMemo
+      );
     default:
       throw new Error(`Compact native field matcher ${matcherId} is unsupported`);
   }
@@ -1328,10 +1356,22 @@ function matchesValue(
   dataBytes: Uint8Array,
   access: CompactSeriesAccess,
   seriesIndex: number,
-  config: FieldConfig<GraphFieldConfig>
+  config: FieldConfig<GraphFieldConfig>,
+  medianWorkspace: CompactMedianWorkspace,
+  medianMatcherMemo: MedianMatcherMemo
 ): boolean {
   const { reducer, operation, value } = matcher;
-  const left = reduceCompactSourceSeries(dataView, access, seriesIndex, config, reducer);
+  const left =
+    reducer === ReducerID.median
+      ? reduceCompactMedianMatcher(
+          dataView,
+          access,
+          seriesIndex,
+          config,
+          medianWorkspace,
+          medianMatcherMemo
+        )
+      : reduceCompactSourceSeries(dataView, access, seriesIndex, config, reducer, medianWorkspace);
   if (reducer === ReducerID.allIsNull || reducer === ReducerID.allIsZero) {
     return Boolean(left);
   }
@@ -1582,6 +1622,183 @@ function calculateCompactSourceMinMax(
   return { min, max };
 }
 
+class CompactMedianWorkspace {
+  private values = new Float64Array(0);
+
+  calculate(
+    maximumLength: number,
+    nullMode: NullValueMode,
+    iterate: (callback: (value: number | null, index: number) => void) => void
+  ): number | null | undefined {
+    if (maximumLength === 0) {
+      return undefined;
+    }
+    if (maximumLength > this.values.length) {
+      this.values = new Float64Array(maximumLength);
+    }
+
+    let length = 0;
+    let negativeCount = 0;
+    iterate((sourceValue) => {
+      let value = normalizeCompactMedianValue(sourceValue);
+      if (value == null) {
+        if (nullMode === NullValueMode.Ignore) {
+          return;
+        }
+        value = 0;
+      }
+      if (length >= maximumLength) {
+        throw new Error('Compact median input exceeds its declared length');
+      }
+      this.values[length++] = value;
+      if (value < 0) {
+        negativeCount++;
+      }
+    });
+
+    if (length === 0) {
+      return Number.NaN;
+    }
+
+    const middle = Math.floor(length / 2);
+    const upper = selectCompactMedianValue(this.values, length, middle);
+    if (length % 2 === 0) {
+      const lower =
+        middle - 1 >= upper.equalStart
+          ? upper.value
+          : findMaximumCompactMedianValue(this.values, upper.equalStart);
+      return (lower + upper.value) / 2;
+    }
+
+    if (nullMode !== NullValueMode.Null || upper.value !== 0) {
+      return upper.value;
+    }
+
+    const zeroOffset = middle - negativeCount;
+    let zeroIndex = 0;
+    let result: number | null = 0;
+    iterate((sourceValue) => {
+      const value = normalizeCompactMedianValue(sourceValue);
+      if (value != null && value !== 0) {
+        return;
+      }
+      if (zeroIndex === zeroOffset) {
+        result = value;
+      }
+      zeroIndex++;
+    });
+    return result;
+  }
+}
+
+function normalizeCompactMedianValue(value: number | null): number | null {
+  return value == null || !Number.isFinite(value) ? null : value;
+}
+
+function selectCompactMedianValue(
+  values: Float64Array,
+  length: number,
+  target: number
+): { value: number; equalStart: number } {
+  let left = 0;
+  let right = length - 1;
+  while (left <= right) {
+    const middle = left + ((right - left) >> 1);
+    const pivot = medianOfThree(values[left], values[middle], values[right]);
+    let lower = left;
+    let scan = left;
+    let upper = right;
+
+    while (scan <= upper) {
+      const value = values[scan];
+      if (value < pivot) {
+        swapCompactMedianValues(values, lower++, scan++);
+      } else if (value > pivot) {
+        swapCompactMedianValues(values, scan, upper--);
+      } else {
+        scan++;
+      }
+    }
+
+    if (target < lower) {
+      right = lower - 1;
+    } else if (target > upper) {
+      left = upper + 1;
+    } else {
+      return { value: pivot, equalStart: lower };
+    }
+  }
+  throw new Error('Compact median selection failed');
+}
+
+function medianOfThree(left: number, middle: number, right: number): number {
+  if (left > middle) {
+    const value = left;
+    left = middle;
+    middle = value;
+  }
+  if (middle > right) {
+    const value = middle;
+    middle = right;
+    right = value;
+  }
+  return left > middle ? left : middle;
+}
+
+function swapCompactMedianValues(values: Float64Array, left: number, right: number): void {
+  const value = values[left];
+  values[left] = values[right];
+  values[right] = value;
+}
+
+function findMaximumCompactMedianValue(values: Float64Array, length: number): number {
+  if (length === 0) {
+    throw new Error('Compact median lower partition is empty');
+  }
+  let maximum = values[0];
+  for (let index = 1; index < length; index++) {
+    if (values[index] > maximum) {
+      maximum = values[index];
+    }
+  }
+  return maximum;
+}
+
+function reduceCompactMedianMatcher(
+  dataView: DataView,
+  access: CompactSeriesAccess,
+  seriesIndex: number,
+  config: Readonly<FieldConfig<GraphFieldConfig>>,
+  medianWorkspace: CompactMedianWorkspace,
+  memo: MedianMatcherMemo
+): unknown {
+  if (memo.seriesIndex !== seriesIndex) {
+    memo.seriesIndex = seriesIndex;
+    memo.cache.states.fill(REDUCTION_UNSET);
+  }
+  const nullMode = config.nullValueMode ?? NullValueMode.Ignore;
+  const cacheIndex = getCompactNullModeIndex(nullMode);
+  if (memo.cache.states[cacheIndex] === REDUCTION_UNSET) {
+    writeReduction(
+      memo.cache,
+      cacheIndex,
+      reduceCompactSourceSeries(dataView, access, seriesIndex, config, ReducerID.median, medianWorkspace)
+    );
+  }
+  return readReduction(memo.cache, cacheIndex);
+}
+
+function getCompactNullModeIndex(nullMode: NullValueMode): number {
+  switch (nullMode) {
+    case NullValueMode.Ignore:
+      return 0;
+    case NullValueMode.Null:
+      return 1;
+    case NullValueMode.AsZero:
+      return 2;
+  }
+}
+
 function reduceCompactSeries(
   data: CompactTimeSeriesData,
   dataView: DataView,
@@ -1589,14 +1806,19 @@ function reduceCompactSeries(
   access: CompactSeriesAccess,
   seriesIndex: number,
   config: Readonly<FieldConfig<GraphFieldConfig>>,
-  reducer: ReducerID
+  reducer: ReducerID,
+  medianWorkspace: CompactMedianWorkspace
 ): unknown {
   const axis = data.axes[access.getAxisId(seriesIndex)];
   if (!axis) {
     throw new Error(`Compact native series ${seriesIndex} references a missing axis`);
   }
-  return reduceCompactValues(config, reducer, (callback) =>
-    forEachRawValue(data, dataView, dataBytes, access, seriesIndex, callback)
+  return reduceCompactValues(
+    config,
+    reducer,
+    (callback) => forEachRawValue(data, dataView, dataBytes, access, seriesIndex, callback),
+    axis.count,
+    medianWorkspace
   );
 }
 
@@ -1605,19 +1827,29 @@ function reduceCompactSourceSeries(
   access: CompactSeriesAccess,
   seriesIndex: number,
   config: Readonly<FieldConfig<GraphFieldConfig>>,
-  reducer: ReducerID
+  reducer: ReducerID,
+  medianWorkspace: CompactMedianWorkspace
 ): unknown {
-  return reduceCompactValues(config, reducer, (callback) =>
-    forEachSourceValue(dataView, access, seriesIndex, callback)
+  return reduceCompactValues(
+    config,
+    reducer,
+    (callback) => forEachSourceValue(dataView, access, seriesIndex, callback),
+    access.getPresentCount(seriesIndex),
+    medianWorkspace
   );
 }
 
 function reduceCompactValues(
   config: Readonly<FieldConfig<GraphFieldConfig>>,
   reducer: ReducerID,
-  iterate: (callback: (value: number | null, index: number) => void) => void
+  iterate: (callback: (value: number | null, index: number) => void) => void,
+  maximumLength: number,
+  medianWorkspace: CompactMedianWorkspace
 ): unknown {
   const nullMode = config.nullValueMode ?? NullValueMode.Ignore;
+  if (reducer === ReducerID.median) {
+    return medianWorkspace.calculate(maximumLength, nullMode, iterate);
+  }
   let first: number | null | undefined;
   let last: number | null | undefined;
   let firstNotNull: number | null = null;

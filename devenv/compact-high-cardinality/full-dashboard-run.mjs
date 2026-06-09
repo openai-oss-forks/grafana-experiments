@@ -28,6 +28,9 @@ Environment:
   MAX_SCROLL_STEPS        Stop after this many steps; 0 reaches the bottom (default: 0)
   SAMPLE_EVERY            Retain a full sample every N steps (default: 5)
   SCROLL_CYCLES           Full refresh-and-scroll cycles in one browser session (default: 1)
+  BIDIRECTIONAL_SCROLL    Scroll back to the top within each cycle when set to 1
+  REQUIRE_ALL_TIMESERIES_COMPACT
+                           Fail when any queried time-series panel omits compact-v1
   GC_MODE                 none or retained (default: none)
   OFFSCREEN_SETTLE_MS     Wait at the bottom before the final sample (default: 0)
   HEAP_SNAPSHOT           Set to 1 to capture the active dashboard heap
@@ -52,6 +55,8 @@ const options = {
   maxScrollSteps: readNonNegativeInteger('MAX_SCROLL_STEPS', 0),
   sampleEvery: readPositiveInteger('SAMPLE_EVERY', 5),
   scrollCycles: readPositiveInteger('SCROLL_CYCLES', 1),
+  bidirectionalScroll: process.env.BIDIRECTIONAL_SCROLL === '1',
+  requireAllTimeSeriesCompact: process.env.REQUIRE_ALL_TIMESERIES_COMPACT === '1',
   gcMode: readGcMode(),
   offscreenSettleMs: readNonNegativeInteger('OFFSCREEN_SETTLE_MS', 0),
   heapSnapshot: process.env.HEAP_SNAPSHOT === '1',
@@ -72,6 +77,7 @@ const browser = await chromium.launch({
 });
 const context = await browser.newContext({ viewport: { width: 1800, height: 1100 } });
 await installCanvasActivityProbe(context);
+await installDashboardScrollProbe(context);
 const page = await context.newPage();
 const cdp = await context.newCDPSession(page);
 await cdp.send('Performance.enable');
@@ -130,6 +136,7 @@ await context.route('**/api/ds/query**', async (route) => {
     queryRequests.push({
       requestNumber,
       panelId: headers['x-panel-id'],
+      panelTitle: headers['x-panel-title'],
       panelPluginId: headers['x-panel-plugin-id'],
       requestedFormat,
       responseFormat,
@@ -208,7 +215,7 @@ try {
 
   for (let cycle = 1; cycle <= options.scrollCycles; cycle++) {
     if (cycle > 1) {
-      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      await scrollDashboardTo(page, 0);
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
       await waitForQueryIdle(120_000);
       await waitForCanvasIdle(page, 120_000);
@@ -226,6 +233,11 @@ try {
       report.interactions[`cycle-${cycle}-bottom`] = bottomInteraction;
       report.interactions.bottom = bottomInteraction;
     }
+    if (options.bidirectionalScroll && scroll.reachedBottom) {
+      const reverse = await scrollDashboard(page, cdp, report, cycle, true);
+      report.scrollCycles.push(reverse);
+      report.interactions[`cycle-${cycle}-top`] = await verifyVisibleChartInteraction(page);
+    }
   }
 
   if (options.offscreenSettleMs > 0) {
@@ -238,7 +250,7 @@ try {
   await page.screenshot({ path: path.join(options.outputDir, 'dashboard-bottom.png') });
   const requestsBeforeReentry = queryRequests.length;
   const reentryStartedAt = performance.now();
-  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  await scrollDashboardTo(page, 0);
   await waitForQueryIdle(120_000);
   await waitForCanvasIdle(page, 120_000);
   await waitForVisibleCharts(page);
@@ -264,6 +276,19 @@ try {
   if (options.responseFormat === 'auto' && report.summary.compactRequestCount === 0) {
     throw new Error('Compact dashboard run did not issue any compact-v1 requests');
   }
+  if (
+    options.responseFormat === 'auto' &&
+    options.requireAllTimeSeriesCompact &&
+    (report.summary.timeSeriesFormatAudit.jsonPanelCount > 0 ||
+      report.summary.timeSeriesFormatAudit.mixedPanelCount > 0 ||
+      report.summary.timeSeriesFormatAudit.missingPanelCount > 0)
+  ) {
+    throw new Error(
+      `Strict compact audit failed: ${report.summary.timeSeriesFormatAudit.jsonPanelCount} JSON, ` +
+        `${report.summary.timeSeriesFormatAudit.mixedPanelCount} mixed, ` +
+        `${report.summary.timeSeriesFormatAudit.missingPanelCount} missing time-series panels`
+    );
+  }
   if (options.heapSnapshot) {
     report.heapSnapshot = path.join(options.outputDir, 'dashboard.heapsnapshot');
     await takeHeapSnapshot(cdp, report.heapSnapshot);
@@ -287,11 +312,8 @@ try {
   await browser.close();
 }
 
-async function scrollDashboard(page, cdp, report, cycle) {
-  const dimensions = await page.evaluate(() => ({
-    viewportHeight: window.innerHeight,
-    documentHeight: document.documentElement.scrollHeight,
-  }));
+async function scrollDashboard(page, cdp, report, cycle, reverse = false) {
+  const dimensions = await page.evaluate(() => window.__dashboardScrollHarness.metrics());
   const stepPixels = Math.max(1, Math.floor(dimensions.viewportHeight * options.scrollStepViewports));
   const bottom = Math.max(0, dimensions.documentHeight - dimensions.viewportHeight);
   const allPositions = [];
@@ -299,12 +321,15 @@ async function scrollDashboard(page, cdp, report, cycle) {
     allPositions.push(position);
   }
   allPositions.push(bottom);
-  const positions = options.maxScrollSteps > 0 ? allPositions.slice(0, options.maxScrollSteps) : allPositions;
+  let positions = options.maxScrollSteps > 0 ? allPositions.slice(0, options.maxScrollSteps) : allPositions;
+  if (reverse) {
+    positions = [0, ...positions.slice(0, -1)].reverse();
+  }
 
   const steps = [];
   for (let index = 0; index < positions.length; index++) {
     const startedAt = performance.now();
-    await page.evaluate((top) => window.scrollTo({ top, behavior: 'instant' }), positions[index]);
+    await scrollDashboardTo(page, positions[index]);
     await page.evaluate(
       () =>
         new Promise((resolve) => {
@@ -315,7 +340,8 @@ async function scrollDashboard(page, cdp, report, cycle) {
     await waitForQueryIdle(120_000);
     await waitForCanvasIdle(page, 120_000);
     await assertNoVisiblePanelErrors(page);
-    const label = cycle === 1 ? `scroll-${index + 1}` : `cycle-${cycle}-scroll-${index + 1}`;
+    const direction = reverse ? 'up' : 'down';
+    const label = cycle === 1 ? `scroll-${direction}-${index + 1}` : `cycle-${cycle}-scroll-${direction}-${index + 1}`;
     const light = await collectBrowserSample(cdp, page, label, false);
     if (Math.abs(light.dom.scrollY - positions[index]) > 2) {
       throw new Error(`Dashboard stopped at scroll position ${light.dom.scrollY}, expected ${positions[index]}`);
@@ -345,7 +371,9 @@ async function scrollDashboard(page, cdp, report, cycle) {
     viewportHeight: dimensions.viewportHeight,
     documentHeight: dimensions.documentHeight,
     stepPixels,
-    reachedBottom: positions.at(-1) === bottom,
+    direction: reverse ? 'up' : 'down',
+    reachedBottom: !reverse && positions.at(-1) === bottom,
+    reachedTop: reverse && positions.at(-1) === 0,
     steps,
   };
 }
@@ -465,6 +493,7 @@ async function collectDomDiagnostics(page) {
       const bounds = panel.getBoundingClientRect();
       return bounds.bottom > 0 && bounds.top < window.innerHeight;
     });
+    const scroll = window.__dashboardScrollHarness.metrics();
     return {
       nodes: document.getElementsByTagName('*').length,
       canvases: document.querySelectorAll('canvas').length,
@@ -473,10 +502,14 @@ async function collectDomDiagnostics(page) {
       legendTableRows: document.querySelectorAll('table tbody tr').length,
       panels: panels.length,
       visiblePanels: visiblePanels.length,
-      scrollY: Math.round(window.scrollY),
-      documentHeight: document.documentElement.scrollHeight,
+      scrollY: scroll.scrollY,
+      documentHeight: scroll.documentHeight,
     };
   });
+}
+
+async function scrollDashboardTo(page, top) {
+  await page.evaluate((scrollTop) => window.__dashboardScrollHarness.scrollTo(scrollTop), top);
 }
 
 function summarize(report) {
@@ -512,6 +545,7 @@ function summarize(report) {
             backingStorageMB: Math.max(...retainedSamples.map((sample) => sample.backingStorageMB)),
           }
         : undefined,
+    timeSeriesFormatAudit: summarizeTimeSeriesFormats(report.fixture.replayTimeSeriesPanels ?? [], queryRequests),
     requestManifest: queryRequests
       .map((request) => ({
         panelId: request.panelId,
@@ -522,6 +556,46 @@ function summarize(report) {
       .sort((left, right) => String(left.panelId).localeCompare(String(right.panelId))),
     maxScrollStepMs: Math.max(...report.scrollCycles.flatMap((scroll) => scroll.steps.map((step) => step.durationMs))),
     medianScrollStepMs: median(report.scrollCycles.flatMap((scroll) => scroll.steps.map((step) => step.durationMs))),
+  };
+}
+
+function summarizeTimeSeriesFormats(panels, requests) {
+  const requestsByPanel = new Map();
+  for (const request of requests) {
+    if (request.panelPluginId !== 'timeseries' || request.error) {
+      continue;
+    }
+    const panelId = String(request.panelId);
+    const formats = requestsByPanel.get(panelId) ?? new Set();
+    formats.add(request.requestedFormat);
+    requestsByPanel.set(panelId, formats);
+  }
+
+  const excludedPanels = panels.filter((panel) => !panel.compactTransportEligible);
+  const panelResults = panels
+    .filter((panel) => panel.compactTransportEligible)
+    .map((panel) => {
+      const formats = [...(requestsByPanel.get(panel.id) ?? [])].sort();
+      const status =
+        formats.length === 0
+          ? 'missing'
+          : formats.length === 1 && formats[0] === 'compact-v1'
+            ? 'compact'
+            : formats.length === 1 && formats[0] === 'json'
+              ? 'json'
+              : 'mixed';
+      return { ...panel, status, formats };
+    });
+
+  return {
+    expectedPanelCount: panelResults.length,
+    compactPanelCount: panelResults.filter((panel) => panel.status === 'compact').length,
+    jsonPanelCount: panelResults.filter((panel) => panel.status === 'json').length,
+    mixedPanelCount: panelResults.filter((panel) => panel.status === 'mixed').length,
+    missingPanelCount: panelResults.filter((panel) => panel.status === 'missing').length,
+    nonCompactPanels: panelResults.filter((panel) => panel.status !== 'compact'),
+    excludedPanelCount: excludedPanels.length,
+    excludedPanels,
   };
 }
 
@@ -536,6 +610,37 @@ async function installCanvasActivityProbe(context) {
         return original.apply(this, args);
       };
     }
+  });
+}
+
+async function installDashboardScrollProbe(context) {
+  await context.addInitScript(() => {
+    let scrollContainer;
+    const getScrollContainer = () => {
+      if (scrollContainer?.isConnected) {
+        return scrollContainer;
+      }
+
+      scrollContainer =
+        document.querySelector('[data-testid="data-testid DashboardEditPaneSplitter body container"]') ??
+        document.scrollingElement ??
+        document.documentElement;
+      return scrollContainer;
+    };
+
+    window.__dashboardScrollHarness = {
+      metrics() {
+        const container = getScrollContainer();
+        return {
+          viewportHeight: container.clientHeight,
+          documentHeight: container.scrollHeight,
+          scrollY: Math.round(container.scrollTop),
+        };
+      },
+      scrollTo(top) {
+        getScrollContainer().scrollTo({ top, behavior: 'instant' });
+      },
+    };
   });
 }
 
@@ -630,6 +735,12 @@ function printReport(report, reportPath) {
   if (report.summary) {
     console.log(
       `Requests: ${report.summary.requestCount} (${report.summary.compactRequestCount} compact, ${report.summary.jsonRequestCount} JSON), series=${report.summary.totalSeries}`
+    );
+    const audit = report.summary.timeSeriesFormatAudit;
+    console.log(
+      `Time-series panels: ${audit.compactPanelCount}/${audit.expectedPanelCount} compact, ` +
+        `${audit.jsonPanelCount} JSON, ${audit.mixedPanelCount} mixed, ${audit.missingPanelCount} missing, ` +
+        `${audit.excludedPanelCount} transport-ineligible`
     );
     console.log(`Uncompressed response bytes: ${report.summary.rawResponseMB}MB`);
     console.log(

@@ -257,6 +257,9 @@ export function canonicalizeCompactCustomConfig(custom: GraphFieldConfig | undef
   }
 
   stripCompactInertProperties(custom);
+  if (getObjectProperty(custom.scaleDistribution, 'type') === 'sqrt') {
+    custom.scaleDistribution = { type: ScaleDistribution.Linear };
+  }
   if (custom.lineStyle == null) {
     delete custom.lineStyle;
     return Object.keys(custom).length === 0 ? undefined : custom;
@@ -416,6 +419,9 @@ function isSupportedScaleDistribution(value: unknown): boolean {
     return false;
   }
   const type = getObjectProperty(value, 'type');
+  if (type === 'sqrt') {
+    return hasOnlyProperties(value, ['type']);
+  }
   if (type !== ScaleDistribution.Linear && type !== ScaleDistribution.Log && type !== ScaleDistribution.Symlog) {
     return false;
   }

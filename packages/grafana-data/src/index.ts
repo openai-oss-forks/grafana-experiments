@@ -711,6 +711,7 @@ export {
   type CompactTimeSeriesSeriesCollection,
   type CompactTimeSeriesData,
   type CompactTimeSeriesMetadata,
+  type CompactTimeSeriesNotice,
   isCompactTimeSeriesSeriesCollection,
 } from './types/compactTimeSeries';
 export {

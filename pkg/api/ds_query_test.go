@@ -130,10 +130,11 @@ func TestAPIEndpoint_Metrics_QueryMetricsV2_CompactResponse(t *testing.T) {
 					data.NewField("Value", nil, []float64{1, 2, 3}),
 				)
 				frame.Meta = &data.FrameMeta{
-					Type:                data.FrameTypeTimeSeriesMulti,
-					TypeVersion:         data.FrameTypeVersion{0, 1},
-					Custom:              map[string]any{"resultType": "matrix", "calculatedMinStep": int64(1_000)},
-					ExecutedQueryString: "Expr: test\nStep: 1s",
+					Type:                   data.FrameTypeTimeSeriesMulti,
+					TypeVersion:            data.FrameTypeVersion{0, 1},
+					Custom:                 map[string]any{"resultType": "matrix", "calculatedMinStep": int64(1_000)},
+					ExecutedQueryString:    "Expr: test\nStep: 1s",
+					PreferredVisualization: data.VisTypeGraph,
 				}
 				return &backend.QueryDataResponse{
 					Responses: backend.Responses{

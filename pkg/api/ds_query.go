@@ -113,6 +113,16 @@ func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Respon
 			newCompactQueryRequests(reqDTO, handleTimeInQuery),
 		)
 		if errors.Is(err, errCompactQueryDataUnsupported) {
+			hs.log.Warn(
+				"Compact query response fell back to JSON",
+				"reason", compactQueryDataUnsupportedReason(err),
+				"dashboardUID", c.Req.Header.Get(query.HeaderDashboardUID),
+				"dashboardTitle", c.Req.Header.Get(query.HeaderDashboardTitle),
+				"panelID", c.Req.Header.Get(query.HeaderPanelID),
+				"panelTitle", c.Req.Header.Get(query.HeaderPanelTitle),
+				"datasourceUID", c.Req.Header.Get(query.HeaderDatasourceUID),
+				"requestID", c.Req.URL.Query().Get("requestId"),
+			)
 			return hs.toJsonStreamingResponse(c.Req.Context(), resp)
 		}
 		if errors.Is(err, errCompactQueryDataTooLarge) {

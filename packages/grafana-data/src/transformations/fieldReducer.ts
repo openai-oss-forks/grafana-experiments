@@ -151,7 +151,6 @@ export function isReducerID(id: string): id is ReducerID {
 export function isCompactTimeSeriesReducerSupported(reducer: ReducerID): boolean {
   return (
     reducer !== ReducerID.distinctCount &&
-    reducer !== ReducerID.median &&
     reducer !== ReducerID.allValues &&
     reducer !== ReducerID.uniqueValues &&
     !/^p\d+$/.test(reducer)

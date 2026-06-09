@@ -219,6 +219,10 @@ export function buildCompactResponseFromGrafanaJson(response, requestedRefIds) {
     intern(result.refId);
     intern(result.error);
     intern(result.executedQueryString);
+    for (const notice of result.notices) {
+      intern(notice.text);
+      intern(notice.link);
+    }
     for (const frame of result.frames) {
       intern(frame.frameName);
       intern(frame.refId);
@@ -235,7 +239,7 @@ export function buildCompactResponseFromGrafanaJson(response, requestedRefIds) {
   const stringBytesLength = encodedStrings.reduce((total, value) => total + value.byteLength, 0);
   const stringSectionLength = align8(encodedStrings.length * 8 + stringBytesLength);
   const resultRecordLengths = model.results.map(
-    (result) => 48 + result.frames.reduce((total, frame) => total + frame.recordLength, 0)
+    (result) => 48 + result.notices.length * 16 + result.frames.reduce((total, frame) => total + frame.recordLength, 0)
   );
   const totalLength =
     32 +
@@ -290,7 +294,16 @@ export function buildCompactResponseFromGrafanaJson(response, requestedRefIds) {
     writer.writeUint16(0);
     writer.writeUint16(result.frames.length > 0 ? 1 : 0);
     writer.writeUint32(result.calculatedMinStep === 0 ? 0 : 1);
-    writer.writeUint32(0);
+    writer.writeUint32(result.notices.length);
+
+    for (const notice of result.notices) {
+      writer.writeUint32(intern(notice.text));
+      writer.writeUint32(intern(notice.link));
+      writer.writeUint8(notice.severity);
+      writer.writeUint8(notice.inspect);
+      writer.writeUint16(0);
+      writer.writeUint32(0);
+    }
 
     for (const frame of result.frames) {
       writer.writeUint32(frame.recordLength);
@@ -362,7 +375,18 @@ function normalizeGrafanaResponse(response, requestedRefIds) {
     if (!result) {
       throw new Error(`Captured response does not contain query result ${refId}`);
     }
-    const frames = (result.frames ?? []).map((frame) => normalizeGrafanaFrame(frame, refId, axes, axisIds));
+    const notices = [];
+    const noticeKeys = new Set();
+    const frames = (result.frames ?? []).map((frame) => {
+      for (const notice of normalizeGrafanaNotices(frame?.schema?.meta?.notices, refId)) {
+        const key = JSON.stringify([notice.severity, notice.inspect, notice.text, notice.link]);
+        if (!noticeKeys.has(key)) {
+          noticeKeys.add(key);
+          notices.push(notice);
+        }
+      }
+      return normalizeGrafanaFrame(frame, refId, axes, axisIds);
+    });
     const firstMeta = frames.length > 0 ? result.frames[0]?.schema?.meta : undefined;
     const calculatedMinStep = firstMeta?.custom?.calculatedMinStep ?? 0;
     if (!Number.isSafeInteger(calculatedMinStep) || calculatedMinStep < 0) {
@@ -374,6 +398,7 @@ function normalizeGrafanaResponse(response, requestedRefIds) {
       error: typeof result.error === 'string' ? result.error : '',
       executedQueryString: typeof firstMeta?.executedQueryString === 'string' ? firstMeta.executedQueryString : '',
       calculatedMinStep,
+      notices,
       frames,
     };
   });
@@ -381,6 +406,7 @@ function normalizeGrafanaResponse(response, requestedRefIds) {
 }
 
 function normalizeGrafanaFrame(frame, resultRefId, axes, axisIds) {
+  validateCompactFrameMeta(frame?.schema?.meta, resultRefId);
   const fields = frame?.schema?.fields;
   const values = frame?.data?.values;
   if (!Array.isArray(fields) || !Array.isArray(values)) {
@@ -441,6 +467,41 @@ function normalizeGrafanaFrame(frame, resultRefId, axes, axisIds) {
     presentValues,
     recordLength: align8(48 + labels.length * 8 + bitmapLength) + presentValues.length * 8,
   };
+}
+
+function validateCompactFrameMeta(meta, resultRefId) {
+  if (meta == null) {
+    return;
+  }
+  const unsupported = [
+    ['path', meta.path],
+    ['pathSeparator', meta.pathSeparator],
+    ['channel', meta.channel],
+    ['dataTopic', meta.dataTopic],
+  ].find(([, value]) => Boolean(value));
+  if (unsupported) {
+    throw new Error(`Captured response ${resultRefId} has unsupported compact metadata: ${unsupported[0]}`);
+  }
+}
+
+function normalizeGrafanaNotices(notices, resultRefId) {
+  if (notices == null) {
+    return [];
+  }
+  if (!Array.isArray(notices)) {
+    throw new Error(`Captured response ${resultRefId} has invalid compact notices`);
+  }
+  return notices.map((notice) => {
+    const severity = { info: 0, warning: 1, error: 2 }[notice?.severity];
+    const inspect = { '': 0, meta: 1, error: 2, data: 3, stats: 4 }[notice?.inspect ?? ''];
+    if (severity == null || inspect == null || typeof notice?.text !== 'string') {
+      throw new Error(`Captured response ${resultRefId} has invalid compact notice`);
+    }
+    if (notice.link != null && typeof notice.link !== 'string') {
+      throw new Error(`Captured response ${resultRefId} has invalid compact notice link`);
+    }
+    return { severity, inspect, text: notice.text, link: notice.link ?? '' };
+  });
 }
 
 function regularAxis(timestamps, fallbackStep, refId) {

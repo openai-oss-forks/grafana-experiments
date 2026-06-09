@@ -160,6 +160,7 @@ func TestCompactQueryDataResponseRejectsInvalidFrames(t *testing.T) {
 			qdr := &backend.QueryDataResponse{Responses: backend.Responses{"A": {Frames: frames}}}
 			_, err := newCompactQueryDataResponse(qdr, compactTestRequests(axis, "A"))
 			require.ErrorIs(t, err, errCompactQueryDataUnsupported)
+			require.NotEqual(t, "unspecified", compactQueryDataUnsupportedReason(err))
 		})
 	}
 }
@@ -187,8 +188,73 @@ func TestCompactQueryDataResponseRejectsMetadataItCannotReconstruct(t *testing.T
 			compact, err := newCompactQueryDataResponse(qdr, compactTestRequests(axis, "A"))
 			require.Nil(t, compact)
 			require.ErrorIs(t, err, errCompactQueryDataUnsupported)
+			require.NotEqual(t, "unspecified", compactQueryDataUnsupportedReason(err))
 		})
 	}
+}
+
+func TestCompactQueryDataResponseAcceptsDashboardInertMetadata(t *testing.T) {
+	axis := compactRegularTimeAxis{Start: 0, Step: 1_000, Count: 2}
+	graphFrame := newCompactTestFrame("A", axis, []int64{0, 1_000}, []float64{1, 2})
+	graphFrame.Meta.PreferredVisualization = data.VisTypeGraph
+	graphFrame.Meta.Stats = []data.QueryStat{{FieldConfig: data.FieldConfig{DisplayName: "Query time"}, Value: 1}}
+	graphFrame.Meta.UniqueRowIDFields = []int{0}
+	tableFrame := newCompactTestFrame("B", axis, []int64{0, 1_000}, []float64{3, 4})
+	tableFrame.Meta.PreferredVisualization = data.VisTypeTable
+	tableFrame.Meta.PreferredVisualizationPluginID = "table"
+	qdr := &backend.QueryDataResponse{
+		Responses: backend.Responses{
+			"A": {Frames: data.Frames{graphFrame}},
+			"B": {Frames: data.Frames{tableFrame}},
+		},
+	}
+
+	compact, err := newCompactQueryDataResponse(qdr, compactTestRequests(axis, "A", "B"))
+
+	require.NoError(t, err)
+	require.NotNil(t, compact)
+}
+
+func TestCompactQueryDataResponsePreservesNotices(t *testing.T) {
+	axis := compactRegularTimeAxis{Start: 0, Step: 1_000, Count: 2}
+	first := newCompactTestFrame("A", axis, []int64{0, 1_000}, []float64{1, 2})
+	notice := data.Notice{
+		Severity: data.NoticeSeverityWarning,
+		Text:     "warning",
+		Link:     "/inspect",
+		Inspect:  data.InspectTypeStats,
+	}
+	first.Meta.Notices = []data.Notice{notice}
+	second := newCompactTestFrame("A2", axis, []int64{0, 1_000}, []float64{3, 4})
+	second.Meta.Notices = []data.Notice{notice}
+	qdr := &backend.QueryDataResponse{Responses: backend.Responses{"A": {Frames: data.Frames{first, second}}}}
+
+	compact, err := newCompactQueryDataResponse(qdr, compactTestRequests(axis, "A"))
+
+	require.NoError(t, err)
+	response := decodeCompactTestResponse(t, compactResponseBody(t, compact))
+	require.Equal(t, []compactTestNotice{{
+		Text:     "warning",
+		Link:     "/inspect",
+		Severity: data.NoticeSeverityWarning,
+		Inspect:  data.InspectTypeStats,
+	}}, response.Results["A"].Notices)
+}
+
+func TestCompactQueryDataResponseRejectsInvalidNoticeMetadata(t *testing.T) {
+	axis := compactRegularTimeAxis{Start: 0, Step: 1_000, Count: 2}
+	frame := newCompactTestFrame("A", axis, []int64{0, 1_000}, []float64{1, 2})
+	frame.Meta.Notices = []data.Notice{{
+		Severity: data.NoticeSeverity(99),
+		Text:     "warning",
+	}}
+	qdr := &backend.QueryDataResponse{Responses: backend.Responses{"A": {Frames: data.Frames{frame}}}}
+
+	compact, err := newCompactQueryDataResponse(qdr, compactTestRequests(axis, "A"))
+
+	require.Nil(t, compact)
+	require.Equal(t, "invalid_frame_notice", compactQueryDataUnsupportedReason(err))
+	require.ErrorIs(t, err, errCompactQueryDataUnsupported)
 }
 
 func TestCompactQueryDataResponseRejectsInconsistentResultMetadata(t *testing.T) {
@@ -220,11 +286,14 @@ func TestCompactQueryDataResponseRejectsMalformedNoDataFrames(t *testing.T) {
 	noDataWithType.Meta.Type = data.FrameTypeTimeSeriesMulti
 	noDataWithResultType := newCompactNoDataTestFrame()
 	noDataWithResultType.Meta.Custom = map[string]any{"resultType": models.ResultTypeMatrix.String()}
+	noDataWithNotice := newCompactNoDataTestFrame()
+	noDataWithNotice.Meta.Notices = []data.Notice{{Severity: data.NoticeSeverityWarning, Text: "warning"}}
 	mixedNoData := newCompactNoDataTestFrame()
 
 	for name, frames := range map[string]data.Frames{
 		"frame type without fields":  {noDataWithType},
 		"result type without fields": {noDataWithResultType},
+		"notice without fields":      {noDataWithNotice},
 		"mixed data and no-data": {
 			mixedNoData,
 			newCompactTestFrame("A", axis, []int64{0, 1_000}, []float64{1, 2}),
@@ -516,7 +585,15 @@ type compactTestResult struct {
 	FrameType             compactFrameType
 	FrameTypeVersionMajor uint16
 	FrameTypeVersionMinor uint16
+	Notices               []compactTestNotice
 	Frames                []compactTestFrame
+}
+
+type compactTestNotice struct {
+	Text     string
+	Link     string
+	Severity data.NoticeSeverity
+	Inspect  data.InspectType
 }
 
 type compactTestFrame struct {
@@ -607,7 +684,7 @@ func decodeCompactTestResponse(t *testing.T, body []byte) compactTestResponse {
 		var frameCount uint32
 		var calculatedMinStep int64
 		var resultType, frameType, frameTypeVersionMajor, frameTypeVersionMinor uint16
-		var resultFlags, resultReserved uint32
+		var resultFlags, noticeCount uint32
 		read(&recordLength)
 		read(&refIDStringID)
 		read(&errorStringID)
@@ -620,8 +697,7 @@ func decodeCompactTestResponse(t *testing.T, body []byte) compactTestResponse {
 		read(&frameTypeVersionMajor)
 		read(&frameTypeVersionMinor)
 		read(&resultFlags)
-		read(&resultReserved)
-		require.Zero(t, resultReserved)
+		read(&noticeCount)
 		require.Zero(t, resultFlags & ^compactResultFlagCalculatedMinStep)
 
 		refID := resolveString(refIDStringID)
@@ -636,7 +712,28 @@ func decodeCompactTestResponse(t *testing.T, body []byte) compactTestResponse {
 			FrameType:             compactFrameType(frameType),
 			FrameTypeVersionMajor: frameTypeVersionMajor,
 			FrameTypeVersionMinor: frameTypeVersionMinor,
+			Notices:               make([]compactTestNotice, noticeCount),
 			Frames:                make([]compactTestFrame, frameCount),
+		}
+		for i := range result.Notices {
+			var textStringID, linkStringID uint32
+			var severity, inspect uint8
+			var noticeReserved16 uint16
+			var noticeReserved32 uint32
+			read(&textStringID)
+			read(&linkStringID)
+			read(&severity)
+			read(&inspect)
+			read(&noticeReserved16)
+			read(&noticeReserved32)
+			require.Zero(t, noticeReserved16)
+			require.Zero(t, noticeReserved32)
+			result.Notices[i] = compactTestNotice{
+				Text:     resolveString(textStringID),
+				Link:     resolveString(linkStringID),
+				Severity: data.NoticeSeverity(severity),
+				Inspect:  data.InspectType(inspect),
+			}
 		}
 		for i := range result.Frames {
 			frameStart := len(body) - reader.Len()

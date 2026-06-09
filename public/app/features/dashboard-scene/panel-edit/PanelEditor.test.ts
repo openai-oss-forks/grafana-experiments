@@ -124,7 +124,7 @@ describe('PanelEditor', () => {
   });
 
   describe('Entering panel edit', () => {
-    it('reruns compact dashboard data so the editor receives legacy frames', () => {
+    it('reruns existing compact data through the panel editor wrapper', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
       queryRunner.setState({

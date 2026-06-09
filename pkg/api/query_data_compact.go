@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -24,6 +25,30 @@ import (
 var errCompactQueryDataTooLarge = errors.New("compact query response exceeds encoding limits")
 var errCompactQueryDataUnsupported = errors.New("query response does not satisfy compact-v1")
 
+type compactQueryDataUnsupportedError struct {
+	reason string
+}
+
+func (e *compactQueryDataUnsupportedError) Error() string {
+	return fmt.Sprintf("%s: %s", errCompactQueryDataUnsupported, e.reason)
+}
+
+func (e *compactQueryDataUnsupportedError) Unwrap() error {
+	return errCompactQueryDataUnsupported
+}
+
+func compactQueryDataUnsupported(reason string) error {
+	return &compactQueryDataUnsupportedError{reason: reason}
+}
+
+func compactQueryDataUnsupportedReason(err error) string {
+	var unsupported *compactQueryDataUnsupportedError
+	if errors.As(err, &unsupported) {
+		return unsupported.reason
+	}
+	return "unspecified"
+}
+
 const (
 	compactQueryDataHeader        = "X-Grafana-Query-Format"
 	compactQueryDataVersion       = "compact-v1"
@@ -35,6 +60,7 @@ const (
 	compactAxisRecordSize           = 24
 	compactStringRecordSize         = 8
 	compactResultHeaderSize         = 48
+	compactNoticeRecordSize         = 16
 	compactFrameHeaderSize          = 48
 	compactLabelRecordSize          = 8
 	compactWriteChunkSize           = 64 * 1024
@@ -78,8 +104,16 @@ type compactDataResponse struct {
 	FrameTypeVersionMajor uint16
 	FrameTypeVersionMinor uint16
 	Flags                 uint32
+	Notices               []compactNotice
 	Frames                []compactFrame
 	RecordLength          uint32
+}
+
+type compactNotice struct {
+	TextStringID uint32
+	LinkStringID uint32
+	Severity     uint8
+	Inspect      uint8
 }
 
 type compactFrame struct {
@@ -132,7 +166,7 @@ func newCompactStringTable() *compactStringTable {
 
 func (t *compactStringTable) intern(value string) (uint32, error) {
 	if !utf8.ValidString(value) {
-		return 0, errCompactQueryDataUnsupported
+		return 0, compactQueryDataUnsupported("invalid_utf8")
 	}
 	if id, ok := t.ids[value]; ok {
 		return id, nil
@@ -229,7 +263,7 @@ func newCompactQueryDataResponseContext(
 
 			axis, eligible := getExecutedTimeAxis(dataResponse.Frames, requests[refID])
 			if !eligible {
-				return nil, errCompactQueryDataUnsupported
+				return nil, compactQueryDataUnsupported("invalid_time_axis")
 			}
 
 			axisID, exists := axisIDs[axis]
@@ -277,26 +311,58 @@ func populateCompactResultMetadata(response *compactDataResponse, frames data.Fr
 	var version data.FrameTypeVersion
 	hasDataFrame := false
 	hasNoDataFrame := false
+	var noticeSet map[compactNotice]struct{}
 
 	for frameIndex, frame := range frames {
-		if frame == nil || frame.Meta == nil {
-			return errCompactQueryDataUnsupported
+		if frame == nil {
+			return compactQueryDataUnsupported("missing_frame")
 		}
-		if !compactFrameMetaSupported(frame.Meta) {
-			return errCompactQueryDataUnsupported
+		if frame.Meta == nil {
+			return compactQueryDataUnsupported("missing_frame_metadata")
+		}
+		if reason := compactFrameMetaUnsupportedReason(frame.Meta); reason != "" {
+			return compactQueryDataUnsupported(reason)
+		}
+		for _, notice := range frame.Meta.Notices {
+			severity, validSeverity := compactNoticeSeverity(notice.Severity)
+			inspect, validInspect := compactNoticeInspect(notice.Inspect)
+			if !validSeverity || !validInspect {
+				return compactQueryDataUnsupported("invalid_frame_notice")
+			}
+			textStringID, err := strings.intern(notice.Text)
+			if err != nil {
+				return err
+			}
+			linkStringID, err := strings.intern(notice.Link)
+			if err != nil {
+				return err
+			}
+			encodedNotice := compactNotice{
+				TextStringID: textStringID,
+				LinkStringID: linkStringID,
+				Severity:     severity,
+				Inspect:      inspect,
+			}
+			if noticeSet == nil {
+				noticeSet = make(map[compactNotice]struct{})
+			}
+			if _, exists := noticeSet[encodedNotice]; !exists {
+				noticeSet[encodedNotice] = struct{}{}
+				response.Notices = append(response.Notices, encodedNotice)
+			}
 		}
 
 		custom, ok := frame.Meta.Custom.(map[string]any)
 		if frame.Meta.Custom != nil && !ok {
-			return errCompactQueryDataUnsupported
+			return compactQueryDataUnsupported("invalid_custom_metadata")
 		}
 		if !compactCustomMetaSupported(custom) {
-			return errCompactQueryDataUnsupported
+			return compactQueryDataUnsupported("unsupported_custom_metadata")
 		}
 
 		if frame.Meta.ExecutedQueryString != "" {
 			if frameIndex != 0 || response.ExecutedQueryStringID != 0 {
-				return errCompactQueryDataUnsupported
+				return compactQueryDataUnsupported("inconsistent_executed_query")
 			}
 			id, err := strings.intern(frame.Meta.ExecutedQueryString)
 			if err != nil {
@@ -306,11 +372,11 @@ func populateCompactResultMetadata(response *compactDataResponse, frames data.Fr
 		}
 		if calculatedMinStep, exists := custom["calculatedMinStep"]; exists {
 			if frameIndex != 0 || response.Flags&compactResultFlagCalculatedMinStep != 0 {
-				return errCompactQueryDataUnsupported
+				return compactQueryDataUnsupported("inconsistent_calculated_min_step")
 			}
 			value, ok := calculatedMinStep.(int64)
 			if !ok || value <= 0 {
-				return errCompactQueryDataUnsupported
+				return compactQueryDataUnsupported("invalid_calculated_min_step")
 			}
 			response.CalculatedMinStep = value
 			response.Flags |= compactResultFlagCalculatedMinStep
@@ -318,31 +384,34 @@ func populateCompactResultMetadata(response *compactDataResponse, frames data.Fr
 
 		if isNoDataFrame(frame) {
 			if frame.Meta.Type != data.FrameTypeUnknown || !frame.Meta.TypeVersion.IsZero() {
-				return errCompactQueryDataUnsupported
+				return compactQueryDataUnsupported("invalid_no_data_frame_type")
 			}
 			if _, exists := custom["resultType"]; exists {
-				return errCompactQueryDataUnsupported
+				return compactQueryDataUnsupported("invalid_no_data_result_type")
 			}
 			hasNoDataFrame = true
 			continue
 		}
 		hasDataFrame = true
 		if frame.Meta.Type != data.FrameTypeTimeSeriesMulti || frame.Meta.TypeVersion[0] > math.MaxUint16 || frame.Meta.TypeVersion[1] > math.MaxUint16 {
-			return errCompactQueryDataUnsupported
+			return compactQueryDataUnsupported("unsupported_frame_type")
 		}
 		if custom["resultType"] != models.ResultTypeMatrix.String() {
-			return errCompactQueryDataUnsupported
+			return compactQueryDataUnsupported("unsupported_result_type")
 		}
 		if resultType == compactResultTypeUnknown {
 			resultType = compactResultTypeMatrix
 			frameType = compactFrameTypeTimeSeriesMulti
 			version = frame.Meta.TypeVersion
 		} else if frame.Meta.TypeVersion != version {
-			return errCompactQueryDataUnsupported
+			return compactQueryDataUnsupported("inconsistent_frame_type_version")
 		}
 	}
 	if hasDataFrame && hasNoDataFrame {
-		return errCompactQueryDataUnsupported
+		return compactQueryDataUnsupported("mixed_data_and_no_data_frames")
+	}
+	if hasNoDataFrame && len(response.Notices) > 0 {
+		return compactQueryDataUnsupported("no_data_notices")
 	}
 
 	response.ResultType = resultType
@@ -352,10 +421,47 @@ func populateCompactResultMetadata(response *compactDataResponse, frames data.Fr
 	return nil
 }
 
-func compactFrameMetaSupported(meta *data.FrameMeta) bool {
-	return meta.Path == "" && meta.PathSeparator == "" && len(meta.Stats) == 0 && len(meta.Notices) == 0 &&
-		meta.Channel == "" && meta.PreferredVisualization == "" && meta.PreferredVisualizationPluginID == "" &&
-		meta.DataTopic == "" && len(meta.UniqueRowIDFields) == 0
+func compactNoticeSeverity(severity data.NoticeSeverity) (uint8, bool) {
+	switch severity {
+	case data.NoticeSeverityInfo:
+		return 0, true
+	case data.NoticeSeverityWarning:
+		return 1, true
+	case data.NoticeSeverityError:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func compactNoticeInspect(inspect data.InspectType) (uint8, bool) {
+	switch inspect {
+	case data.InspectTypeNone:
+		return 0, true
+	case data.InspectTypeMeta:
+		return 1, true
+	case data.InspectTypeError:
+		return 2, true
+	case data.InspectTypeData:
+		return 3, true
+	case data.InspectTypeStats:
+		return 4, true
+	default:
+		return 0, false
+	}
+}
+
+func compactFrameMetaUnsupportedReason(meta *data.FrameMeta) string {
+	switch {
+	case meta.Path != "" || meta.PathSeparator != "":
+		return "frame_path"
+	case meta.Channel != "":
+		return "streaming_channel"
+	case meta.DataTopic != "":
+		return "data_topic"
+	default:
+		return ""
+	}
 }
 
 func compactCustomMetaSupported(custom map[string]any) bool {
@@ -423,12 +529,12 @@ func newCompactFrame(
 		frame.Fields[0].Name != data.TimeSeriesTimeFieldName || len(frame.Fields[0].Labels) != 0 ||
 		!reflect.DeepEqual(frame.Fields[0].Config, &data.FieldConfig{Interval: float64(axis.Step)}) ||
 		!compactValueFieldConfigSupported(frame.Fields[1].Config) {
-		return compactFrame{}, errCompactQueryDataUnsupported
+		return compactFrame{}, compactQueryDataUnsupported("unsupported_frame_shape")
 	}
 
 	rowCount, err := frame.RowLen()
 	if err != nil || rowCount < 0 || uint64(rowCount) > uint64(axis.Count) {
-		return compactFrame{}, errCompactQueryDataUnsupported
+		return compactFrame{}, compactQueryDataUnsupported("invalid_row_count")
 	}
 
 	presenceLength := uint64(0)
@@ -519,7 +625,7 @@ func compactFramePresence(
 			timestamp := *timeField.PointerAt(rowIndex).(*time.Time)
 			if timestamp.Nanosecond()%int(time.Millisecond) != 0 ||
 				timestamp.UnixMilli() != axis.Start+int64(rowIndex)*axis.Step {
-				return nil, errCompactQueryDataUnsupported
+				return nil, compactQueryDataUnsupported("irregular_gapless_timestamp")
 			}
 		}
 		return nil, nil
@@ -535,19 +641,19 @@ func compactFramePresence(
 		}
 		timestamp := *timeField.PointerAt(rowIndex).(*time.Time)
 		if timestamp.Nanosecond()%int(time.Millisecond) != 0 {
-			return nil, errCompactQueryDataUnsupported
+			return nil, compactQueryDataUnsupported("sub_millisecond_timestamp")
 		}
 		timestampMillis := timestamp.UnixMilli()
 		if timestampMillis < axis.Start || timestampMillis > axisEnd {
-			return nil, errCompactQueryDataUnsupported
+			return nil, compactQueryDataUnsupported("timestamp_outside_axis")
 		}
 		delta := timestampMillis - axis.Start
 		if delta%axis.Step != 0 {
-			return nil, errCompactQueryDataUnsupported
+			return nil, compactQueryDataUnsupported("off_grid_timestamp")
 		}
 		gridIndex := delta / axis.Step
 		if gridIndex <= previousIndex {
-			return nil, errCompactQueryDataUnsupported
+			return nil, compactQueryDataUnsupported("unordered_or_duplicate_timestamp")
 		}
 		presence[gridIndex>>3] |= 1 << (gridIndex & 7)
 		previousIndex = gridIndex
@@ -583,7 +689,7 @@ func newCompactQueryRequests(reqDTO dtos.MetricRequest, supportLocalTimeRange bo
 }
 
 func compactResultRecordLength(response compactDataResponse) (uint32, bool) {
-	length := uint64(compactResultHeaderSize)
+	length := uint64(compactResultHeaderSize) + uint64(len(response.Notices))*compactNoticeRecordSize
 	for _, frame := range response.Frames {
 		length += uint64(frame.RecordLength)
 	}
@@ -658,7 +764,19 @@ func writeCompactDataResponse(response compactDataResponse, writer *compactBinar
 	writer.writeUint16(response.FrameTypeVersionMajor)
 	writer.writeUint16(response.FrameTypeVersionMinor)
 	writer.writeUint32(response.Flags)
-	writer.writeUint32(0)
+	writer.writeUint32(uint32(len(response.Notices)))
+
+	for _, notice := range response.Notices {
+		if writer.err != nil {
+			return
+		}
+		writer.writeUint32(notice.TextStringID)
+		writer.writeUint32(notice.LinkStringID)
+		writer.writeUint8(notice.Severity)
+		writer.writeUint8(notice.Inspect)
+		writer.writeUint16(0)
+		writer.writeUint32(0)
+	}
 
 	for _, frame := range response.Frames {
 		if writer.err != nil {
@@ -727,6 +845,11 @@ func (w *compactBinaryWriter) valueBuffer() []byte {
 		w.valueScratch = make([]byte, compactWriteChunkSize)
 	}
 	return w.valueScratch
+}
+
+func (w *compactBinaryWriter) writeUint8(value uint8) {
+	w.scratch[0] = value
+	w.writeBytes(w.scratch[:1])
 }
 
 func (w *compactBinaryWriter) writeUint16(value uint16) {

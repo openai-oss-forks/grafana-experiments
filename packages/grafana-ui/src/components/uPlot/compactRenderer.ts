@@ -14,7 +14,6 @@ export const enum CompactSeriesFlag {
   StepAfter = 2,
   Spline = 3,
   Points = 1 << 2,
-  Bars = 1 << 3,
   Stack = 1 << 4,
   AutoPoints = 1 << 5,
   PercentStack = 1 << 6,
@@ -39,7 +38,6 @@ export interface CompactStyleRecord {
   readonly pointSize?: number;
   readonly pointSpace?: number;
   readonly pointLineWidth?: number;
-  readonly barWidthFactor?: number;
   readonly alpha?: number;
   readonly lineDash?: number[];
   readonly lineCap?: 'butt' | 'round';
@@ -161,7 +159,6 @@ const enum ScanOperation {
   GapClip,
   Line,
   Points,
-  Bars,
   StackExtent,
   StackPresence,
   StackCommit,
@@ -298,6 +295,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private hasPrevious = false;
   private extentMin: number | null = null;
   private extentMax: number | null = null;
+  private extentMode: CompactPlotScaleMode = 'all';
   private decimatedX = 0;
   private decimatedMin: number | null = null;
   private decimatedMax: number | null = null;
@@ -345,9 +343,6 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         break;
       case ScanOperation.Points:
         this.visitPointMarker(index, value, xValue);
-        break;
-      case ScanOperation.Bars:
-        this.visitBar(index, value, xValue);
         break;
       case ScanOperation.StackExtent:
         this.visitStackExtent(index, value);
@@ -482,6 +477,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       this.operation = ScanOperation.StackExtent;
       this.extentMin = null;
       this.extentMax = null;
+      this.extentMode = mode;
       for (let series = 0; series < this.source.seriesCount; series++) {
         if (
           this.isVisible(series) &&
@@ -493,9 +489,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
           this.source.scan(series, from, to, this.visitPoint);
         }
       }
-      if (this.extentMin != null && (mode !== 'positive' || this.extentMax! > 0)) {
-        const stackMin = mode === 'positive' ? Math.max(0, this.extentMin) : this.extentMin;
-        min = min == null ? stackMin : Math.min(min, stackMin);
+      if (this.extentMin != null) {
+        min = min == null ? this.extentMin : Math.min(min, this.extentMin);
         max = max == null ? this.extentMax : Math.max(max, this.extentMax!);
       }
     }
@@ -585,7 +580,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       if (
         (flags & CompactSeriesFlag.PathMask) !== CompactSeriesFlag.Linear ||
         (flags & CompactSeriesFlag.DrawLine) === 0 ||
-        (flags & (CompactSeriesFlag.Points | CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)) !== 0 ||
+        (flags & (CompactSeriesFlag.Points | CompactSeriesFlag.Stack)) !== 0 ||
         ((flags & CompactSeriesFlag.AutoPoints) !== 0 && this.shouldShowAutoPoints(style, from, to)) ||
         style.areaFill != null ||
         style.areaGradient != null ||
@@ -785,11 +780,14 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       if (!this.isVisible(series)) {
         continue;
       }
-      let dataIndex = index;
+      let dataIndex: number = index;
       let rawValue: CompactPlotValue;
       if (cursorSnapshot) {
         rawValue = cursorSnapshot.valueAt(series);
         dataIndex = cursorSnapshot.dataIndexAt(series);
+        if (dataIndex !== index) {
+          rawValue = this.source.yAt(series, dataIndex);
+        }
       } else {
         rawValue = this.source.yAt(series, dataIndex);
         if (rawValue == null) {
@@ -936,7 +934,6 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const styleId = this.source.columns.styleIds[series];
     const style = this.source.styles[styleId];
     const flags = this.source.columns.flags[series];
-    const hasBars = (flags & CompactSeriesFlag.Bars) !== 0;
     const hasLineGeometry = (flags & CompactSeriesFlag.DrawLine) !== 0;
     const hasFill = hasLineGeometry && (style.areaFill != null || style.areaGradient != null);
     const hasStroke = hasLineGeometry && (style.lineWidth ?? 1) > 0;
@@ -973,59 +970,54 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.hasPrevious = false;
     this.previousTimestamp = Number.NaN;
 
-    if (hasBars) {
-      this.operation = ScanOperation.Bars;
-      this.source.scan(series, from, to, this.visitPoint);
-    } else {
-      const stacked = (flags & CompactSeriesFlag.Stack) !== 0;
-      const needsGapClip =
-        !stacked && ((hasFill && hasSteppedPath) || (hasStroke && (hasSteppedPath || style.lineDash?.length)));
-      if (needsGapClip) {
-        ctx.save();
-        this.prepareGapClip(series, lineFrom, lineTo);
-        this.clipAreaGaps = hasFill && hasSteppedPath;
-        this.clipLineGaps = hasStroke && (hasSteppedPath || Boolean(style.lineDash?.length));
+    const stacked = (flags & CompactSeriesFlag.Stack) !== 0;
+    const needsGapClip =
+      !stacked && ((hasFill && hasSteppedPath) || (hasStroke && (hasSteppedPath || style.lineDash?.length)));
+    if (needsGapClip) {
+      ctx.save();
+      this.prepareGapClip(series, lineFrom, lineTo);
+      this.clipAreaGaps = hasFill && hasSteppedPath;
+      this.clipLineGaps = hasStroke && (hasSteppedPath || Boolean(style.lineDash?.length));
+    }
+    if (hasFill) {
+      this.operation = ScanOperation.Area;
+      this.pathStarted = false;
+      this.hasPath = false;
+      this.hasPrevious = false;
+      this.stackAreaLength = 0;
+      this.previousTimestamp = Number.NaN;
+      this.fillBaselineY = this.getFillBaselineY();
+      ctx.fillStyle = this.getAreaFill(style, styleId);
+      ctx.beginPath();
+      this.source.scan(series, lineFrom, lineTo, this.visitPoint);
+      this.finishArea();
+      if (this.hasPath) {
+        ctx.fill();
       }
-      if (hasFill) {
-        this.operation = ScanOperation.Area;
-        this.pathStarted = false;
-        this.hasPath = false;
-        this.hasPrevious = false;
-        this.stackAreaLength = 0;
-        this.previousTimestamp = Number.NaN;
-        this.fillBaselineY = this.getFillBaselineY();
-        ctx.fillStyle = this.getAreaFill(style, styleId);
-        ctx.beginPath();
+    }
+    if (hasStroke) {
+      this.pathStarted = false;
+      this.hasPath = false;
+      this.hasPrevious = false;
+      this.previousTimestamp = Number.NaN;
+      ctx.beginPath();
+      if (this.shouldDecimateLine(style, flags, hasFill, lineFrom, lineTo)) {
+        this.drawDecimatedLine(series, lineFrom, lineTo);
+      } else if (this.drawDirectLinearLine(series, flags, style, lineFrom, lineTo)) {
+        // The direct path has already appended the complete stroke geometry.
+      } else {
+        this.operation = ScanOperation.Line;
         this.source.scan(series, lineFrom, lineTo, this.visitPoint);
-        this.finishArea();
-        if (this.hasPath) {
-          ctx.fill();
-        }
+        this.finishLine();
       }
-      if (hasStroke) {
-        this.pathStarted = false;
-        this.hasPath = false;
-        this.hasPrevious = false;
-        this.previousTimestamp = Number.NaN;
-        ctx.beginPath();
-        if (this.shouldDecimateLine(style, flags, hasFill, lineFrom, lineTo)) {
-          this.drawDecimatedLine(series, lineFrom, lineTo);
-        } else if (this.drawDirectLinearLine(series, flags, style, lineFrom, lineTo)) {
-          // The direct path has already appended the complete stroke geometry.
-        } else {
-          this.operation = ScanOperation.Line;
-          this.source.scan(series, lineFrom, lineTo, this.visitPoint);
-          this.finishLine();
-        }
-        if (this.hasPath) {
-          ctx.stroke();
-        }
+      if (this.hasPath) {
+        ctx.stroke();
       }
-      if (needsGapClip) {
-        ctx.restore();
-        this.clipAreaGaps = false;
-        this.clipLineGaps = false;
-      }
+    }
+    if (needsGapClip) {
+      ctx.restore();
+      this.clipAreaGaps = false;
+      this.clipLineGaps = false;
     }
     if (hasPoints) {
       this.operation = ScanOperation.Points;
@@ -1047,7 +1039,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (style.showValues && hasPoints && this.source.formatValueAt) {
       this.drawValueLabels(series, from, to, style);
     }
-    if (!hasBars && (flags & CompactSeriesFlag.Stack) !== 0) {
+    if ((flags & CompactSeriesFlag.Stack) !== 0) {
       this.operation = ScanOperation.StackCommit;
       this.source.scan(series, from, to, this.visitPoint);
     }
@@ -1569,46 +1561,24 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.hasPath = true;
   }
 
-  private visitBar(index: number, rawValue: CompactPlotValue, timestamp: number): void {
-    if (rawValue == null) {
-      return;
-    }
-    const style = this.getStyle(this.seriesIndex);
-    const value = this.renderValue(index, rawValue, true);
-    const base = this.currentStackBase;
-    const x = this.plot!.valToPos(timestamp, 'x', true);
-    const previousX = index > 0 ? this.plot!.valToPos(this.source.xAt(index - 1), 'x', true) : x;
-    const nextX = index + 1 < this.source.pointCount ? this.plot!.valToPos(this.source.xAt(index + 1), 'x', true) : x;
-    const neighborWidth =
-      previousX === x ? Math.abs(nextX - x) : nextX === x ? Math.abs(x - previousX) : Math.abs(nextX - previousX) / 2;
-    const width = Math.max(uPlot.pxRatio, neighborWidth * (style.barWidthFactor ?? 0.8));
-    const y = this.plot!.valToPos(value, this.scaleKey, true);
-    const baseY = this.plot!.valToPos(base, this.scaleKey, true);
-    const left = x - width / 2;
-    const top = Math.min(y, baseY);
-    const height = Math.max(uPlot.pxRatio, Math.abs(baseY - y));
-    this.context!.fillRect(left, top, width, height);
-    if ((style.lineWidth ?? 0) > 0) {
-      this.context!.strokeRect(left, top, width, height);
-    }
-  }
-
   private visitStackExtent(index: number, rawValue: CompactPlotValue): void {
     const value = this.resolveRenderValue(index, rawValue);
     if (value == null) {
       return;
     }
-    this.extentMin =
-      this.extentMin == null
-        ? Math.min(this.currentStackBase, value)
-        : Math.min(this.extentMin, this.currentStackBase, value);
-    this.extentMax =
-      this.extentMax == null
-        ? Math.max(this.currentStackBase, value)
-        : Math.max(this.extentMax, this.currentStackBase, value);
+    this.includeExtentValue(this.currentStackBase);
+    this.includeExtentValue(value);
     if (rawValue != null) {
       this.commitStackValue(index, rawValue);
     }
+  }
+
+  private includeExtentValue(value: number): void {
+    if (this.extentMode === 'positive' && value <= 0) {
+      return;
+    }
+    this.extentMin = this.extentMin == null ? value : Math.min(this.extentMin, value);
+    this.extentMax = this.extentMax == null ? value : Math.max(this.extentMax, value);
   }
 
   private visitStackPresence(index: number, rawValue: CompactPlotValue): void {
@@ -1736,7 +1706,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       const previousValue = this.cursorSnapshotValues[seriesIndex];
       const previousDataIndex = existingDataIndexes?.[seriesIndex] ?? previousIndex;
       let dataIndex = index;
-      let value = source.yAt(seriesIndex, dataIndex);
+      const value = source.yAt(seriesIndex, dataIndex);
       valueReads++;
       if (value == null) {
         const nearestIndex = plot
@@ -1745,8 +1715,6 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         nearestReads++;
         if (nearestIndex != null) {
           dataIndex = nearestIndex;
-          value = source.yAt(seriesIndex, dataIndex);
-          valueReads++;
         }
       }
 

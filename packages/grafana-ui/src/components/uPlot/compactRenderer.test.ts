@@ -11,20 +11,18 @@ import {
 } from './compactRenderer';
 
 describe('CompactRenderController', () => {
-  test('draws source-native lines, steps, points, bars, splines, and gaps without dense arrays', () => {
+  test('draws source-native lines, steps, points, splines, and gaps without dense arrays', () => {
     const source = createSource(
       [
         [1, 2, null, 4],
         [1, 2, 3, 4],
         [1, undefined, 3, 4],
         [1, 2, 3, 4],
-        [1, 2, 3, 4],
       ],
       [
         CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine,
         CompactSeriesFlag.StepAfter | CompactSeriesFlag.DrawLine,
         CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Points,
-        CompactSeriesFlag.Bars,
         CompactSeriesFlag.Spline | CompactSeriesFlag.DrawLine,
       ]
     );
@@ -36,7 +34,6 @@ describe('CompactRenderController', () => {
     expect(context.moveTo).toHaveBeenCalled();
     expect(context.lineTo).toHaveBeenCalled();
     expect(context.arc).toHaveBeenCalled();
-    expect(context.fillRect).toHaveBeenCalled();
     expect(context.quadraticCurveTo).toHaveBeenCalled();
     expect(context.stroke).toHaveBeenCalled();
     expect(source.scan).toHaveBeenCalled();
@@ -51,7 +48,7 @@ describe('CompactRenderController', () => {
       ],
       [
         CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
-        CompactSeriesFlag.Bars | CompactSeriesFlag.Stack,
+        CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
       ],
       1
     );
@@ -84,6 +81,25 @@ describe('CompactRenderController', () => {
     const { plot } = createPlot();
 
     expect(controller.extent(plot, 'y', 0, 2)).toEqual([0, 5]);
+  });
+
+  test('excludes the zero stack baseline from logarithmic extents', () => {
+    const source = createSource(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      [
+        CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+        CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+      ],
+      1
+    );
+    Reflect.set(source, 'scales', [{ key: 'y', distribution: ScaleDistribution.Log, mode: 'positive' }]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.extent(plot, 'y', 0, 1)).toEqual([1, 6]);
   });
 
   test('fills stacked lines between the previous cumulative value and the current line', () => {
@@ -342,7 +358,7 @@ describe('CompactRenderController', () => {
     expect(source.yAt).toHaveBeenCalledTimes(2);
   });
 
-  test('reuses resolved multi-tooltip values while the cursor remains on the same timestamp', () => {
+  test('reuses exact multi-tooltip values while resolving focus indexes separately', () => {
     const source = createSource(
       [
         [1, null, 3],
@@ -361,7 +377,7 @@ describe('CompactRenderController', () => {
     controller.updateCursor(plot, 1, 10);
     const firstSnapshot = controller.getCursorSnapshot(1);
     const firstRevision = firstSnapshot.revision;
-    expect(firstSnapshot.valueAt(0)).toBe(1);
+    expect(firstSnapshot.valueAt(0)).toBeNull();
     expect(firstSnapshot.dataIndexAt(0)).toBe(0);
     expect(firstSnapshot.valueAt(1)).toBe(11);
     expect(source.yAt).toHaveBeenCalledTimes(3);
@@ -370,11 +386,11 @@ describe('CompactRenderController', () => {
     controller.updateCursor(plot, 1, 2);
     expect(controller.getCursorSnapshot(1)).toBe(firstSnapshot);
     expect(firstSnapshot.revision).toBe(firstRevision);
-    expect(source.yAt).toHaveBeenCalledTimes(3);
+    expect(source.yAt).toHaveBeenCalledTimes(4);
     expect(source.nearestPresent).toHaveBeenCalledTimes(2);
 
     controller.updateCursor(plot, 2, 2);
-    expect(source.yAt).toHaveBeenCalledTimes(5);
+    expect(source.yAt).toHaveBeenCalledTimes(6);
   });
 
   test('preserves null, undefined, and NaN cursor values', () => {
@@ -407,7 +423,7 @@ describe('CompactRenderController', () => {
     expect(source.yAt).toHaveBeenCalledTimes(1);
   });
 
-  test('applies plot-aware gap proximity when a synchronized tooltip resolves its snapshot', () => {
+  test('keeps exact gap values while applying plot-aware focus proximity', () => {
     const source = createSource([[1, null, 3]], [CompactSeriesFlag.Linear], 0, 'series', 'single');
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
@@ -418,7 +434,7 @@ describe('CompactRenderController', () => {
 
     Reflect.set(plot, 'cursor', { left: 1.9, top: 1, event: null, hover: { prox: 15 } });
     const snapshot = controller.getCursorSnapshot(1, plot);
-    expect(snapshot.valueAt(0)).toBe(3);
+    expect(snapshot.valueAt(0)).toBeNull();
     expect(snapshot.dataIndexAt(0)).toBe(2);
   });
 

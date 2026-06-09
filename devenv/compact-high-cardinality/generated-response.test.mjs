@@ -59,6 +59,33 @@ test('standalone compact stress fixtures expose concise series names', () => {
   assert.equal(compact.results.A.frames[1].displayNameFromDS, 'series-0000001');
 });
 
+test('captured compact fixtures accept dashboard-inert metadata and preserve notices', () => {
+  const response = JSON.parse(
+    buildJsonResponse({
+      refIds: ['A'],
+      queries: [{ refId: 'A' }],
+      seriesPerQuery: 2,
+      pointCount: 3,
+      from: 1_700_000_000_000,
+      to: 1_700_000_120_000,
+      gappedSeriesEvery: 0,
+      gapEvery: 17,
+      seed: 1,
+    })
+  );
+  const meta = response.results.A.frames[0].schema.meta;
+  meta.preferredVisualisationType = 'table';
+  meta.preferredVisualisationPluginId = 'table';
+  meta.stats = [{ displayName: 'Query time', value: 1 }];
+  meta.uniqueRowIdFields = [0];
+  assert.doesNotThrow(() => buildCompactResponseFromGrafanaJson(response, ['A']));
+
+  meta.notices = [{ severity: 'warning', text: 'warning', link: '/inspect', inspect: 'stats' }];
+  response.results.A.frames[1].schema.meta.notices = meta.notices;
+  const compact = decodeCompact(buildCompactResponseFromGrafanaJson(response, ['A']));
+  assert.deepEqual(compact.results.A.notices, meta.notices);
+});
+
 function normalizeJson(response, refIds) {
   const axes = [];
   const axisIds = new Map();
@@ -66,6 +93,7 @@ function normalizeJson(response, refIds) {
   for (const refId of refIds) {
     results[refId] = {
       status: response.results[refId].status,
+      notices: response.results[refId].frames.flatMap((frame) => frame.schema.meta?.notices ?? []),
       frames: response.results[refId].frames.map((frame) => {
         const timeFieldIndex = frame.schema.fields.findIndex((field) => field.type === 'time');
         const valueFieldIndex = frame.schema.fields.findIndex((field) => field.type === 'number');
@@ -130,7 +158,26 @@ function decodeCompact(buffer) {
     const refId = strings[view.getUint32(offset + 4, true)];
     const status = view.getInt32(offset + 16, true);
     const frameCount = view.getUint32(offset + 20, true);
+    const noticeCount = view.getUint32(offset + 44, true);
     offset += 48;
+    const notices = [];
+    for (let noticeIndex = 0; noticeIndex < noticeCount; noticeIndex++) {
+      const severity = ['info', 'warning', 'error'][view.getUint8(offset + 8)];
+      const inspect = ['', 'meta', 'error', 'data', 'stats'][view.getUint8(offset + 9)];
+      const notice = {
+        severity,
+        text: strings[view.getUint32(offset, true)],
+      };
+      const link = strings[view.getUint32(offset + 4, true)];
+      if (link) {
+        notice.link = link;
+      }
+      if (inspect) {
+        notice.inspect = inspect;
+      }
+      notices.push(notice);
+      offset += 16;
+    }
     const frames = [];
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
       const frameStart = offset;
@@ -161,7 +208,7 @@ function decodeCompact(buffer) {
       offset = frameStart + frameLength;
     }
     assert.equal(offset, resultStart + recordLength);
-    results[refId] = { status, frames };
+    results[refId] = { status, notices, frames };
   }
   assert.equal(offset, buffer.byteLength);
   return { axes, results };
