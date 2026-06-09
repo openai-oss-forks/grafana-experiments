@@ -28,6 +28,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/datasources"
 	fakeDatasources "github.com/grafana/grafana/pkg/services/datasources/fakes"
 	"github.com/grafana/grafana/pkg/services/dsquerierclient"
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/pluginsintegration/pluginconfig"
 	"github.com/grafana/grafana/pkg/services/pluginsintegration/plugincontext"
 	pluginSettings "github.com/grafana/grafana/pkg/services/pluginsintegration/pluginsettings/service"
@@ -169,6 +170,7 @@ func TestAPIEndpoint_Metrics_QueryMetricsV2_CompactResponse(t *testing.T) {
 		hs.queryDataService = qds
 		hs.QuotaService = quotatest.New(false, nil)
 		hs.log = log.New("test-logger")
+		hs.Features = featuremgmt.WithFeatures(featuremgmt.FlagQueryServiceRewrite)
 	})
 
 	compactRequest := `{

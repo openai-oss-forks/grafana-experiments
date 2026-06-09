@@ -1,5 +1,4 @@
 import { CoreApp, DataQueryRequest, FieldConfigSource } from '@grafana/data';
-import { config } from '@grafana/runtime';
 import { VizOrientation } from '@grafana/schema';
 import {
   isCompactFieldConfigSupported,
@@ -32,7 +31,6 @@ export function getPreferredDashboardQueryFormat({
   panelOptions,
 }: CompactDashboardQueryContext): DataQueryRequest['preferredQueryResultFormat'] {
   if (
-    config.featureToggles.queryServiceRewrite ||
     app !== CoreApp.Dashboard ||
     panelPluginId !== 'timeseries' ||
     isEditing ||

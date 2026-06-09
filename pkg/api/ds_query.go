@@ -14,6 +14,7 @@ import (
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/middleware/requestmeta"
 	"github.com/grafana/grafana/pkg/services/apiserver/endpoints/request"
+	"github.com/grafana/grafana/pkg/services/contexthandler"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/datasources"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
@@ -41,7 +42,14 @@ func (hs *HTTPServer) getDSQueryEndpoint() web.Handler {
 		namespaceMapper := request.GetNamespaceMapper(hs.Cfg)
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get(compactQueryDataHeader) == compactQueryDataVersion {
-				http.Error(w, "compact-v1 is not supported by the query-service rewrite", http.StatusNotAcceptable)
+				reqCtx := contexthandler.FromContext(r.Context())
+				if reqCtx == nil {
+					errhttp.Write(r.Context(), errors.New("missing request context"), w)
+					return
+				}
+				if res := hs.QueryMetricsV2(reqCtx); res != nil {
+					res.WriteTo(reqCtx)
+				}
 				return
 			}
 			user, err := identity.GetRequester(r.Context())

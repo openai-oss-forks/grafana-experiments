@@ -35,27 +35,20 @@ describe('compact dashboard query policy', () => {
     ).toBe('compact-v1');
   });
 
-  test('stays on JSON while the server query-service rewrite owns the endpoint', () => {
-    const previous = config.featureToggles.queryServiceRewrite;
-    config.featureToggles.queryServiceRewrite = true;
-    try {
-      expect(getPreferredDashboardQueryFormat({ app: CoreApp.Dashboard, panelPluginId: 'timeseries' })).toBeUndefined();
-    } finally {
-      config.featureToggles.queryServiceRewrite = previous;
+  test.each(['queryServiceRewrite', 'queryServiceFromUI'] as const)(
+    'leaves %s routing to the transport layer',
+    (featureToggle) => {
+      const previous = config.featureToggles[featureToggle];
+      config.featureToggles[featureToggle] = true;
+      try {
+        expect(getPreferredDashboardQueryFormat({ app: CoreApp.Dashboard, panelPluginId: 'timeseries' })).toBe(
+          'compact-v1'
+        );
+      } finally {
+        config.featureToggles[featureToggle] = previous;
+      }
     }
-  });
-
-  test('allows the transport to decide when the frontend query-service flag is enabled', () => {
-    const previous = config.featureToggles.queryServiceFromUI;
-    config.featureToggles.queryServiceFromUI = true;
-    try {
-      expect(getPreferredDashboardQueryFormat({ app: CoreApp.Dashboard, panelPluginId: 'timeseries' })).toBe(
-        'compact-v1'
-      );
-    } finally {
-      config.featureToggles.queryServiceFromUI = previous;
-    }
-  });
+  );
 
   test.each([
     { app: CoreApp.Explore, panelPluginId: 'timeseries' },
