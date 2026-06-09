@@ -144,7 +144,7 @@ function classifyCompactCustomProperty(property: string, value: unknown): Compac
         ? 'supported'
         : 'unsupported';
     case 'stacking':
-      return value == null || isDisabledStacking(value) ? 'supported' : 'unsupported';
+      return value == null || isSupportedStacking(value) ? 'supported' : 'unsupported';
     case 'thresholdsStyle':
       return value == null || isSupportedThresholdStyle(value) ? 'supported' : 'unsupported';
     case 'transform':
@@ -427,11 +427,13 @@ function isSupportedScaleDistribution(value: unknown): boolean {
   );
 }
 
-function isDisabledStacking(value: unknown): boolean {
+function isSupportedStacking(value: unknown): boolean {
   return (
     isRecord(value) &&
     hasOnlyProperties(value, ['group', 'mode']) &&
-    (getObjectProperty(value, 'mode') == null || getObjectProperty(value, 'mode') === StackingMode.None) &&
+    (getObjectProperty(value, 'mode') == null ||
+      getObjectProperty(value, 'mode') === StackingMode.None ||
+      getObjectProperty(value, 'mode') === StackingMode.Normal) &&
     (getObjectProperty(value, 'group') == null || typeof getObjectProperty(value, 'group') === 'string')
   );
 }

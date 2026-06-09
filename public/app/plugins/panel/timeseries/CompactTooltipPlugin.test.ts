@@ -2,6 +2,7 @@ import { SortOrder } from '@grafana/schema';
 
 import {
   filterTooltipIndexes,
+  findTooltipIndex,
   getTooltipTransform,
   isCompactTooltipPlotVisible,
   resolveTooltipValue,
@@ -95,6 +96,21 @@ describe('compact tooltip indexes', () => {
     expect(filtered.valueAt(0)).toBe(1);
     expect(filtered.valueAt(1)).toBe(11);
     expect(resolveTooltipValue(source, 0, 1)).toBe(1);
+  });
+
+  it('keeps the focused series outside the virtualized bulk rows', () => {
+    const sorted = {
+      length: 5,
+      at: (index: number) => [4, 2, 0, 3, 1][index],
+    };
+
+    expect(findTooltipIndex(sorted, 3)).toBe(3);
+  });
+
+  it('does not find a focused series hidden from the tooltip', () => {
+    const hiddenFocusedSeries = 7;
+
+    expect(findTooltipIndex(indexes, hiddenFocusedSeries)).toBe(-1);
   });
 });
 

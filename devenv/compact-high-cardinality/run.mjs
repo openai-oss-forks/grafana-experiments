@@ -288,7 +288,11 @@ try {
     await stopCpuProfile(cdp, path.join(options.outputDir, 'initial-render.cpuprofile'));
   }
   if (options.verifyInteractions) {
-    report.interactions = await verifyPanelInteractions(page, queryRequests[0].responseFormat);
+    report.interactions = await verifyPanelInteractions(
+      page,
+      queryRequests[0].responseFormat,
+      queryRequests[0].seriesCount
+    );
     report.hoverMemory = await collectBrowserSample(cdp, page, 'after-hover');
   }
 
@@ -735,7 +739,7 @@ async function collectChartDiagnostics(page) {
   });
 }
 
-async function verifyPanelInteractions(page, responseFormat) {
+async function verifyPanelInteractions(page, responseFormat, seriesCount) {
   const canvas = page.locator('canvas').first();
   const bounds = await canvas.boundingBox();
   if (!bounds) {
@@ -807,7 +811,8 @@ async function verifyPanelInteractions(page, responseFormat) {
     bounds,
     responseFormat,
     options.hoverSteps,
-    tooltip.totalRows > 1
+    tooltip.totalRows > 1,
+    seriesCount > 1
   );
   if (options.verifyTooltipDigest) {
     await restoreTooltipDigestPosition(page, bounds);
@@ -975,15 +980,10 @@ async function verifyVirtualTooltipScroll(page, totalRows) {
 }
 
 async function restoreTooltipDigestPosition(page, bounds) {
-  await page.mouse.move(
-    bounds.x + bounds.width * 0.55,
-    bounds.y + bounds.height * (options.hoverYFraction ?? 0.45)
-  );
+  await page.mouse.move(bounds.x + bounds.width * 0.55, bounds.y + bounds.height * (options.hoverYFraction ?? 0.45));
   await page.evaluate(
     () =>
-      new Promise((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-      )
+      new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve))))
   );
 }
 
@@ -1046,11 +1046,11 @@ async function measureFirstHoverAt(page, x, y) {
   }));
 }
 
-async function measureRepeatedHover(page, bounds, responseFormat, stepCount, waitForTooltipCommit) {
+async function measureRepeatedHover(page, bounds, responseFormat, stepCount, waitForTooltipCommit, expectFocusOverlay) {
   await resetHoverStageProbe(page);
   await resetLongTaskProbe(page);
   if (options.hoverPattern === 'sweep') {
-    const result = await measureContinuousSweep(page, bounds, responseFormat, stepCount);
+    const result = await measureContinuousSweep(page, bounds, responseFormat, stepCount, expectFocusOverlay);
     result.longTasks = summarizeLongTasks(await collectLongTaskProbe(page));
     return result;
   }
@@ -1146,7 +1146,7 @@ async function measureRepeatedHover(page, bounds, responseFormat, stepCount, wai
     });
   }
 
-  const overlayCount = await verifyFocusOverlay(page, bounds, responseFormat);
+  const overlayCount = await verifyFocusOverlay(page, bounds, responseFormat, expectFocusOverlay);
   await page
     .locator('.uplot')
     .first()
@@ -1190,7 +1190,7 @@ async function measureRepeatedHover(page, bounds, responseFormat, stepCount, wai
   };
 }
 
-async function measureContinuousSweep(page, bounds, responseFormat, stepCount) {
+async function measureContinuousSweep(page, bounds, responseFormat, stepCount, expectFocusOverlay) {
   await page.evaluate(() => {
     const tooltip =
       document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]') ??
@@ -1292,7 +1292,7 @@ async function measureContinuousSweep(page, bounds, responseFormat, stepCount) {
     throw new Error(`Continuous sweep left ${sweep.finalBacklog} stale tooltip events`);
   }
 
-  const overlayCount = await verifyFocusOverlay(page, bounds, responseFormat);
+  const overlayCount = await verifyFocusOverlay(page, bounds, responseFormat, expectFocusOverlay);
   await page
     .locator('.uplot')
     .first()
@@ -1367,17 +1367,36 @@ function summarizeHoverStages(stages) {
   );
 }
 
-async function verifyFocusOverlay(page, bounds, responseFormat) {
+async function verifyFocusOverlay(page, bounds, responseFormat, expectFocusOverlay) {
   let overlayCount = await page.locator('.u-compact-focus-overlay').count();
-  if (responseFormat === 'compact-v1' && overlayCount === 0) {
-    for (let step = 1; step < 10 && overlayCount === 0; step++) {
-      await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + (bounds.height * step) / 10);
+  if (responseFormat === 'compact-v1' && expectFocusOverlay && overlayCount === 0) {
+    const cursorPoint = await page.locator('.u-cursor-pt').first().boundingBox();
+    if (
+      cursorPoint &&
+      cursorPoint.x >= bounds.x &&
+      cursorPoint.x <= bounds.x + bounds.width &&
+      cursorPoint.y >= bounds.y &&
+      cursorPoint.y <= bounds.y + bounds.height
+    ) {
+      await page.mouse.move(cursorPoint.x + cursorPoint.width / 2, cursorPoint.y + cursorPoint.height / 2);
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       overlayCount = await page.locator('.u-compact-focus-overlay').count();
     }
+    for (let xStep = 1; xStep < 10 && overlayCount === 0; xStep++) {
+      for (let yStep = 1; yStep < 20 && overlayCount === 0; yStep++) {
+        await page.mouse.move(bounds.x + (bounds.width * xStep) / 10, bounds.y + (bounds.height * yStep) / 20);
+        await page.evaluate(
+          () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        );
+        overlayCount = await page.locator('.u-compact-focus-overlay').count();
+      }
+    }
   }
-  if (responseFormat === 'compact-v1' && overlayCount !== 1) {
+  if (responseFormat === 'compact-v1' && expectFocusOverlay && overlayCount !== 1) {
     throw new Error(`Compact hover expected one focus overlay, found ${overlayCount}`);
+  }
+  if (responseFormat === 'compact-v1' && !expectFocusOverlay && overlayCount !== 0) {
+    throw new Error(`Single-series compact hover unexpectedly created ${overlayCount} focus overlays`);
   }
   if (responseFormat === 'json' && overlayCount !== 0) {
     throw new Error('Legacy JSON hover unexpectedly created a compact focus overlay');

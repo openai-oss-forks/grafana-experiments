@@ -33,7 +33,6 @@ export function getPreferredDashboardQueryFormat({
 }: CompactDashboardQueryContext): DataQueryRequest['preferredQueryResultFormat'] {
   if (
     config.featureToggles.queryServiceRewrite ||
-    config.featureToggles.queryServiceFromUI ||
     app !== CoreApp.Dashboard ||
     panelPluginId !== 'timeseries' ||
     isEditing ||

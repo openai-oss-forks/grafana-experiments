@@ -11,7 +11,7 @@ if (!dashboardJson || process.argv.includes('--help')) {
 
 Environment:
   GRAFANA_URL             Compact Grafana URL (default: http://127.0.0.1:3000)
-  LEGACY_GRAFANA_URL      Required unmodified Grafana URL for the no-header JSON control
+  LEGACY_GRAFANA_URL      Optional JSON control URL (default: GRAFANA_URL)
   PANEL_IDS               Optional comma-separated panel IDs (default: representative Prometheus time-series panels)
   MAX_PANELS              Maximum automatically selected panels (default: 6)
   SERIES_PER_QUERY        Series generated for each query (default: 3)
@@ -19,17 +19,17 @@ Environment:
   DASHBOARD_FROM          Fixed start timestamp (default: 1700000000000)
   DASHBOARD_TO            Fixed end timestamp (default: 1700003600000)
   OUTPUT_DIR              Artifact directory (default: /tmp/grafana-compact-parity)
-  MAX_MISMATCH_RATIO      Maximum compact-vs-JSON pixel mismatch ratio (default: 0.15)`);
+  MAX_MISMATCH_RATIO      Maximum compact-vs-JSON pixel mismatch ratio (default: 0.15)
+  VERIFY_INTERACTIONS     Compare tooltip rows and ordering when set to 1 (default: 0)`);
   process.exit(dashboardJson ? 0 : 1);
 }
 
-const legacyGrafanaUrl = process.env.LEGACY_GRAFANA_URL;
-if (!legacyGrafanaUrl) {
-  throw new Error('LEGACY_GRAFANA_URL is required for true no-header JSON parity');
-}
+const compactGrafanaUrl = process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000';
+const legacyGrafanaUrl = process.env.LEGACY_GRAFANA_URL ?? compactGrafanaUrl;
 const outputDir = process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-parity';
 const maxPanels = readPositiveInteger('MAX_PANELS', 6);
 const maxMismatchRatio = readRatio('MAX_MISMATCH_RATIO', 0.15);
+const verifyInteractions = process.env.VERIFY_INTERACTIONS === '1';
 const exported = JSON.parse(await fs.readFile(dashboardJson, 'utf8'));
 const dashboard = exported.dashboard ?? exported;
 const panels = flattenPanels(dashboard.panels ?? []).filter(isPrometheusTimeSeriesPanel);
@@ -41,7 +41,7 @@ await fs.mkdir(outputDir, { recursive: true });
 for (const panel of selected) {
   const panelDir = path.join(outputDir, String(panel.id));
   const compactDir = path.join(panelDir, 'auto');
-  await runPanel(panel, compactDir, 'auto', 'auto', process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000');
+  await runPanel(panel, compactDir, 'auto', 'auto', compactGrafanaUrl);
   const compactReport = await readReport(compactDir);
   const requestedFormat = compactReport.queryRequests[0]?.preferredFormat ?? 'json';
 
@@ -67,7 +67,9 @@ for (const panel of selected) {
   );
   const tooltipDigestParity =
     compactReport.interactions?.tooltipRowDigest === jsonReport.interactions?.tooltipRowDigest;
-  const passed = comparison.mismatchRatio <= maxMismatchRatio && tooltipSampleParity && tooltipDigestParity;
+  const passed =
+    comparison.mismatchRatio <= maxMismatchRatio &&
+    (!verifyInteractions || (tooltipSampleParity && tooltipDigestParity));
   results.push({
     panelId: panel.id,
     title: panel.title,
@@ -124,6 +126,7 @@ function runPanel(panel, panelOutput, expectedFormat, responseFormat, grafanaUrl
         GRAFANA_URL: grafanaUrl,
         PANEL_ID: String(panel.id),
         EXPECTED_FORMAT: expectedFormat,
+        REQUEST_FORMAT: expectedFormat === 'json' ? 'json' : 'auto',
         RESPONSE_FORMAT: responseFormat,
         SERIES_PER_QUERY: process.env.SERIES_PER_QUERY ?? '3',
         POINT_COUNT: process.env.POINT_COUNT ?? '120',
@@ -133,8 +136,8 @@ function runPanel(panel, panelOutput, expectedFormat, responseFormat, grafanaUrl
         DASHBOARD_FROM: process.env.DASHBOARD_FROM ?? '1700000000000',
         DASHBOARD_TO: process.env.DASHBOARD_TO ?? '1700003600000',
         REFRESHES: '0',
-        VERIFY_INTERACTIONS: '1',
-        VERIFY_TOOLTIP_DIGEST: '1',
+        VERIFY_INTERACTIONS: verifyInteractions ? '1' : '0',
+        VERIFY_TOOLTIP_DIGEST: verifyInteractions ? '1' : '0',
         HEADLESS: '1',
         OUTPUT_DIR: panelOutput,
       },

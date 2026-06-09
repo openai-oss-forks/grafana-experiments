@@ -55,6 +55,7 @@ class MyDataSource extends DataSourceWithBackend<MyQuery, DataSourceJsonData> {
 }
 
 const mockDatasourceRequest = jest.fn<Promise<FetchResponse>, BackendSrvRequest[]>();
+let mockQueryServiceAllowedTypes: string[] = [];
 
 const backendSrv = {
   fetch: (options: BackendSrvRequest) => {
@@ -86,9 +87,15 @@ jest.mock('../services', () => ({
       getInstanceSettings: (ref?: DataSourceRef) => ({
         type: ref?.type ?? '<mocktype>',
         uid: ref?.uid ?? '<mockuid>',
+        jsonData: {},
       }),
     };
   },
+}));
+jest.mock('../internal/openFeature', () => ({
+  getFeatureFlagClient: () => ({
+    getObjectValue: () => ({ types: mockQueryServiceAllowedTypes }),
+  }),
 }));
 jest.mock('./publicDashboardQueryHandler');
 
@@ -96,6 +103,7 @@ describe('DataSourceWithBackend', () => {
   beforeEach(async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2023-10-13'));
+    mockQueryServiceAllowedTypes = [];
   });
 
   afterEach(() => {
@@ -261,6 +269,49 @@ describe('DataSourceWithBackend', () => {
 
     expect(mock.calls[0][0].headers?.[QUERY_DATA_COMPACT_HEADER]).toBe(QUERY_DATA_COMPACT_VERSION);
     expect(mock.calls[0][0].responseType).toBe('arraybuffer');
+  });
+
+  test('requests compact when the frontend query-service flag leaves the datasource on the data query endpoint', () => {
+    const previous = config.featureToggles.queryServiceFromUI;
+    config.featureToggles.queryServiceFromUI = true;
+    try {
+      const { mock, ds } = createMockDatasource();
+      ds.requestCompactResponses = true;
+      ds.query(
+        compactQueryRequest({
+          preferredQueryResultFormat: QUERY_DATA_COMPACT_VERSION,
+          targets: [{ refId: 'A', datasource: { type: 'dummy', uid: 'abc' } }],
+        })
+      );
+
+      expect(mock.calls[0][0].url?.startsWith('/api/ds/query')).toBe(true);
+      expect(mock.calls[0][0].headers?.[QUERY_DATA_COMPACT_HEADER]).toBe(QUERY_DATA_COMPACT_VERSION);
+      expect(mock.calls[0][0].responseType).toBe('arraybuffer');
+    } finally {
+      config.featureToggles.queryServiceFromUI = previous;
+    }
+  });
+
+  test('does not request compact after the frontend routes the datasource to query service', () => {
+    const previous = config.featureToggles.queryServiceFromUI;
+    config.featureToggles.queryServiceFromUI = true;
+    mockQueryServiceAllowedTypes = ['dummy'];
+    try {
+      const { mock, ds } = createMockDatasource();
+      ds.requestCompactResponses = true;
+      ds.query(
+        compactQueryRequest({
+          preferredQueryResultFormat: QUERY_DATA_COMPACT_VERSION,
+          targets: [{ refId: 'A', datasource: { type: 'dummy', uid: 'abc' } }],
+        })
+      );
+
+      expect(mock.calls[0][0].url?.startsWith('/apis/query.grafana.app/')).toBe(true);
+      expect(mock.calls[0][0].headers?.[QUERY_DATA_COMPACT_HEADER]).toBeUndefined();
+      expect(mock.calls[0][0].responseType).toBeUndefined();
+    } finally {
+      config.featureToggles.queryServiceFromUI = previous;
+    }
   });
 
   test('does not request compact responses without an explicit dashboard opt-in', () => {

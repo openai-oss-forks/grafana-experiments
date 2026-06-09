@@ -68,6 +68,57 @@ describe('CompactRenderController', () => {
     expect(controller.extent(plot, 'y', 0, 2)).toEqual([0, 3]);
   });
 
+  test('matches legacy stack presence semantics across gaps', () => {
+    const source = createSource(
+      [
+        [1, null, 3],
+        [4, 5, null],
+      ],
+      [
+        CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+        CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+      ],
+      1
+    );
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.extent(plot, 'y', 0, 2)).toEqual([0, 5]);
+  });
+
+  test('fills stacked lines between the previous cumulative value and the current line', () => {
+    const source = createSource(
+      [
+        [1, 1],
+        [2, 2],
+      ],
+      [
+        CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+        CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+      ],
+      1,
+      'series',
+      'single',
+      { stroke: '#f00', areaFill: '#fcc', lineWidth: 0 }
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+
+    controller.draw(plot, 0, 1);
+
+    expect(context.fill).toHaveBeenCalledTimes(2);
+    expect(context.lineTo).toHaveBeenCalledWith(0, 1);
+    expect(context.lineTo).toHaveBeenCalledWith(1, 1);
+  });
+
+  test('uses cumulative stack coordinates for cursor focus', () => {
+    const source = createSource([[1], [4]], [CompactSeriesFlag.Stack, CompactSeriesFlag.Stack], 1);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 0, 5)).toMatchObject({ seriesIndex: 1, dataIndex: 0, top: 5 });
+  });
+
   test('preserves query-owned response storage after transferring controller ownership', () => {
     const first = createSource([[1, 2]], [CompactSeriesFlag.Linear]);
     const release = jest.fn(first.release);

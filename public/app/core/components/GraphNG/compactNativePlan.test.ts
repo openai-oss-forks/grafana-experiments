@@ -22,7 +22,9 @@ import {
   GraphGradientMode,
   GraphTransform,
   ScaleDistribution,
+  StackingMode,
 } from '@grafana/schema';
+import { CompactSeriesFlag } from '@grafana/ui/internal';
 
 import {
   CompactNativeSeriesFlag,
@@ -398,6 +400,86 @@ describe('CompactNativeRenderPlan', () => {
     expect(style.areaFill).toBe(colorManipulator.alpha(style.stroke, 0.35));
     expect(style.fill).toBe(style.stroke);
     expect(style.lineWidth).toBe(0);
+  });
+
+  test('compiles normal stacks into stable groups without materializing sample arrays', () => {
+    const { source, getSeries } = columnarSource([
+      series('A', 'requests', [1, 2, 3]),
+      series('B', 'errors', [4, 5, 6]),
+      series('C', 'decrements', [-1, -2, -3]),
+      series('D', 'other', [7, 8, 9]),
+    ]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [compactProperty('custom.stacking', 'stacking', true)]),
+      fieldConfig: {
+        defaults: { custom: { stacking: { mode: StackingMode.Normal, group: 'primary' } } },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byFrameRefID, options: 'D' },
+            properties: [{ id: 'custom.stacking', value: { mode: StackingMode.Normal, group: 'other' } }],
+          },
+        ],
+      },
+    });
+
+    expect(plan.source.stackGroupCount).toBe(1);
+    expect(plan.source.columns.stackGroupIds).toEqual(new Uint8Array([1, 1, 0, 0]));
+    expect(Array.from(plan.source.columns.flags, (flags) => (flags & CompactSeriesFlag.Stack) !== 0)).toEqual([
+      true,
+      true,
+      false,
+      false,
+    ]);
+    expect(plan.source.buffer).toBe(source.buffer);
+    expect(getSeries).not.toHaveBeenCalled();
+  });
+
+  test('uses the original value direction for negative and constant transforms', () => {
+    const { source } = columnarSource([
+      series('A', 'positive', [1, 2, 3]),
+      series('B', 'negative-rendered-positive', [-1, -2, -3]),
+      series('C', 'constant-positive', [4, 5, 6]),
+    ]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.stacking', 'stacking', true),
+        compactProperty('custom.transform', 'transform', true),
+      ]),
+      fieldConfig: {
+        defaults: { custom: { stacking: { mode: StackingMode.Normal, group: 'primary' } } },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byFrameRefID, options: 'B' },
+            properties: [{ id: 'custom.transform', value: GraphTransform.NegativeY }],
+          },
+          {
+            matcher: { id: FieldMatcherID.byFrameRefID, options: 'C' },
+            properties: [{ id: 'custom.transform', value: GraphTransform.Constant }],
+          },
+        ],
+      },
+    });
+
+    expect(plan.source.stackGroupCount).toBe(1);
+    expect(plan.source.columns.stackGroupIds).toEqual(new Uint8Array([1, 1, 1]));
+  });
+
+  test('does not allocate stack state for singleton groups', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2, 3])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [compactProperty('custom.stacking', 'stacking', true)]),
+      fieldConfig: {
+        defaults: { custom: { stacking: { mode: StackingMode.Normal, group: 'primary' } } },
+        overrides: [],
+      },
+    });
+
+    expect(plan.source.stackGroupCount).toBe(0);
+    expect(plan.source.columns.stackGroupIds).toBeUndefined();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Stack).toBe(0);
   });
 
   test('keeps calculated series color separate from explicit line color and legacy-inert options', () => {

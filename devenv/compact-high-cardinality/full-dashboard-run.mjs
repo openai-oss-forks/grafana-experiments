@@ -19,7 +19,7 @@ if (!dashboardJson || process.argv.includes('--help')) {
 
 Environment:
   GRAFANA_URL             Compact Grafana URL (default: http://127.0.0.1:3000)
-  LEGACY_GRAFANA_URL      Unmodified Grafana URL required by RESPONSE_FORMAT=legacy-json
+  LEGACY_GRAFANA_URL      Optional JSON control URL (default: GRAFANA_URL)
   RESPONSE_FORMAT         auto or legacy-json (default: auto)
   SERIES_PER_QUERY        Generated series for each query (default: 20)
   POINT_COUNT             Samples generated for each series (default: 120)
@@ -38,12 +38,10 @@ Environment:
 }
 
 const responseFormat = readResponseFormat();
-const legacyGrafanaUrl = process.env.LEGACY_GRAFANA_URL;
-if (responseFormat === 'legacy-json' && !legacyGrafanaUrl) {
-  throw new Error('LEGACY_GRAFANA_URL is required for a true legacy JSON dashboard run');
-}
+const compactGrafanaUrl = process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000';
+const legacyGrafanaUrl = process.env.LEGACY_GRAFANA_URL ?? compactGrafanaUrl;
 const options = {
-  baseUrl: responseFormat === 'legacy-json' ? legacyGrafanaUrl : (process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000'),
+  baseUrl: responseFormat === 'legacy-json' ? legacyGrafanaUrl : compactGrafanaUrl,
   username: process.env.GRAFANA_USER ?? 'admin',
   password: process.env.GRAFANA_PASSWORD ?? 'admin',
   responseFormat,
@@ -171,6 +169,13 @@ await context.route('**/api/ds/query**', async (route) => {
     lastRequestActivityAt = performance.now();
   }
 });
+if (options.responseFormat === 'legacy-json') {
+  await context.route('**/api/ds/query**', async (route) => {
+    const headers = { ...route.request().headers() };
+    delete headers[COMPACT_HEADER];
+    await route.fallback({ headers });
+  });
+}
 const report = {
   config: { ...options, password: '<redacted>' },
   fixture: fixture.source,

@@ -14,6 +14,7 @@ import {
   ComparisonOperation,
   GraphDrawStyle,
   GraphGradientMode,
+  GraphTransform,
   LineInterpolation,
   ScaleDistribution,
   SortOrder,
@@ -34,20 +35,27 @@ describe('compact dashboard query policy', () => {
     ).toBe('compact-v1');
   });
 
-  test.each(['queryServiceRewrite', 'queryServiceFromUI'] as const)(
-    'stays on JSON while %s owns the endpoint',
-    (featureToggle) => {
-      const previous = config.featureToggles[featureToggle];
-      config.featureToggles[featureToggle] = true;
-      try {
-        expect(
-          getPreferredDashboardQueryFormat({ app: CoreApp.Dashboard, panelPluginId: 'timeseries' })
-        ).toBeUndefined();
-      } finally {
-        config.featureToggles[featureToggle] = previous;
-      }
+  test('stays on JSON while the server query-service rewrite owns the endpoint', () => {
+    const previous = config.featureToggles.queryServiceRewrite;
+    config.featureToggles.queryServiceRewrite = true;
+    try {
+      expect(getPreferredDashboardQueryFormat({ app: CoreApp.Dashboard, panelPluginId: 'timeseries' })).toBeUndefined();
+    } finally {
+      config.featureToggles.queryServiceRewrite = previous;
     }
-  );
+  });
+
+  test('allows the transport to decide when the frontend query-service flag is enabled', () => {
+    const previous = config.featureToggles.queryServiceFromUI;
+    config.featureToggles.queryServiceFromUI = true;
+    try {
+      expect(getPreferredDashboardQueryFormat({ app: CoreApp.Dashboard, panelPluginId: 'timeseries' })).toBe(
+        'compact-v1'
+      );
+    } finally {
+      config.featureToggles.queryServiceFromUI = previous;
+    }
+  });
 
   test.each([
     { app: CoreApp.Explore, panelPluginId: 'timeseries' },
@@ -79,7 +87,7 @@ describe('compact dashboard query policy', () => {
     {
       app: CoreApp.Dashboard,
       panelPluginId: 'timeseries',
-      fieldConfig: { defaults: { custom: { stacking: { mode: StackingMode.Normal, group: 'A' } } }, overrides: [] },
+      fieldConfig: { defaults: { custom: { stacking: { mode: StackingMode.Percent, group: 'A' } } }, overrides: [] },
     },
     {
       app: CoreApp.Dashboard,
@@ -142,6 +150,42 @@ describe('compact dashboard query policy', () => {
     },
   ])('keeps unsupported request context on JSON: %p', (context) => {
     expect(getPreferredDashboardQueryFormat(context)).toBeUndefined();
+  });
+
+  test('supports normal line stacking without leaving the compact path', () => {
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        fieldConfig: {
+          defaults: {
+            custom: {
+              drawStyle: GraphDrawStyle.Line,
+              stacking: { mode: StackingMode.Normal, group: 'A' },
+            },
+          },
+          overrides: [],
+        },
+      })
+    ).toBe('compact-v1');
+  });
+
+  test('supports constant-transformed normal stacks', () => {
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        fieldConfig: {
+          defaults: {
+            custom: {
+              stacking: { mode: StackingMode.Normal, group: 'A' },
+              transform: GraphTransform.Constant,
+            },
+          },
+          overrides: [],
+        },
+      })
+    ).toBe('compact-v1');
   });
 
   test('rejects unsupported default color reducers from runtime dashboard JSON', () => {

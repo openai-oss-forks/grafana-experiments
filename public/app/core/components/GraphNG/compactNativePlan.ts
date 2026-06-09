@@ -35,6 +35,7 @@ import {
   GraphTransform,
   LineInterpolation,
   ScaleDistribution,
+  StackingMode,
   VisibilityMode,
 } from '@grafana/schema';
 import {
@@ -172,6 +173,16 @@ interface RendererConfigRecord {
   readonly spanNullsThreshold: number | undefined;
   readonly showValues: boolean;
   readonly showPoints: VisibilityMode | undefined;
+  readonly stackingMode: StackingMode;
+  readonly stackingGroup: string;
+}
+
+interface RendererStackGroupRecord {
+  readonly direction: 1 | -1;
+  readonly group: string;
+  readonly scaleId: number;
+  readonly drawStyle: GraphDrawStyle;
+  readonly path: CompactSeriesFlag;
 }
 
 interface LabelProfile {
@@ -564,7 +575,12 @@ export function hasSameCompactNativeTopology(
   if (!left || !right || left.source.stackGroupCount !== right.source.stackGroupCount) {
     return false;
   }
-  return isEqual(left.source.scales, right.source.scales) && isEqual(left.scales, right.scales);
+  return (
+    compactColumnsEqual(left.source.columns.stackGroupIds, right.source.columns.stackGroupIds) &&
+    compactStackFlagsEqual(left.source.columns.flags, right.source.columns.flags) &&
+    isEqual(left.source.scales, right.source.scales) &&
+    isEqual(left.scales, right.scales)
+  );
 }
 
 function createRenderSource(
@@ -585,10 +601,14 @@ function createRenderSource(
 ): CompactRenderSource {
   const styleIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const scaleIdBuilder = new CompactIndexColumnBuilder(seriesCount);
+  const stackGroupIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const flags = new Uint8Array(seriesCount);
   const visibility = new Uint8Array(seriesCount);
   const styles: CompactStyleRecord[] = [];
   const scales: CompactScaleRecord[] = [];
+  const stackGroups: RendererStackGroupRecord[] = [];
+  const stackGroupCounts: number[] = [];
+  const stackGroupBuckets = new Map<number, number[]>();
   const rendererStyleIds = new Map<number, Map<string, number>>();
   const scaleBuckets = new Map<number, number[]>();
   const rendererScaleIds = new Map<Readonly<FieldConfig<GraphFieldConfig>>, number>();
@@ -631,6 +651,8 @@ function createRenderSource(
       spanNullsThreshold,
       showValues,
       showPoints: configuredShowPoints,
+      stackingMode,
+      stackingGroup,
     } = rendererConfig;
     const displayName = colorMode.useSeriesName ? getDisplayName(seriesIndex) : '';
     colorTarget.config = config;
@@ -696,7 +718,8 @@ function createRenderSource(
     }
     scaleIdBuilder.set(seriesIndex, rendererScaleId);
 
-    let seriesFlags = getPathFlag(custom.lineInterpolation);
+    const pathFlag = getPathFlag(custom.lineInterpolation);
+    let seriesFlags = pathFlag;
     if (drawStyle === GraphDrawStyle.Line) {
       seriesFlags |= CompactSeriesFlag.DrawLine;
     }
@@ -706,18 +729,42 @@ function createRenderSource(
     } else if (showPoints === VisibilityMode.Auto) {
       seriesFlags |= CompactSeriesFlag.AutoPoints;
     }
+    if (stackingMode === StackingMode.Normal) {
+      const stackGroupIndex = internStructuralRecord(
+        {
+          direction: getStackDirection(source, seriesIndex, custom.transform),
+          group: stackingGroup,
+          scaleId: rendererScaleId,
+          drawStyle,
+          path: pathFlag,
+        },
+        stackGroups,
+        stackGroupBuckets
+      );
+      stackGroupCounts[stackGroupIndex] = (stackGroupCounts[stackGroupIndex] ?? 0) + 1;
+      stackGroupIdBuilder.set(seriesIndex, stackGroupIndex + 1);
+      seriesFlags |= CompactSeriesFlag.Stack;
+    }
     flags[seriesIndex] = seriesFlags;
     visibility[seriesIndex] = custom.hideFrom?.viz ? 0 : 1;
   }
 
   const styleIds = styleIdBuilder.finish();
   const scaleIds = scaleIdBuilder.finish();
+  const rawStackGroupIds = stackGroupIdBuilder.finish();
+  const { stackGroupIds, stackGroupCount } = compactStackGroups(rawStackGroupIds, stackGroupCounts, flags);
 
   Object.assign(source, {
-    columns: { styleIds, scaleIds, flags, visibility },
+    columns: {
+      styleIds,
+      scaleIds,
+      flags,
+      visibility,
+      ...(stackGroupCount > 0 ? { stackGroupIds } : undefined),
+    },
     styles,
     scales,
-    stackGroupCount: 0,
+    stackGroupCount,
     cursorMode: options.cursorMode ?? 'single',
     focusOverlayColor: colorManipulator.alpha(options.theme.colors.background.canvas, 0.72),
     seriesIdentityAt: getSeriesIdentity,
@@ -864,7 +911,104 @@ function compileRendererConfig(config: FieldConfig<GraphFieldConfig>): RendererC
           : undefined,
     showValues: custom.showValues === true,
     showPoints: custom.showPoints,
+    stackingMode: custom.stacking?.mode ?? StackingMode.None,
+    stackingGroup: custom.stacking?.group ?? '',
   };
+}
+
+function getStackDirection(
+  source: CompactPlotSource,
+  seriesIndex: number,
+  transform: GraphTransform | undefined,
+  samples = 100
+): 1 | -1 {
+  if (source.pointCount === 0) {
+    return 1;
+  }
+  const firstIndex = source.nearestPresent(seriesIndex, 0, 1);
+  const lastIndex = source.nearestPresent(seriesIndex, source.pointCount - 1, -1);
+  if (firstIndex == null || lastIndex == null) {
+    return transform === GraphTransform.NegativeY ? -1 : 1;
+  }
+
+  let negativeCount = 0;
+  let positiveCount = 0;
+  const stride = Math.max(1, Math.floor((lastIndex - firstIndex + 1) / samples));
+  for (let index = firstIndex; index <= lastIndex; index += stride) {
+    const renderedValue = source.yAt(seriesIndex, index);
+    if (renderedValue == null) {
+      continue;
+    }
+    const sourceValue = transform === GraphTransform.NegativeY ? -renderedValue : renderedValue;
+    if (sourceValue < 0 || Object.is(sourceValue, -0)) {
+      negativeCount++;
+    } else if (sourceValue > 0) {
+      positiveCount++;
+    }
+  }
+
+  const sourceIsNegative = negativeCount > positiveCount;
+  if (transform === GraphTransform.NegativeY) {
+    return sourceIsNegative ? 1 : -1;
+  }
+  return sourceIsNegative ? -1 : 1;
+}
+
+function compactStackGroups(
+  rawStackGroupIds: CompactIndexColumn,
+  stackGroupCounts: number[],
+  flags: Uint8Array
+): { stackGroupIds: CompactIndexColumn; stackGroupCount: number } {
+  const remappedGroupIds = new Uint32Array(stackGroupCounts.length);
+  let stackGroupCount = 0;
+  for (let groupIndex = 0; groupIndex < stackGroupCounts.length; groupIndex++) {
+    if (stackGroupCounts[groupIndex] > 1) {
+      remappedGroupIds[groupIndex] = ++stackGroupCount;
+    }
+  }
+
+  if (stackGroupCount === stackGroupCounts.length) {
+    return { stackGroupIds: rawStackGroupIds, stackGroupCount };
+  }
+
+  const builder = new CompactIndexColumnBuilder(rawStackGroupIds.length);
+  for (let seriesIndex = 0; seriesIndex < rawStackGroupIds.length; seriesIndex++) {
+    const rawGroupId = rawStackGroupIds[seriesIndex];
+    const stackGroupId = rawGroupId === 0 ? 0 : remappedGroupIds[rawGroupId - 1];
+    builder.set(seriesIndex, stackGroupId);
+    if (stackGroupId === 0) {
+      flags[seriesIndex] &= ~CompactSeriesFlag.Stack;
+    }
+  }
+  return { stackGroupIds: builder.finish(), stackGroupCount };
+}
+
+function compactColumnsEqual(left: CompactIndexColumn | undefined, right: CompactIndexColumn | undefined): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function compactStackFlagsEqual(left: CompactIndexColumn, right: CompactIndexColumn): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const mask = CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
+  for (let index = 0; index < left.length; index++) {
+    if ((left[index] & mask) !== (right[index] & mask)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function getCachedColorCalculator(
