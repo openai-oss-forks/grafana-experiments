@@ -9,7 +9,7 @@ require (
 	github.com/grafana/cog v0.0.48
 	github.com/grafana/cuetsy v0.1.11
 	github.com/matryer/is v1.4.1
-	golang.org/x/tools v0.41.0
+	golang.org/x/tools v0.44.0
 )
 
 require (
@@ -19,8 +19,9 @@ require (
 	github.com/emicklei/proto v1.14.2 // indirect
 	github.com/expr-lang/expr v1.17.7 // indirect
 	github.com/getkin/kin-openapi v0.133.0 // indirect
-	github.com/go-openapi/jsonpointer v0.22.4 // indirect
-	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
+	github.com/go-openapi/jsonpointer v0.23.1 // indirect
+	github.com/go-openapi/swag/jsonname v0.26.0 // indirect
+	github.com/go-openapi/testify/v2 v2.5.1 // indirect
 	github.com/go-test/deep v1.1.1 // indirect
 	github.com/golang/glog v1.2.5 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
@@ -48,10 +49,10 @@ require (
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
 	github.com/yalue/merged_fs v1.3.0 // indirect
-	golang.org/x/mod v0.32.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
