@@ -28,8 +28,8 @@ require (
 	github.com/Masterminds/sprig/v3 v3.3.0 // @grafana/grafana-backend-group
 	github.com/VividCortex/mysqlerr v0.0.0-20170204212430-6c6b55f8796f // @grafana/grafana-backend-group
 	github.com/alicebob/miniredis/v2 v2.34.0 // @grafana/alerting-backend
-	github.com/andybalholm/brotli v1.2.0 // @grafana/partner-datasources
-	github.com/apache/arrow-go/v18 v18.5.1 // @grafana/plugins-platform-backend
+	github.com/andybalholm/brotli v1.2.1 // @grafana/partner-datasources
+	github.com/apache/arrow-go/v18 v18.6.0 // @grafana/plugins-platform-backend
 	github.com/armon/go-radix v1.0.0 // @grafana/grafana-app-platform-squad
 	github.com/aws/aws-sdk-go v1.55.7 // @grafana/aws-datasources
 	github.com/aws/aws-sdk-go-v2 v1.41.1 // @grafana/aws-datasources
@@ -209,18 +209,18 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // @grafana/alerting-backend
 	gocloud.dev v0.43.0 // @grafana/grafana-app-platform-squad
 	gocloud.dev/secrets/hashivault v0.43.0 // @grafana/grafana-operator-experience-squad
-	golang.org/x/crypto v0.47.0 // @grafana/grafana-backend-group
+	golang.org/x/crypto v0.49.0 // @grafana/grafana-backend-group
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // @grafana/alerting-backend
-	golang.org/x/mod v0.32.0 // indirect; @grafana/grafana-backend-group
-	golang.org/x/net v0.49.0 // @grafana/oss-big-tent @grafana/partner-datasources
+	golang.org/x/mod v0.34.0 // indirect; @grafana/grafana-backend-group
+	golang.org/x/net v0.52.0 // @grafana/oss-big-tent @grafana/partner-datasources
 	golang.org/x/oauth2 v0.34.0 // @grafana/identity-access-team
-	golang.org/x/sync v0.19.0 // @grafana/alerting-backend
-	golang.org/x/text v0.33.0 // @grafana/grafana-backend-group
+	golang.org/x/sync v0.20.0 // @grafana/alerting-backend
+	golang.org/x/text v0.35.0 // @grafana/grafana-backend-group
 	golang.org/x/time v0.14.0 // @grafana/grafana-backend-group
-	golang.org/x/tools v0.41.0 // indirect; @grafana/grafana-as-code
+	golang.org/x/tools v0.43.0 // indirect; @grafana/grafana-as-code
 	gonum.org/v1/gonum v0.17.0 // @grafana/oss-big-tent
 	google.golang.org/api v0.242.0 // @grafana/grafana-backend-group
-	google.golang.org/grpc v1.79.3 // @grafana/plugins-platform-backend
+	google.golang.org/grpc v1.80.0 // @grafana/plugins-platform-backend
 	google.golang.org/protobuf v1.36.11 // @grafana/plugins-platform-backend
 	gopkg.in/ini.v1 v1.67.0 // @grafana/alerting-backend
 	gopkg.in/mail.v2 v2.3.1 // @grafana/grafana-backend-group
@@ -234,7 +234,7 @@ require (
 	k8s.io/kube-aggregator v0.35.0 // @grafana/grafana-app-platform-squad
 	k8s.io/kube-openapi v0.0.0-20260127142750-a19766b6e2d4 // @grafana/grafana-app-platform-squad
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // @grafana/partner-datasources
-	modernc.org/sqlite v1.44.3 // @grafana/grafana-backend-group
+	modernc.org/sqlite v1.49.1 // @grafana/grafana-backend-group
 	pgregory.net/rapid v1.2.0 // @grafana/grafana-operator-experience-squad
 	sigs.k8s.io/randfill v1.0.0 // @grafana/grafana-app-platform-squad
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.1 // @grafana/grafana-app-platform-squad
@@ -316,7 +316,7 @@ require (
 	github.com/Azure/go-ntlmssp v0.0.0-20220621081337-cb9428e4ac1e // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0 // indirect
 	github.com/FZambia/eagle v0.2.0 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.30.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.31.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.53.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.53.0 // indirect
 	github.com/IBM/pgxpoolprometheus v1.1.2 // indirect
@@ -442,7 +442,7 @@ require (
 	github.com/go-openapi/swag/yamlutils v0.25.4 // indirect
 	github.com/go-openapi/validate v0.25.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
-	github.com/goccy/go-json v0.10.5 // indirect
+	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/gofrs/uuid v4.4.0+incompatible // indirect
 	github.com/gogo/googleapis v1.4.1 // indirect
 	github.com/gogo/status v1.1.1 // indirect
@@ -504,8 +504,7 @@ require (
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/jszwedko/go-datemath v0.1.1-0.20230526204004-640a500621d6 // indirect
 	github.com/jtolds/gls v4.20.0+incompatible // indirect
-	github.com/klauspost/asmfmt v1.3.2 // indirect
-	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
@@ -521,14 +520,12 @@ require (
 	github.com/mattetti/filebuffer v1.0.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-ieproxy v0.0.12 // indirect
-	github.com/mattn/go-runewidth v0.0.16 // indirect
+	github.com/mattn/go-runewidth v0.0.20 // indirect
 	github.com/maypok86/otter v1.2.4 // indirect
 	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/mdlayher/vsock v1.2.1 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/miekg/dns v1.1.69 // indirect
-	github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8 // indirect
-	github.com/minio/c2goasm v0.0.0-20190812172519-36a3d3bbc4f3 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
@@ -569,7 +566,7 @@ require (
 	github.com/opentracing-contrib/go-stdlib v1.1.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
-	github.com/pierrec/lz4/v4 v4.1.23 // indirect
+	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pires/go-proxyproto v0.8.1 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -584,7 +581,6 @@ require (
 	github.com/quagmt/udecimal v1.9.0 // indirect
 	github.com/redis/rueidis v1.0.68 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
@@ -625,7 +621,7 @@ require (
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zclconf/go-cty v1.16.3 // indirect
-	github.com/zeebo/xxh3 v1.0.2 // indirect
+	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.etcd.io/etcd/api/v3 v3.6.7 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.7 // indirect
 	go.etcd.io/etcd/client/v3 v3.6.7 // indirect
@@ -648,9 +644,9 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.39.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go4.org/netipx v0.0.0-20230125063823-8449b0a6169f // indirect
-	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260109210033-bd525da824e2 // indirect
-	golang.org/x/term v0.39.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260311193753-579e4da9a98c // indirect
+	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/genproto v0.0.0-20250715232539-7130f93afb79 // indirect
@@ -694,9 +690,10 @@ require (
 )
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/kms v0.35.0 // indirect
-	modernc.org/libc v1.67.6 // indirect
+	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 )
 
