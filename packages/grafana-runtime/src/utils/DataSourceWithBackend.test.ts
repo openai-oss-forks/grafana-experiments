@@ -169,7 +169,7 @@ describe('DataSourceWithBackend', () => {
 
     expect(args.data.queries[0]).toMatchObject({
       intervalMs: 1800000,
-      maxDataPoints: 337,
+      maxDataPoints: 1500,
       __grafanaQueryOptions: {
         stepSize: '30m',
         minInterval: '5m',
@@ -199,7 +199,7 @@ describe('DataSourceWithBackend', () => {
     expect(args.data.queries[0]).toMatchObject({
       interval: '5m',
       intervalMs: 1800000,
-      maxDataPoints: 337,
+      maxDataPoints: 1500,
       stepSize: '30m',
       __grafanaQueryOptions: {
         stepSize: '30m',

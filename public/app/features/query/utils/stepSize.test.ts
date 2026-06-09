@@ -7,6 +7,7 @@ import {
   getStepSizeOptions,
   isStepSizeBelowMinInterval,
   isValidStepSize,
+  MAX_STEP_SIZE_DATA_POINTS,
   resolveQueryIntervalWithStepSize,
 } from './stepSize';
 
@@ -59,8 +60,23 @@ describe('stepSize helpers', () => {
 
     expect(interval.interval).toBe('30m');
     expect(interval.intervalMs).toBe(getStepSizeMs('30m'));
-    expect(interval.maxDataPoints).toBe(337);
+    expect(interval.maxDataPoints).toBe(MAX_STEP_SIZE_DATA_POINTS);
     expect(getDatapointsForStep(timeRange, getStepSizeMs('30m'))).toBe(337);
+  });
+
+  it('keeps the per-series cap when the selected step has fewer points', () => {
+    const timeRange = range('2023-01-01T00:00:00Z', '2023-01-01T06:00:00Z');
+
+    const interval = resolveQueryIntervalWithStepSize({
+      range: timeRange,
+      maxDataPoints: 361,
+      stepSize: '1m',
+    });
+
+    expect(interval.interval).toBe('1m');
+    expect(interval.intervalMs).toBe(getStepSizeMs('1m'));
+    expect(interval.maxDataPoints).toBe(MAX_STEP_SIZE_DATA_POINTS);
+    expect(getDatapointsForStep(timeRange, getStepSizeMs('1m'))).toBe(361);
   });
 
   it('clamps upward to the next approved step under 1500 datapoints', () => {
@@ -73,7 +89,7 @@ describe('stepSize helpers', () => {
     });
 
     expect(interval.interval).toBe('10m');
-    expect(interval.maxDataPoints).toBe(1009);
+    expect(interval.maxDataPoints).toBe(MAX_STEP_SIZE_DATA_POINTS);
   });
 
   it('clamps upward to the effective min interval', () => {
@@ -90,7 +106,7 @@ describe('stepSize helpers', () => {
     expect(interval.intervalMs).toBe(getStepSizeMs('20m'));
   });
 
-  it('falls back to auto interval capped at 1499 points when no approved step is large enough', () => {
+  it('falls back to auto interval capped at 1500 points when no approved step is large enough', () => {
     const timeRange = range('2023-01-01T00:00:00Z', '2024-01-01T00:00:00Z');
 
     const interval = resolveQueryIntervalWithStepSize({

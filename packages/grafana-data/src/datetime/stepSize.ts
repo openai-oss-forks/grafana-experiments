@@ -3,7 +3,7 @@ import { type SelectableValue } from '../types/select';
 import { type TimeRange } from '../types/time';
 
 export const MAX_STEP_SIZE_DATA_POINTS = 1500;
-export const AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS = MAX_STEP_SIZE_DATA_POINTS - 1;
+export const AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS = MAX_STEP_SIZE_DATA_POINTS;
 
 export const ALLOWED_STEP_SIZES = ['1m', '5m', '10m', '20m', '30m', '1h', '2h', '5h'] as const;
 
@@ -117,7 +117,7 @@ export function resolveQueryIntervalWithStepSize({
   const minimumStepMs = Math.max(requestedStepMs, minIntervalMs);
   const clampedStepSize = ALLOWED_STEP_SIZES.find((candidate) => {
     const candidateMs = getStepSizeMs(candidate);
-    return candidateMs >= minimumStepMs && getDatapointsForStep(range, candidateMs) < MAX_STEP_SIZE_DATA_POINTS;
+    return candidateMs >= minimumStepMs && getDatapointsForStep(range, candidateMs) <= MAX_STEP_SIZE_DATA_POINTS;
   });
 
   if (clampedStepSize) {
@@ -125,7 +125,7 @@ export function resolveQueryIntervalWithStepSize({
     return {
       interval: clampedStepSize,
       intervalMs,
-      maxDataPoints: getDatapointsForStep(range, intervalMs),
+      maxDataPoints: MAX_STEP_SIZE_DATA_POINTS,
       stepSize,
       minInterval,
     };
