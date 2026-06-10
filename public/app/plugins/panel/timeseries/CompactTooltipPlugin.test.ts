@@ -100,20 +100,24 @@ describe('compact tooltip indexes', () => {
   });
 
   it.each([
-    ['line span gap', undefined, 3],
-    ['retained null gap', null, null],
-  ])('matches legacy multi-tooltip resolution for %s', (_name, exactValue, expected) => {
-    const source = {
-      yAt: (_seriesIndex: number, valueIndex: number) => (valueIndex === 2 ? 3 : exactValue),
-    };
-    const snapshot = {
-      cursorIndex: 1,
-      valueAt: () => exactValue,
-      dataIndexAt: () => 2,
-    };
+    ['alignment absence', undefined, undefined, 0, true, 4],
+    ['spanned source gap', null, undefined, 0, true, 4],
+    ['retained null gap', null, null, 0, true, null],
+    ['absence without a nearby sample', undefined, undefined, 1, true, undefined],
+    ['stacked alignment absence', undefined, undefined, 0, false, undefined],
+  ])(
+    'matches the legacy multi-tooltip value for %s',
+    (_name, exactValue, renderValue, dataIndex, resolve, expected) => {
+      const snapshot = {
+        cursorIndex: 1,
+        valueAt: () => exactValue,
+        dataIndexAt: () => dataIndex,
+      };
+      const source = { yAt: (_seriesIndex: number, index: number) => (index === 1 ? renderValue : 4) };
 
-    expect(resolveMultiTooltipValue(source, snapshot, 0)).toBe(expected);
-  });
+      expect(resolveMultiTooltipValue(snapshot, source, 0, resolve)).toBe(expected);
+    }
+  );
 
   it('keeps the focused series outside the virtualized bulk rows', () => {
     const sorted = {

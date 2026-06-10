@@ -112,6 +112,9 @@ const releasedSource: CompactRenderSource = {
   closestXIndex: () => {
     throw new Error('Compact renderer has been destroyed');
   },
+  cursorValueAt: () => {
+    throw new Error('Compact renderer has been destroyed');
+  },
   yAt: () => {
     throw new Error('Compact renderer has been destroyed');
   },
@@ -192,8 +195,16 @@ export function getCompactHoverStageProbe():
   };
 }
 
-export function isCompactRenderSource(source: CompactPlotSource): source is CompactRenderSource {
-  return 'columns' in source && 'styles' in source && 'scales' in source;
+export function isCompactRenderSource(
+  source: uPlot.CompactPlotSource | CompactPlotSource
+): source is CompactRenderSource {
+  return (
+    'columns' in source &&
+    'styles' in source &&
+    'scales' in source &&
+    'cursorValueAt' in source &&
+    typeof source.cursorValueAt === 'function'
+  );
 }
 
 /**
@@ -1706,7 +1717,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       const previousValue = this.cursorSnapshotValues[seriesIndex];
       const previousDataIndex = existingDataIndexes?.[seriesIndex] ?? previousIndex;
       let dataIndex = index;
-      const value = source.yAt(seriesIndex, dataIndex);
+      const value = source.cursorValueAt(seriesIndex, dataIndex);
       valueReads++;
       if (value == null) {
         const nearestIndex = plot

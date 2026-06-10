@@ -76,6 +76,13 @@ describe('CompactPlotSource', () => {
       undefined,
       4,
     ]);
+    expect(Array.from({ length: 5 }, (_, index) => connected.cursorValueAt(0, index))).toEqual([
+      2,
+      null,
+      null,
+      null,
+      4,
+    ]);
   });
 
   test.each([
@@ -140,6 +147,14 @@ describe('CompactPlotSource', () => {
       null,
       null,
       null,
+      3,
+      undefined,
+    ]);
+    expect(Array.from({ length: plot.pointCount }, (_, index) => plot.cursorValueAt(0, index))).toEqual([
+      1,
+      undefined,
+      null,
+      undefined,
       3,
       undefined,
     ]);

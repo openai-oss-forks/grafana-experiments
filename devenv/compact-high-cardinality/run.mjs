@@ -767,10 +767,10 @@ async function collectChartDiagnostics(page) {
 }
 
 async function verifyPanelInteractions(page, responseFormat, seriesCount) {
-  const canvas = page.locator('canvas').first();
-  const bounds = await canvas.boundingBox();
+  const plotOverlay = page.locator('.uplot .u-over').first();
+  const bounds = await plotOverlay.boundingBox();
   if (!bounds) {
-    throw new Error('Compact chart canvas has no visible bounds');
+    throw new Error('Chart plot area has no visible bounds');
   }
 
   await resetHoverStageProbe(page);
@@ -858,19 +858,25 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
       ? await verifyVirtualTooltipScroll(page, tooltip.listTotalRows)
       : null;
   const pinning = await verifyCompactTooltipPinning(page, bounds, responseFormat);
+  const interactionResult = {
+    hoverToTooltipMs,
+    firstHover,
+    tooltip,
+    tooltipRowDigest: tooltipRowDigest?.ordered,
+    tooltipContentDigest: tooltipRowDigest?.content,
+    tooltipRowHashes: tooltipRowDigest?.rows,
+    tooltipFocusedHash: tooltipRowDigest?.focused,
+    scrollReachedLastRow,
+    repeatedHover,
+    pinning,
+  };
 
   const legendButtons = page.locator(
     '[data-testid^="data-testid VizLegend series "] > button, table tbody tr button[title]'
   );
   if ((await legendButtons.count()) < 2) {
     return {
-      hoverToTooltipMs,
-      firstHover,
-      tooltip,
-      tooltipRowDigest,
-      scrollReachedLastRow,
-      repeatedHover,
-      pinning,
+      ...interactionResult,
       legendToggleChangedState: null,
     };
   }
@@ -887,13 +893,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
   }
   if (!secondLegendButton) {
     return {
-      hoverToTooltipMs,
-      firstHover,
-      tooltip,
-      tooltipRowDigest,
-      scrollReachedLastRow,
-      repeatedHover,
-      pinning,
+      ...interactionResult,
       legendToggleChangedState: null,
     };
   }
@@ -912,16 +912,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
   }
 
   return {
-    hoverToTooltipMs,
-    firstHover,
-    tooltip,
-    tooltipRowDigest: tooltipRowDigest?.ordered,
-    tooltipContentDigest: tooltipRowDigest?.content,
-    tooltipRowHashes: tooltipRowDigest?.rows,
-    tooltipFocusedHash: tooltipRowDigest?.focused,
-    scrollReachedLastRow,
-    repeatedHover,
-    pinning,
+    ...interactionResult,
     legendToggleChangedState: initialClass !== isolatedClass,
   };
 }

@@ -350,12 +350,12 @@ describe('CompactRenderController', () => {
       'series',
       'multi'
     );
-    source.yAt = jest.fn(source.yAt);
+    source.cursorValueAt = jest.fn(source.cursorValueAt);
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
     expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
-    expect(source.yAt).toHaveBeenCalledTimes(2);
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
   });
 
   test('reuses exact multi-tooltip values while resolving focus indexes separately', () => {
@@ -369,6 +369,7 @@ describe('CompactRenderController', () => {
       'series',
       'multi'
     );
+    source.cursorValueAt = jest.fn(source.cursorValueAt);
     source.yAt = jest.fn(source.yAt);
     source.nearestPresent = jest.fn(source.nearestPresent);
     const controller = new CompactRenderController(source);
@@ -380,17 +381,20 @@ describe('CompactRenderController', () => {
     expect(firstSnapshot.valueAt(0)).toBeNull();
     expect(firstSnapshot.dataIndexAt(0)).toBe(0);
     expect(firstSnapshot.valueAt(1)).toBe(11);
-    expect(source.yAt).toHaveBeenCalledTimes(3);
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
+    expect(source.yAt).toHaveBeenCalledTimes(1);
     expect(source.nearestPresent).toHaveBeenCalledTimes(2);
 
     controller.updateCursor(plot, 1, 2);
     expect(controller.getCursorSnapshot(1)).toBe(firstSnapshot);
     expect(firstSnapshot.revision).toBe(firstRevision);
-    expect(source.yAt).toHaveBeenCalledTimes(4);
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
+    expect(source.yAt).toHaveBeenCalledTimes(2);
     expect(source.nearestPresent).toHaveBeenCalledTimes(2);
 
     controller.updateCursor(plot, 2, 2);
-    expect(source.yAt).toHaveBeenCalledTimes(6);
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(4);
+    expect(source.yAt).toHaveBeenCalledTimes(2);
   });
 
   test('preserves null, undefined, and NaN cursor values', () => {
@@ -411,16 +415,16 @@ describe('CompactRenderController', () => {
 
   test('does not scan series for a synchronized cursor update', () => {
     const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear]);
-    source.yAt = jest.fn(source.yAt);
+    source.cursorValueAt = jest.fn(source.cursorValueAt);
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
     Reflect.set(plot, 'cursor', { event: null });
 
     expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
-    expect(source.yAt).not.toHaveBeenCalled();
+    expect(source.cursorValueAt).not.toHaveBeenCalled();
 
     expect(controller.getCursorSnapshot(1).valueAt(0)).toBe(2);
-    expect(source.yAt).toHaveBeenCalledTimes(1);
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(1);
   });
 
   test('keeps exact gap values while applying plot-aware focus proximity', () => {
@@ -945,6 +949,7 @@ function createVirtualSource(seriesCount: number, pointCount: number): TestSourc
     release: () => undefined,
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
+    cursorValueAt: (_series, index) => index,
     yAt: (_series, index) => index,
     scan,
     prepareBufferScan: () => false,
@@ -1010,6 +1015,7 @@ function createSource(
     release: () => undefined,
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
+    cursorValueAt: valueAt,
     yAt: valueAt,
     scan,
     prepareBufferScan: () => false,

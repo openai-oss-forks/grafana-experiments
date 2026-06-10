@@ -10,6 +10,7 @@ import {
   CloseButton,
   ColorIndicator,
   ColorPlacement,
+  CompactSeriesFlag,
   getCompactHoverStageProbe,
   getCompactRenderController,
   useFixedVirtualWindow,
@@ -135,7 +136,13 @@ export function CompactTooltipPlugin({
       cursorSnapshot
         ? {
             seriesCount: cursorSnapshot.seriesCount,
-            valueAt: (seriesIndex: number) => resolveMultiTooltipValue(plan.source, cursorSnapshot, seriesIndex),
+            valueAt: (seriesIndex: number) =>
+              resolveMultiTooltipValue(
+                cursorSnapshot,
+                plan.source,
+                seriesIndex,
+                (plan.source.columns.flags[seriesIndex] & CompactSeriesFlag.Stack) === 0
+              ),
           }
         : null,
     [cursorSnapshot, plan.source]
@@ -735,18 +742,20 @@ export function resolveTooltipValue(
 }
 
 export function resolveMultiTooltipValue(
-  source: {
-    yAt(seriesIndex: number, index: number): number | null | undefined;
-  },
   snapshot: Pick<CompactCursorSnapshot, 'cursorIndex' | 'valueAt' | 'dataIndexAt'>,
-  seriesIndex: number
+  source: Pick<CompactNativeRenderPlan['source'], 'yAt'>,
+  seriesIndex: number,
+  resolveAlignmentAbsence: boolean
 ) {
   const value = snapshot.valueAt(seriesIndex);
-  if (value !== undefined) {
+  if (!resolveAlignmentAbsence || (value !== undefined && value !== null)) {
     return value;
   }
-  const resolvedIndex = snapshot.dataIndexAt(seriesIndex);
-  return resolvedIndex === snapshot.cursorIndex ? value : source.yAt(seriesIndex, resolvedIndex);
+  if (value === null && source.yAt(seriesIndex, snapshot.cursorIndex) !== undefined) {
+    return null;
+  }
+  const dataIndex = snapshot.dataIndexAt(seriesIndex);
+  return dataIndex === snapshot.cursorIndex ? undefined : source.yAt(seriesIndex, dataIndex);
 }
 
 function shouldShowTooltipValue(value: number | null | undefined, noValue: unknown, hideZeros: boolean): boolean {

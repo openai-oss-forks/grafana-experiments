@@ -42,6 +42,7 @@ export interface CompactPlotSource {
   release(): void;
   xAt(index: number): number;
   closestXIndex(value: number, from: number, to: number): number;
+  cursorValueAt(seriesIndex: number, index: number): CompactPlotValue;
   yAt(seriesIndex: number, index: number): CompactPlotValue;
   scan(seriesIndex: number, from: number, to: number, visitor: CompactPointVisitor): void;
   prepareBufferScan(seriesIndex: number, from: number, target: CompactBufferScan): boolean;

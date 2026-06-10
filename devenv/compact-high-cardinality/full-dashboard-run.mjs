@@ -23,6 +23,8 @@ Environment:
   RESPONSE_FORMAT         auto or legacy-json (default: auto)
   SERIES_PER_QUERY        Generated series for each query (default: 20)
   POINT_COUNT             Samples generated for each series (default: 120)
+  DASHBOARD_FROM          Fixed start timestamp in milliseconds (default: now-1h)
+  DASHBOARD_TO            Fixed end timestamp in milliseconds (default: now)
   SCROLL_STEP_VIEWPORTS   Scroll distance in viewport heights (default: 0.8)
   SCROLL_SETTLE_MS        Delay after layout before checking query idleness (default: 250)
   MAX_SCROLL_STEPS        Stop after this many steps; 0 reaches the bottom (default: 0)
@@ -50,6 +52,8 @@ const options = {
   responseFormat,
   seriesPerQuery: readPositiveInteger('SERIES_PER_QUERY', 20),
   pointCount: readPositiveInteger('POINT_COUNT', 120),
+  dashboardFrom: readOptionalTimestamp('DASHBOARD_FROM'),
+  dashboardTo: readOptionalTimestamp('DASHBOARD_TO'),
   scrollStepViewports: readPositiveNumber('SCROLL_STEP_VIEWPORTS', 0.8),
   scrollSettleMs: readNonNegativeInteger('SCROLL_SETTLE_MS', 250),
   maxScrollSteps: readNonNegativeInteger('MAX_SCROLL_STEPS', 0),
@@ -65,6 +69,12 @@ const options = {
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-full-dashboard',
   dashboardUid: process.env.DASHBOARD_UID ?? `${DASHBOARD_UID}-${process.pid}`,
 };
+if ((options.dashboardFrom == null) !== (options.dashboardTo == null)) {
+  throw new Error('DASHBOARD_FROM and DASHBOARD_TO must be provided together');
+}
+if (options.dashboardFrom != null && options.dashboardTo <= options.dashboardFrom) {
+  throw new Error('DASHBOARD_TO must be greater than DASHBOARD_FROM');
+}
 
 const fixture = await createFullDashboardFixture(dashboardJson, options.pointCount);
 fixture.dashboard.uid = options.dashboardUid;
@@ -200,7 +210,11 @@ try {
   await putDashboard(context, fixture.dashboard);
   report.baseline = await collectBrowserSample(cdp, page, 'pre-dashboard', true);
 
-  const dashboardUrl = `${options.baseUrl}/d/${options.dashboardUid}/full-dashboard-local?orgId=1&from=now-1h&to=now`;
+  const dashboardFrom = options.dashboardFrom ?? 'now-1h';
+  const dashboardTo = options.dashboardTo ?? 'now';
+  const dashboardUrl =
+    `${options.baseUrl}/d/${options.dashboardUid}/full-dashboard-local?orgId=1` +
+    `&from=${encodeURIComponent(dashboardFrom)}&to=${encodeURIComponent(dashboardTo)}`;
   const navigationStartedAt = performance.now();
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await waitForQueryIdle(120_000);
@@ -803,6 +817,18 @@ function readNonNegativeInteger(name, defaultValue) {
   const value = readInteger(name, defaultValue);
   if (value < 0) {
     throw new Error(`${name} must be non-negative`);
+  }
+  return value;
+}
+
+function readOptionalTimestamp(name) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative safe integer timestamp`);
   }
   return value;
 }
