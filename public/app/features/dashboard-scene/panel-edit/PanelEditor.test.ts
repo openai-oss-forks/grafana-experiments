@@ -124,7 +124,7 @@ describe('PanelEditor', () => {
   });
 
   describe('Entering panel edit', () => {
-    it('reruns existing compact data through the panel editor wrapper', () => {
+    it('reruns existing compact data through the panel editor wrapper', async () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
       queryRunner.setState({
@@ -166,6 +166,7 @@ describe('PanelEditor', () => {
       });
 
       deactivate = activateFullSceneTree(dashboard);
+      await new Promise((resolve) => setTimeout(resolve, 1));
 
       expect(runQueries).toHaveBeenCalled();
       expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
@@ -176,7 +177,7 @@ describe('PanelEditor', () => {
       expect(panel.state.$data).toBe(queryRunner);
     });
 
-    it('wraps eligible compact dashboard data before the first response arrives', () => {
+    it('wraps eligible compact dashboard data before the first response arrives', async () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
       jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
@@ -191,11 +192,12 @@ describe('PanelEditor', () => {
       });
 
       deactivate = activateFullSceneTree(dashboard);
+      await new Promise((resolve) => setTimeout(resolve, 1));
 
       expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
     });
 
-    it('does not wrap dashboard data when compact rendering is unsupported', () => {
+    it('wraps non-compact dashboard data while editing and restores it on exit', async () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
       jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
@@ -215,11 +217,17 @@ describe('PanelEditor', () => {
       });
 
       deactivate = activateFullSceneTree(dashboard);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
+
+      deactivate();
+      deactivate = undefined;
 
       expect(panel.state.$data).toBe(queryRunner);
     });
 
-    it('keeps transformations added to the compact edit wrapper', () => {
+    it('keeps transformations added to the compact edit wrapper', async () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
       queryRunner.setState({
@@ -261,6 +269,7 @@ describe('PanelEditor', () => {
       });
 
       deactivate = activateFullSceneTree(dashboard);
+      await new Promise((resolve) => setTimeout(resolve, 1));
       const transformer = panel.state.$data;
       expect(transformer).toBeInstanceOf(SceneDataTransformer);
       (transformer as SceneDataTransformer).setState({
