@@ -33,7 +33,7 @@ Environment:
   BIDIRECTIONAL_SCROLL    Scroll back to the top within each cycle when set to 1
   REQUIRE_ALL_TIMESERIES_COMPACT
                            Fail when any queried time-series panel omits compact-v1
-  GC_MODE                 none or retained (default: none)
+  GC_MODE                 none, settled, or retained (default: none)
   OFFSCREEN_SETTLE_MS     Wait at the bottom before the final sample (default: 0)
   HEAP_SNAPSHOT           Set to 1 to capture the active dashboard heap
   HEADLESS                Set to 1 for headless Chromium
@@ -221,6 +221,7 @@ try {
   await waitForCanvasIdle(page, 120_000);
   await waitForVisibleCharts(page);
   report.navigationMs = round(performance.now() - navigationStartedAt);
+  report.initialPanelRenders = await collectPanelRenderDiagnostics(page);
   report.samples.push(await collectBrowserSample(cdp, page, 'scroll-0', options.gcMode === 'retained'));
   report.interactions = {
     initial: await verifyVisibleChartInteraction(page),
@@ -258,7 +259,7 @@ try {
     await page.waitForTimeout(options.offscreenSettleMs);
     await waitForQueryIdle(120_000);
     await waitForCanvasIdle(page, 120_000);
-    report.samples.push(await collectBrowserSample(cdp, page, 'offscreen-settled', options.gcMode === 'retained'));
+    report.samples.push(await collectBrowserSample(cdp, page, 'offscreen-settled', options.gcMode !== 'none'));
   }
 
   await page.screenshot({ path: path.join(options.outputDir, 'dashboard-bottom.png') });
@@ -276,7 +277,7 @@ try {
     throw new Error(`Dashboard reentry issued ${report.reentry.additionalRequests} unexpected queries`);
   }
   report.interactions.reentry = await verifyVisibleChartInteraction(page);
-  report.samples.push(await collectBrowserSample(cdp, page, 'reentry-top', options.gcMode === 'retained'));
+  report.samples.push(await collectBrowserSample(cdp, page, 'reentry-top', options.gcMode !== 'none'));
   await page.screenshot({ path: path.join(options.outputDir, 'dashboard-top.png') });
 
   if (pageErrors.length > 0) {
@@ -342,6 +343,7 @@ async function scrollDashboard(page, cdp, report, cycle, reverse = false) {
 
   const steps = [];
   for (let index = 0; index < positions.length; index++) {
+    await page.evaluate(() => window.__dashboardCanvasActivity.arm());
     const startedAt = performance.now();
     await scrollDashboardTo(page, positions[index]);
     await page.evaluate(
@@ -366,8 +368,10 @@ async function scrollDashboard(page, cdp, report, cycle, reverse = false) {
       durationMs: round(performance.now() - startedAt),
       requests: queryRequests.length,
       usedHeapMB: light.usedHeapMB,
+      embedderHeapMB: light.embedderHeapMB,
       backingStorageMB: light.backingStorageMB,
       dom: light.dom,
+      panelRenders: await collectPanelRenderDiagnostics(page),
     };
     steps.push(step);
     if ((index + 1) % options.sampleEvery === 0 || index === positions.length - 1) {
@@ -522,6 +526,10 @@ async function collectDomDiagnostics(page) {
   });
 }
 
+async function collectPanelRenderDiagnostics(page) {
+  return page.evaluate(() => window.__dashboardCanvasActivity.snapshot());
+}
+
 async function scrollDashboardTo(page, top) {
   await page.evaluate((scrollTop) => window.__dashboardScrollHarness.scrollTo(scrollTop), top);
 }
@@ -541,6 +549,10 @@ function summarize(report) {
       })),
   ];
   const retainedSamples = samples.filter((sample) => sample.collectedAfterGC);
+  const panelRenders = [
+    ...(report.initialPanelRenders ?? []),
+    ...report.scrollCycles.flatMap((scroll) => scroll.steps.flatMap((step) => step.panelRenders ?? [])),
+  ];
   return {
     requestCount: queryRequests.length,
     compactRequestCount: compactRequests.length,
@@ -570,6 +582,23 @@ function summarize(report) {
       .sort((left, right) => String(left.panelId).localeCompare(String(right.panelId))),
     maxScrollStepMs: Math.max(...report.scrollCycles.flatMap((scroll) => scroll.steps.map((step) => step.durationMs))),
     medianScrollStepMs: median(report.scrollCycles.flatMap((scroll) => scroll.steps.map((step) => step.durationMs))),
+    panelRenderCount: panelRenders.length,
+    panelFirstDrawP75Ms: percentile(
+      panelRenders.map((render) => render.firstDrawLatencyMs),
+      0.75
+    ),
+    panelFirstDrawP95Ms: percentile(
+      panelRenders.map((render) => render.firstDrawLatencyMs),
+      0.95
+    ),
+    panelCompleteP75Ms: percentile(
+      panelRenders.map((render) => render.completeLatencyMs),
+      0.75
+    ),
+    panelCompleteP95Ms: percentile(
+      panelRenders.map((render) => render.completeLatencyMs),
+      0.95
+    ),
   };
 }
 
@@ -615,12 +644,72 @@ function summarizeTimeSeriesFormats(panels, requests) {
 
 async function installCanvasActivityProbe(context) {
   await context.addInitScript(() => {
-    const activity = { lastOperationAt: 0 };
+    const canvasRecords = new WeakMap();
+    const activity = {
+      epoch: 1,
+      armedAt: 0,
+      lastOperationAt: 0,
+      arm() {
+        this.epoch++;
+        this.armedAt = performance.now();
+        this.lastOperationAt = this.armedAt;
+      },
+      snapshot() {
+        const headers = Array.from(document.querySelectorAll('[data-testid^="data-testid Panel header "]'));
+        const renders = new Map();
+        for (const canvas of document.querySelectorAll('.uplot canvas')) {
+          const bounds = canvas.getBoundingClientRect();
+          if (bounds.width <= 0 || bounds.height <= 0 || bounds.bottom <= 0 || bounds.top >= window.innerHeight) {
+            continue;
+          }
+          const record = canvasRecords.get(canvas);
+          if (!record || record.epoch !== this.epoch) {
+            continue;
+          }
+          let container = canvas.parentElement;
+          let header;
+          while (container && container !== document.body) {
+            header = container.querySelector('[data-testid^="data-testid Panel header "]');
+            if (header) {
+              break;
+            }
+            container = container.parentElement;
+          }
+          const headerIndex = header ? headers.indexOf(header) : -1;
+          const headerTestId = header?.getAttribute('data-testid') ?? 'unknown-panel';
+          const key = `${headerIndex}:${headerTestId}`;
+          const existing = renders.get(key);
+          const firstOperationAt = Math.min(existing?.firstOperationAt ?? Infinity, record.firstOperationAt);
+          const lastOperationAt = Math.max(existing?.lastOperationAt ?? -Infinity, record.lastOperationAt);
+          renders.set(key, {
+            panelKey: key,
+            panelTitle: headerTestId.replace('data-testid Panel header ', ''),
+            firstOperationAt,
+            lastOperationAt,
+            canvasCount: (existing?.canvasCount ?? 0) + 1,
+          });
+        }
+        return Array.from(renders.values(), (render) => ({
+          panelKey: render.panelKey,
+          panelTitle: render.panelTitle,
+          canvasCount: render.canvasCount,
+          firstDrawLatencyMs: Math.round((render.firstOperationAt - this.armedAt) * 100) / 100,
+          completeLatencyMs: Math.round((render.lastOperationAt - this.armedAt) * 100) / 100,
+        }));
+      },
+    };
     window.__dashboardCanvasActivity = activity;
     for (const method of ['clearRect', 'stroke', 'fill', 'fillRect', 'strokeRect', 'lineTo', 'arc']) {
       const original = CanvasRenderingContext2D.prototype[method];
       CanvasRenderingContext2D.prototype[method] = function (...args) {
-        activity.lastOperationAt = performance.now();
+        const now = performance.now();
+        activity.lastOperationAt = now;
+        const current = canvasRecords.get(this.canvas);
+        if (!current || current.epoch !== activity.epoch) {
+          canvasRecords.set(this.canvas, { epoch: activity.epoch, firstOperationAt: now, lastOperationAt: now });
+        } else {
+          current.lastOperationAt = now;
+        }
         return original.apply(this, args);
       };
     }
@@ -799,8 +888,8 @@ function readResponseFormat() {
 
 function readGcMode() {
   const value = process.env.GC_MODE ?? 'none';
-  if (value !== 'none' && value !== 'retained') {
-    throw new Error('GC_MODE must be none or retained');
+  if (value !== 'none' && value !== 'settled' && value !== 'retained') {
+    throw new Error('GC_MODE must be none, settled, or retained');
   }
   return value;
 }
@@ -861,6 +950,15 @@ function median(values) {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? round((sorted[middle - 1] + sorted[middle]) / 2) : sorted[middle];
+}
+
+function percentile(values, quantile) {
+  if (values.length === 0) {
+    return null;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1);
+  return round(sorted[index]);
 }
 
 function bytesToMB(value) {
