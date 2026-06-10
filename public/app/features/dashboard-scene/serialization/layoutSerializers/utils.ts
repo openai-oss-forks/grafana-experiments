@@ -197,6 +197,7 @@ export function createPanelDataProvider(panelKind: PanelKind): SceneDataProvider
     cacheTimeout: panel.data.spec.queryOptions.cacheTimeout,
     queryCachingTTL: panel.data.spec.queryOptions.queryCachingTTL,
     minInterval: panel.data.spec.queryOptions.interval ?? undefined,
+    stepSize: panel.data.spec.queryOptions.stepSize ?? undefined,
     dataLayerFilter: {
       panelId: panel.id,
     },

@@ -112,6 +112,7 @@ const mustKeepProps: { [str: string]: boolean } = {
   fieldConfig: true,
   maxDataPoints: true,
   interval: true,
+  stepSize: true,
   replaceVariables: true,
   libraryPanel: true,
   getDisplayTitle: true,
@@ -178,6 +179,7 @@ export class PanelModel implements DataConfigSource, IPanelModel {
 
   maxDataPoints?: number | null;
   interval?: string | null;
+  stepSize?: string | null;
   description?: string;
   links?: DataLink[];
   declare transparent: boolean;
@@ -379,6 +381,7 @@ export class PanelModel implements DataConfigSource, IPanelModel {
       timeInfo: timeData.timeInfo,
       maxDataPoints: this.maxDataPoints || Math.floor(width),
       minInterval: this.interval,
+      stepSize: this.stepSize,
       scopedVars: this.scopedVars,
       cacheTimeout: this.cacheTimeout,
       queryCachingTTL: this.queryCachingTTL,
@@ -545,6 +548,7 @@ export class PanelModel implements DataConfigSource, IPanelModel {
     this.timeShift = options.timeRange?.shift;
     this.hideTimeOverride = options.timeRange?.hide;
     this.interval = options.minInterval;
+    this.stepSize = options.stepSize;
     this.maxDataPoints = options.maxDataPoints;
     this.targets = options.queries;
     this.configRev++;

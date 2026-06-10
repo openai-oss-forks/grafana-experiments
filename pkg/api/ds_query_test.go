@@ -52,6 +52,7 @@ func (rv *fakeDataSourceRequestValidator) Validate(dsURL string, dsJsonData *sim
 // `/ds/query` endpoint test
 func TestAPIEndpoint_Metrics_QueryMetricsV2(t *testing.T) {
 	cfg := setting.NewCfg()
+	queryCalls := 0
 	qds := query.ProvideService(
 		cfg,
 		nil,
@@ -59,6 +60,7 @@ func TestAPIEndpoint_Metrics_QueryMetricsV2(t *testing.T) {
 		&fakeDataSourceRequestValidator{},
 		&fakePluginClient{
 			QueryDataHandlerFunc: func(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+				queryCalls++
 				resp := backend.Responses{
 					"A": backend.DataResponse{
 						Error: errors.New("query failed"),
@@ -102,6 +104,17 @@ func TestAPIEndpoint_Metrics_QueryMetricsV2(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, resp.Body.Close())
 		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("Status code is 400 and plugin is not called when step size is below min interval", func(t *testing.T) {
+		queryCalls = 0
+		req := server.NewPostRequest("/api/ds/query", strings.NewReader(reqStepSizeBelowMinInterval))
+		webtest.RequestWithSignedInUser(req, &user.SignedInUser{UserID: 1, OrgID: 1, Permissions: map[int64]map[string][]string{1: {datasources.ActionQuery: []string{datasources.ScopeAll}}}})
+		resp, err := server.SendJSON(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		require.Equal(t, 0, queryCalls)
 	})
 }
 
@@ -317,6 +330,25 @@ var reqNoQueries = `{
 	"from": "",
 	"to": "",
 	"queries": []
+}`
+
+var reqStepSizeBelowMinInterval = `{
+	"from": "",
+	"to": "",
+	"queries": [
+		{
+			"datasource": {
+				"type": "datasource",
+				"uid": "grafana"
+			},
+			"queryType": "randomWalk",
+			"__grafanaQueryOptions": {
+				"stepSize": "5m",
+				"minInterval": "10m"
+			},
+			"refId": "A"
+		}
+	]
 }`
 
 var reqQueryWithInvalidDatasourceID = `{

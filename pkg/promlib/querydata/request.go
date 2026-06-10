@@ -27,6 +27,8 @@ import (
 
 const legendFormatAuto = "__auto"
 
+const FeatureToggleTshirtSizeStepSize = "prometheusTshirtSizeStepSize"
+
 var legendFormatRegexp = regexp.MustCompile(`\{\{\s*(.+?)\s*\}\}`)
 
 type ExemplarEvent struct {
@@ -80,15 +82,17 @@ func New(
 	exemplarSampler := exemplar.NewStandardDeviationSampler
 
 	return &QueryData{
-		intervalCalculator: intervalv2.NewCalculator(),
-		tracer:             tracing.DefaultTracer(),
-		log:                plog,
-		client:             promClient,
-		TimeInterval:       timeInterval,
-		ID:                 settings.ID,
-		URL:                settings.URL,
-		exemplarSampler:    exemplarSampler,
-		featureToggles:     featureToggles,
+		intervalCalculator: intervalv2.NewCalculator(intervalv2.CalculatorOptions{
+			TshirtSizeStepSizeEnabled: featureToggles.IsEnabled(FeatureToggleTshirtSizeStepSize),
+		}),
+		tracer:          tracing.DefaultTracer(),
+		log:             plog,
+		client:          promClient,
+		TimeInterval:    timeInterval,
+		ID:              settings.ID,
+		URL:             settings.URL,
+		exemplarSampler: exemplarSampler,
+		featureToggles:  featureToggles,
 	}, nil
 }
 
@@ -141,7 +145,12 @@ func (s *QueryData) handleQuery(ctx context.Context, bq backend.DataQuery, fromA
 
 func (s *QueryData) fetch(traceCtx context.Context, client *client.Client, q *models.Query) *backend.DataResponse {
 	logger := s.log.FromContext(traceCtx)
-	logger.Debug("Sending query", "start", q.Start, "end", q.End, "step", q.Step, "query", q.Expr)
+	if q.RangeQuery || q.ExemplarQuery {
+		tr := q.TimeRange()
+		logger.Debug("Sending query", "start", tr.Start, "end", tr.End, "step", tr.Step, "query", q.Expr)
+	} else {
+		logger.Debug("Sending query", "time", q.End, "query", q.Expr)
+	}
 
 	dr := &backend.DataResponse{
 		Frames: data.Frames{},

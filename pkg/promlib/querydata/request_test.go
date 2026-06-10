@@ -19,6 +19,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/grafana/grafana-plugin-sdk-go/experimental/featuretoggles"
 
 	"github.com/grafana/grafana/pkg/promlib/client"
 	"github.com/grafana/grafana/pkg/promlib/models"
@@ -432,6 +433,61 @@ func execute(tctx *testContext, query backend.DataQuery, rqr any, eqr any) (data
 	return executeWithHeaders(tctx, query, rqr, eqr, map[string]string{})
 }
 
+func TestQueryData_TshirtSizeStepSizeFeatureToggle(t *testing.T) {
+	result := queryResult{
+		Type:   p.ValMatrix,
+		Result: p.Matrix{},
+	}
+
+	qm := models.QueryModel{
+		UtcOffsetSec: 0,
+		PrometheusQueryProperties: models.PrometheusQueryProperties{
+			Expr:  "up",
+			Range: true,
+		},
+	}
+	b, err := json.Marshal(&qm)
+	require.NoError(t, err)
+
+	query := backend.DataQuery{
+		RefID:         "A",
+		MaxDataPoints: 60,
+		Interval:      time.Second,
+		TimeRange: backend.TimeRange{
+			From: time.Unix(0, 0).UTC(),
+			To:   time.Unix(3600, 0).UTC(),
+		},
+		JSON: b,
+	}
+
+	t.Run("disabled uses resolution based step", func(t *testing.T) {
+		tctx, err := setup()
+		require.NoError(t, err)
+
+		_, err = execute(tctx, query, result, nil)
+		require.NoError(t, err)
+		require.Equal(t, "60", formValue(t, tctx.httpProvider.req, "step"))
+	})
+
+	t.Run("enabled uses t-shirt sized step", func(t *testing.T) {
+		cfg := backend.NewGrafanaCfg(map[string]string{
+			featuretoggles.EnabledFeatures: querydata.FeatureToggleTshirtSizeStepSize,
+		})
+		tctx, err := setupWithFeatureToggles(cfg.FeatureToggles())
+		require.NoError(t, err)
+
+		_, err = execute(tctx, query, result, nil)
+		require.NoError(t, err)
+		require.Equal(t, "20", formValue(t, tctx.httpProvider.req, "step"))
+	})
+}
+
+func formValue(t *testing.T, req *http.Request, key string) string {
+	t.Helper()
+	require.NoError(t, req.ParseForm())
+	return req.Form.Get(key)
+}
+
 type apiResponse struct {
 	Status string          `json:"status"`
 	Data   json.RawMessage `json:"data"`
@@ -465,6 +521,18 @@ type testContext struct {
 }
 
 func setup() (*testContext, error) {
+	return setupWithJSONData(json.RawMessage(`{"timeInterval": "15s"}`))
+}
+
+func setupWithJSONData(jsonData json.RawMessage) (*testContext, error) {
+	return setupWithJSONDataAndFeatureToggles(jsonData, backend.FeatureToggles{})
+}
+
+func setupWithFeatureToggles(featureToggles backend.FeatureToggles) (*testContext, error) {
+	return setupWithJSONDataAndFeatureToggles(json.RawMessage(`{"timeInterval": "15s"}`), featureToggles)
+}
+
+func setupWithJSONDataAndFeatureToggles(jsonData json.RawMessage, featureToggles backend.FeatureToggles) (*testContext, error) {
 	httpProvider := &fakeHttpClientProvider{
 		opts: httpclient.Options{
 			Timeouts: &httpclient.DefaultTimeoutOptions,
@@ -480,7 +548,7 @@ func setup() (*testContext, error) {
 	}
 	settings := backend.DataSourceInstanceSettings{
 		URL:      "http://localhost:9090",
-		JSONData: json.RawMessage(`{"timeInterval": "15s"}`),
+		JSONData: jsonData,
 	}
 
 	opts, err := client.CreateTransportOptions(context.Background(), settings, log.New())
@@ -493,7 +561,7 @@ func setup() (*testContext, error) {
 		return nil, err
 	}
 
-	queryData, _ := querydata.New(httpClient, settings, log.New(), backend.FeatureToggles{})
+	queryData, _ := querydata.New(httpClient, settings, log.New(), featureToggles)
 
 	return &testContext{
 		httpProvider: httpProvider,

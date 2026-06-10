@@ -580,6 +580,35 @@ export function msRangeToTimeString(rangeMs: number): string {
   return formattedH + formattedM + formattedS || 'less than 1sec';
 }
 
+export function calculateTimeRangeIntervalMs(rangeMs: number): number {
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  switch (true) {
+    case rangeMs <= 5 * minute:
+      return 1000;
+    case rangeMs <= 15 * minute:
+      return 5 * 1000;
+    case rangeMs <= 30 * minute:
+      return 10 * 1000;
+    case rangeMs <= hour:
+      return 20 * 1000;
+    case rangeMs <= 4 * hour:
+      return minute;
+    case rangeMs <= day:
+      return 5 * minute;
+    case rangeMs <= 2 * day:
+      return 10 * minute;
+    case rangeMs <= 7 * day:
+      return hour;
+    case rangeMs <= 30 * day:
+      return 4 * hour;
+    default:
+      return Math.max(4 * hour, roundInterval(rangeMs / 1500));
+  }
+}
+
 export function calculateInterval(range: TimeRange, resolution: number, lowLimitInterval?: string): IntervalValues {
   let lowLimitMs = 1; // 1 millisecond default low limit
   if (lowLimitInterval) {

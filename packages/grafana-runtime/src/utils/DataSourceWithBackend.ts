@@ -15,8 +15,10 @@ import {
   getDataSourceRef,
   makeClassES5Compatible,
   parseLiveChannelAddress,
-  ScopedVars,
-  AdHocVariableFilter,
+  type ScopedVars,
+  type AdHocVariableFilter,
+  AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+  resolveQueryIntervalWithStepSize,
 } from '@grafana/data';
 
 import { reportInteraction } from '../analytics/utils';
@@ -41,6 +43,14 @@ import {
   toDataQueryResponse,
 } from './queryResponse';
 import { UserStorage } from './userStorage';
+
+interface StepSizedDataQuery extends DataQuery {
+  interval?: string | null;
+  stepSize?: string | null;
+}
+
+const grafanaQueryOptionsKey = '__grafanaQueryOptions';
+const prometheusDatasourceType = 'prometheus';
 
 /**
  * @internal
@@ -145,7 +155,16 @@ class DataSourceWithBackend<
       return publicDashboardQueryHandler(request);
     }
 
-    const { intervalMs, maxDataPoints, queryCachingTTL, range, requestId, hideFromInspector = false } = request;
+    const {
+      intervalMs,
+      maxDataPoints,
+      stepSize,
+      minInterval,
+      queryCachingTTL,
+      range,
+      requestId,
+      hideFromInspector = false,
+    } = request;
     let targets = request.targets;
 
     let hasExpr = false;
@@ -191,12 +210,38 @@ class DataSourceWithBackend<
         dsUIDs.add(datasource.uid);
       }
 
+      const interpolatedQuery =
+        (shouldApplyTemplateVariables ? this.applyTemplateVariables(q, request.scopedVars, request.filters) : q) ?? q;
+      const stepSizedQuery = interpolatedQuery as StepSizedDataQuery;
+      const isPrometheusQuery = datasource.type === prometheusDatasourceType;
+      const queryStepSize =
+        isPrometheusQuery && stepSizedQuery.stepSize !== undefined ? stepSizedQuery.stepSize : stepSize;
+      const queryMinInterval = isPrometheusQuery ? stepSizedQuery.interval || minInterval : minInterval;
+      const queryInterval =
+        queryStepSize && range
+          ? resolveQueryIntervalWithStepSize({
+              range,
+              maxDataPoints: maxDataPoints ?? AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+              minInterval: queryMinInterval,
+              stepSize: queryStepSize,
+            })
+          : undefined;
+      const queryOptionsMetadata = queryStepSize
+        ? {
+            [grafanaQueryOptionsKey]: {
+              stepSize: queryStepSize,
+              ...(queryMinInterval !== undefined ? { minInterval: queryMinInterval } : {}),
+            },
+          }
+        : {};
+
       return {
-        ...(shouldApplyTemplateVariables ? this.applyTemplateVariables(q, request.scopedVars, request.filters) : q),
+        ...interpolatedQuery,
         datasource,
         datasourceId, // deprecated!
-        intervalMs,
-        maxDataPoints,
+        intervalMs: queryInterval?.intervalMs ?? intervalMs,
+        maxDataPoints: queryInterval?.maxDataPoints ?? maxDataPoints,
+        ...queryOptionsMetadata,
         queryCachingTTL,
       };
     });

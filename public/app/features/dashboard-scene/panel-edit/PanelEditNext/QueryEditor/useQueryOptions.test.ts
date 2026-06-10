@@ -22,7 +22,8 @@ describe('useQueryOptions', () => {
       queries: [],
       maxDataPoints: 2000,
       minInterval: '10s',
-    });
+      stepSize: '30m',
+    } as ConstructorParameters<typeof SceneQueryRunner>[0] & { stepSize: string });
 
     const { result } = renderHook(() =>
       useQueryOptions({
@@ -34,6 +35,7 @@ describe('useQueryOptions', () => {
 
     expect(result.current.maxDataPoints).toBe(2000);
     expect(result.current.minInterval).toBe('10s');
+    expect(result.current.stepSize).toBe('30m');
     expect(result.current.timeRange).toEqual({
       from: 'now-1h',
       shift: '1d',

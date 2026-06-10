@@ -425,6 +425,21 @@ export {
   isValidGoDuration,
   isValidGrafanaDuration,
 } from './datetime/durationutil';
+export {
+  ALLOWED_STEP_SIZES,
+  AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+  getDatapointsForStep,
+  getStepSizeMs,
+  getStepSizeOptions,
+  isStepSizeBelowMinInterval,
+  isValidStepSize,
+  MAX_STEP_SIZE_DATA_POINTS,
+  resolveQueryIntervalWithStepSize,
+  safeIntervalToMs,
+  type QueryIntervalWithStepSize,
+  type QueryStepSize,
+  type ResolveQueryIntervalWithStepSizeOptions,
+} from './datetime/stepSize';
 
 export {
   type ValueMatcherOptions,

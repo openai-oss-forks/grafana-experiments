@@ -48,12 +48,43 @@ describe('PromQueryBuilderOptions', () => {
     expect(screen.getByText('Legend: Auto')).toBeInTheDocument();
   });
 
+  it('Can change step size', async () => {
+    const { props } = setup();
+
+    await userEvent.click(screen.getByRole('button', { name: /Options/ }));
+
+    const stepSizeSelect = screen.getByLabelText('Step size combobox');
+    await waitFor(() => select(stepSizeSelect, '30m', { container: document.body }));
+
+    expect(props.onChange).toHaveBeenCalledWith({
+      ...props.query,
+      stepSize: '30m',
+    });
+  });
+
+  it('Clears step size when min step is committed above it', async () => {
+    const { props } = setup({ interval: '1m', stepSize: '30m' });
+
+    await userEvent.click(screen.getByRole('button', { name: /Options/ }));
+
+    const minStepInput = screen.getByLabelText('Min step text box, set lower limit for the step parameter');
+    await userEvent.clear(minStepInput);
+    await userEvent.type(minStepInput, '1h');
+    await userEvent.tab();
+
+    expect(props.onChange).toHaveBeenCalledWith({
+      ...props.query,
+      interval: '1h',
+      stepSize: undefined,
+    });
+  });
+
   it('Can change legend format to verbose', async () => {
     const { props } = setup();
 
     await userEvent.click(screen.getByRole('button', { name: /Options/ }));
 
-    let legendModeSelect = screen.getByText('Auto').parentElement!;
+    let legendModeSelect = screen.getByLabelText('Legend combobox');
     await userEvent.click(legendModeSelect);
 
     await waitFor(() => select(legendModeSelect, 'Verbose', { container: document.body }));
@@ -69,7 +100,7 @@ describe('PromQueryBuilderOptions', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Options/ }));
 
-    let legendModeSelect = screen.getByText('Auto').parentElement!;
+    let legendModeSelect = screen.getByLabelText('Legend combobox');
     await userEvent.click(legendModeSelect);
 
     await waitFor(() => select(legendModeSelect, 'Custom', { container: document.body }));

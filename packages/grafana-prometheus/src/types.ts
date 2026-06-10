@@ -15,6 +15,7 @@ export interface PromQuery extends GenPromQuery, DataQuery {
   showingTable?: boolean;
   hinting?: boolean;
   interval?: string;
+  stepSize?: string | null;
   fromExploreMetrics?: boolean;
 }
 

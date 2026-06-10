@@ -226,6 +226,7 @@ func Parse(ctx context.Context, log glog.Logger, span trace.Span, query backend.
 		model.Interval,
 		dsScrapeInterval,
 		timeRange,
+		intervalCalculator.TshirtSizeStepSizeEnabled(),
 	)
 
 	var scopeFilters []scope.ScopeFilter
@@ -319,8 +320,8 @@ func calculatePrometheusInterval(
 	query backend.DataQuery,
 	intervalCalculator intervalv2.Calculator,
 ) (time.Duration, error) {
-	// we need to compare the original query model after it is overwritten below to variables so that we can
-	// calculate the rateInterval if it is equal to $__rate_interval or ${__rate_interval}
+	// Preserve the original query interval so the disabled feature path can exactly
+	// match legacy $__rate_interval handling.
 	originalQueryInterval := queryInterval
 
 	// If we are using variable for interval/step, we will replace it with calculated interval
@@ -340,27 +341,26 @@ func calculatePrometheusInterval(
 		adjustedInterval = calculatedInterval.Value
 	}
 
-	// here is where we compare for $__rate_interval or ${__rate_interval}
-	if originalQueryInterval == varRateInterval || originalQueryInterval == varRateIntervalAlt {
-		// Rate interval is final and is not affected by resolution
-		return calculateRateInterval(adjustedInterval, dsScrapeInterval), nil
-	} else {
-		queryIntervalFactor := intervalFactor
-		if queryIntervalFactor == 0 {
-			queryIntervalFactor = 1
-		}
-		return time.Duration(int64(adjustedInterval) * queryIntervalFactor), nil
+	if !intervalCalculator.TshirtSizeStepSizeEnabled() && (originalQueryInterval == varRateInterval || originalQueryInterval == varRateIntervalAlt) {
+		return calculateRateInterval(adjustedInterval, dsScrapeInterval, false), nil
 	}
+
+	queryIntervalFactor := intervalFactor
+	if queryIntervalFactor == 0 {
+		queryIntervalFactor = 1
+	}
+
+	return time.Duration(int64(adjustedInterval) * queryIntervalFactor), nil
 }
 
-// calculateRateInterval calculates the $__rate_interval value
-// queryInterval is the value calculated range / maxDataPoints on the frontend
-// queryInterval is shown on the Query Options Panel above the query editor
+// calculateRateInterval calculates the $__rate_interval value.
+// queryInterval is the final step value used for the Prometheus query.
 // requestedMinStep is the data source scrape interval (default 15s)
 // requestedMinStep can be changed by setting "Min Step" value in Options panel below the code editor
 func calculateRateInterval(
 	queryInterval time.Duration,
 	requestedMinStep string,
+	alignToStep bool,
 ) time.Duration {
 	scrape := requestedMinStep
 	if scrape == "" {
@@ -372,13 +372,18 @@ func calculateRateInterval(
 		return time.Duration(0)
 	}
 
-	rateInterval := time.Duration(int64(math.Max(float64(queryInterval+scrapeIntervalDuration), float64(4)*float64(scrapeIntervalDuration))))
-	return rateInterval
+	baseRateInterval := time.Duration(int64(math.Max(float64(queryInterval+scrapeIntervalDuration), float64(4)*float64(scrapeIntervalDuration))))
+	if queryInterval <= 0 || !alignToStep {
+		return baseRateInterval
+	}
+
+	stepCount := int64(math.Ceil(float64(baseRateInterval) / float64(queryInterval)))
+	return time.Duration(stepCount) * queryInterval
 }
 
 // InterpolateVariables interpolates built-in variables
 // expr                         PromQL query
-// queryInterval                Requested interval in milliseconds. This value may be overridden by MinStep in query options
+// second argument              Deprecated requested interval. Built-in interval variables use calculatedStep.
 // calculatedStep               Calculated final step value. It was calculated in calculatePrometheusInterval
 // requestedMinStep             Requested minimum step value. QueryModel.interval
 // dsScrapeInterval             Data source scrape interval in the config
@@ -390,13 +395,18 @@ func InterpolateVariables(
 	requestedMinStep string,
 	dsScrapeInterval string,
 	timeRange time.Duration,
+	alignRateIntervalToStep bool,
 ) string {
 	rangeMs := timeRange.Milliseconds()
 	rangeSRounded := int64(math.Round(float64(rangeMs) / 1000.0))
 
 	var rateInterval time.Duration
 	if requestedMinStep == varRateInterval || requestedMinStep == varRateIntervalAlt {
-		rateInterval = calculatedStep
+		if alignRateIntervalToStep {
+			requestedMinStep = dsScrapeInterval
+		} else {
+			rateInterval = calculatedStep
+		}
 	} else {
 		if requestedMinStep == varInterval || requestedMinStep == varIntervalAlt {
 			requestedMinStep = calculatedStep.String()
@@ -404,7 +414,13 @@ func InterpolateVariables(
 		if requestedMinStep == "" {
 			requestedMinStep = dsScrapeInterval
 		}
-		rateInterval = calculateRateInterval(queryInterval, requestedMinStep)
+	}
+	if rateInterval == 0 {
+		rateQueryInterval := queryInterval
+		if alignRateIntervalToStep {
+			rateQueryInterval = calculatedStep
+		}
+		rateInterval = calculateRateInterval(rateQueryInterval, requestedMinStep, alignRateIntervalToStep)
 	}
 
 	expr = strings.ReplaceAll(expr, varIntervalMs, strconv.FormatInt(int64(calculatedStep/time.Millisecond), 10))

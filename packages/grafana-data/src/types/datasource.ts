@@ -590,6 +590,10 @@ export interface DataQueryRequest<TQuery extends DataQuery = DataQuery> {
   interval: string;
   intervalMs: number;
   maxDataPoints?: number;
+  /** Requested fixed panel query interval, when set by panel query options. */
+  stepSize?: string | null;
+  /** Resolved effective lower interval limit, after template replacement or datasource defaults. */
+  minInterval?: string | null;
   range: TimeRange;
   scopedVars: ScopedVars;
   targets: TQuery[];

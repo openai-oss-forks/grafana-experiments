@@ -3,7 +3,7 @@ import { map } from 'lodash';
 import { SyntheticEvent } from 'react';
 import * as React from 'react';
 
-import { CoreApp, SelectableValue } from '@grafana/data';
+import { CoreApp, getStepSizeOptions, isStepSizeBelowMinInterval, SelectableValue } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { Trans, t } from '@grafana/i18n';
 import { EditorField, EditorSwitch } from '@grafana/plugin-ui';
@@ -54,7 +54,20 @@ export const PromQueryBuilderOptions = React.memo<PromQueryBuilderOptionsProps>(
     };
 
     const onChangeStep = (evt: React.FormEvent<HTMLInputElement>) => {
-      onChange({ ...query, interval: evt.currentTarget.value.trim() });
+      const interval = evt.currentTarget.value.trim();
+      onChange({
+        ...query,
+        interval,
+        ...(isStepSizeBelowMinInterval(query.stepSize, interval) ? { stepSize: undefined } : {}),
+      });
+      onRunQuery();
+    };
+
+    const stepSizeOptions = getStepSizeOptions(query.interval);
+    const stepSizeOption =
+      stepSizeOptions.find((option) => option.value === (query.stepSize ?? '')) ?? stepSizeOptions[0];
+    const onChangeStepSize = (value: SelectableValue<string>) => {
+      onChange({ ...query, stepSize: value.value || undefined });
       onRunQuery();
     };
 
@@ -119,6 +132,24 @@ export const PromQueryBuilderOptions = React.memo<PromQueryBuilderOptionsProps>(
                 onCommitChange={onChangeStep}
                 defaultValue={query.interval}
                 data-testid={selectors.components.DataSource.Prometheus.queryEditor.step}
+              />
+            </EditorField>
+            <EditorField
+              label={t('grafana-prometheus.querybuilder.prom-query-builder-options.label-step-size', 'Step size')}
+              tooltip={t(
+                'grafana-prometheus.querybuilder.prom-query-builder-options.tooltip-step-size',
+                'Request one datapoint per selected time step. Grafana may clamp upward to stay under the chart datapoint limit.'
+              )}
+            >
+              <Select
+                value={stepSizeOption}
+                isSearchable={false}
+                options={stepSizeOptions}
+                onChange={onChangeStepSize}
+                aria-label={t(
+                  'grafana-prometheus.querybuilder.prom-query-builder-options.aria-label-step-size',
+                  'Step size combobox'
+                )}
               />
             </EditorField>
             <EditorField label={t('grafana-prometheus.querybuilder.prom-query-builder-options.label-format', 'Format')}>
@@ -211,6 +242,11 @@ function getCollapsedInfo(query: PromQuery, formatOption: string, queryType: str
   );
   items.push(
     t('grafana-prometheus.querybuilder.get-collapsed-info.step', 'Step: {{value}}', { value: query.interval ?? 'auto' })
+  );
+  items.push(
+    t('grafana-prometheus.querybuilder.get-collapsed-info.step-size', 'Step size: {{value}}', {
+      value: query.stepSize ?? 'auto',
+    })
   );
   items.push(t('grafana-prometheus.querybuilder.get-collapsed-info.type', 'Type: {{value}}', { value: queryType }));
 

@@ -5,6 +5,8 @@ import * as featureToggles from '../utils/featureToggles';
 
 import { dateTime } from './moment_wrapper';
 import {
+  calculateTimeRangeIntervalMs,
+  calculateInterval,
   convertRawToRange,
   describeInterval,
   describeTimeRange,
@@ -259,6 +261,53 @@ describe('Range Utils', () => {
 
     it('rounds >6w to 1y', () => {
       expect(roundInterval(3628800000)).toEqual(31536000000);
+    });
+  });
+
+  describe('calculateTimeRangeIntervalMs', () => {
+    const minute = 60 * 1000;
+    const hour = 60 * minute;
+    const day = 24 * hour;
+
+    it.each([
+      [5 * minute, 1000],
+      [15 * minute, 5 * 1000],
+      [30 * minute, 10 * 1000],
+      [hour, 20 * 1000],
+      [4 * hour, minute],
+      [day, 5 * minute],
+      [2 * day, 10 * minute],
+      [3 * day, hour],
+      [7 * day, hour],
+      [30 * day, 4 * hour],
+    ])('uses fixed time-range interval for %dms range', (rangeMs, expected) => {
+      expect(calculateTimeRangeIntervalMs(rangeMs)).toEqual(expected);
+    });
+  });
+
+  describe('calculateInterval', () => {
+    const rangeFor = (rangeMs: number): TimeRange => {
+      const from = dateTime('2026-01-01T00:00:00Z');
+      return {
+        from,
+        to: dateTime(from).add(rangeMs, 'milliseconds'),
+        raw: {
+          from,
+          to: dateTime(from).add(rangeMs, 'milliseconds'),
+        },
+      };
+    };
+
+    it('uses the requested resolution for the shared interval helper', () => {
+      const range = rangeFor(60 * 60 * 1000);
+
+      expect(calculateInterval(range, 1000).interval).toEqual('5s');
+      expect(calculateInterval(range, 1).interval).toEqual('1h');
+    });
+
+    it('clamps shared intervals to the lower interval limit', () => {
+      expect(calculateInterval(rangeFor(5 * 60 * 1000), 1000, '1m').interval).toEqual('1m');
+      expect(calculateInterval(rangeFor(60 * 60 * 1000), 1000, '10s').interval).toEqual('10s');
     });
   });
 

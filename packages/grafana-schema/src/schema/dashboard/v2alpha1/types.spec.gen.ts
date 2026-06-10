@@ -230,12 +230,15 @@ export type DataTopic = "series" | "annotations" | "alertStates";
 
 export const defaultDataTopic = (): DataTopic => ("series");
 
+export type QueryStepSize = "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h";
+
 export interface QueryOptionsSpec {
 	timeFrom?: string;
 	maxDataPoints?: number;
 	timeShift?: string;
 	queryCachingTTL?: number;
 	interval?: string;
+	stepSize?: QueryStepSize;
 	cacheTimeout?: string;
 	hideTimeOverride?: boolean;
 }
@@ -1562,4 +1565,3 @@ export const defaultSpec = (): Spec => ({
 	title: "",
 	variables: [],
 });
-

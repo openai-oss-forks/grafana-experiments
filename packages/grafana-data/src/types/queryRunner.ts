@@ -21,6 +21,7 @@ export interface QueryRunnerOptions {
   timeInfo?: string; // String description of time range for display
   maxDataPoints: number;
   minInterval: string | undefined | null;
+  stepSize?: string | null;
   scopedVars?: ScopedVars;
   cacheTimeout?: string;
   queryCachingTTL?: number;

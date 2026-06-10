@@ -151,6 +151,7 @@ func (r *Resource) GetSuggestions(ctx context.Context, req *backend.CallResource
 			"1m",
 			"15s",
 			time.Minute,
+			false,
 		)
 		s, err := getSelectors(interpolatedQuery)
 		if err != nil {
