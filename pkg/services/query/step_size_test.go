@@ -27,8 +27,9 @@ func TestValidateStepSize(t *testing.T) {
 			wantErr: ErrInvalidStepSize,
 		},
 		{
-			name:  "allows two minute step size",
-			query: `{"refId":"A","__grafanaQueryOptions":{"stepSize":"2m","minInterval":"1m"}}`,
+			name:    "rejects two minute step size",
+			query:   `{"refId":"A","__grafanaQueryOptions":{"stepSize":"2m"}}`,
+			wantErr: ErrInvalidStepSize,
 		},
 		{
 			name:    "rejects step size below min interval",
@@ -72,7 +73,7 @@ func TestValidateStepSize(t *testing.T) {
 }
 
 func TestValidateStepSizeAllowsCuratedStepSizes(t *testing.T) {
-	for _, stepSize := range []string{"1m", "2m", "5m", "10m", "20m", "30m", "1h", "2h", "5h"} {
+	for _, stepSize := range []string{"1m", "5m", "10m", "20m", "30m", "1h", "2h", "5h"} {
 		t.Run(stepSize, func(t *testing.T) {
 			query, err := simplejson.NewJson([]byte(fmt.Sprintf(`{"refId":"A","__grafanaQueryOptions":{"stepSize":%q}}`, stepSize)))
 			require.NoError(t, err)

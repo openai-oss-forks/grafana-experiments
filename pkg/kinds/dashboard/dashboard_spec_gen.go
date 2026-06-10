@@ -1194,7 +1194,6 @@ type PanelStepSize string
 
 const (
 	PanelStepSize1M  PanelStepSize = "1m"
-	PanelStepSize2M  PanelStepSize = "2m"
 	PanelStepSize5M  PanelStepSize = "5m"
 	PanelStepSize10M PanelStepSize = "10m"
 	PanelStepSize20M PanelStepSize = "20m"

@@ -928,7 +928,7 @@ export interface Panel {
   /**
    * The query step size setting requests one datapoint per selected interval.
    */
-  stepSize?: ('1m' | '2m' | '5m' | '10m' | '20m' | '30m' | '1h' | '2h' | '5h');
+  stepSize?: ('1m' | '5m' | '10m' | '20m' | '30m' | '1h' | '2h' | '5h');
   /**
    * Depends on the panel plugin. See the plugin documentation for details.
    */

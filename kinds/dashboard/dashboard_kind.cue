@@ -670,7 +670,7 @@ lineage: schemas: [{
 			interval?: string
 
 			// The query step size setting requests one datapoint per selected interval.
-			stepSize?: "1m" | "2m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h"
+			stepSize?: "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h"
 
 			// Overrides the relative time range for individual panels,
 			// which causes them to be different than what is selected in

@@ -20,11 +20,11 @@ const range = (from: string, to: string) => ({
 
 describe('stepSize helpers', () => {
   it('validates only approved persisted values', () => {
-    expect(ALLOWED_STEP_SIZES).toEqual(['1m', '2m', '5m', '10m', '20m', '30m', '1h', '2h', '5h']);
+    expect(ALLOWED_STEP_SIZES).toEqual(['1m', '5m', '10m', '20m', '30m', '1h', '2h', '5h']);
     expect(isValidStepSize('1m')).toBe(true);
-    expect(isValidStepSize('2m')).toBe(true);
     expect(isValidStepSize('10m')).toBe(true);
     expect(isValidStepSize('5h')).toBe(true);
+    expect(isValidStepSize('2m')).toBe(false);
     expect(isValidStepSize('3m')).toBe(false);
     expect(isValidStepSize('605s')).toBe(false);
     expect(isValidStepSize('1hr')).toBe(false);

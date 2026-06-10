@@ -96,7 +96,6 @@ func TestParse(t *testing.T) {
 			duration time.Duration
 		}{
 			{"1m", time.Minute},
-			{"2m", 2 * time.Minute},
 			{"5m", 5 * time.Minute},
 			{"10m", 10 * time.Minute},
 			{"20m", 20 * time.Minute},
@@ -128,23 +127,26 @@ func TestParse(t *testing.T) {
 	})
 
 	t.Run("parsing query model rejects unsupported explicit step size", func(t *testing.T) {
-		timeRange := backend.TimeRange{
-			From: now,
-			To:   now.Add(12 * time.Hour),
+		for _, stepSize := range []string{"2m", "3m"} {
+			t.Run(stepSize, func(t *testing.T) {
+				timeRange := backend.TimeRange{
+					From: now,
+					To:   now.Add(12 * time.Hour),
+				}
+
+				q := queryContext(fmt.Sprintf(`{
+					"expr": "go_goroutines",
+					"format": "time_series",
+					"interval": %[1]q,
+					"stepSize": %[1]q,
+					"refId": "A"
+				}`, stepSize), timeRange, 3*time.Minute)
+				q.MaxDataPoints = 1500
+
+				_, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+				require.ErrorContains(t, err, fmt.Sprintf("invalid stepSize: %s", stepSize))
+			})
 		}
-
-		q := queryContext(`{
-			"expr": "go_goroutines",
-			"format": "time_series",
-			"interval": "3m",
-			"intervalMs": 180000,
-			"stepSize": "3m",
-			"refId": "A"
-		}`, timeRange, 3*time.Minute)
-		q.MaxDataPoints = 1500
-
-		_, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
-		require.ErrorContains(t, err, "invalid stepSize: 3m")
 	})
 
 	t.Run("parsing query model with explicit step size uses provided interval above query min step", func(t *testing.T) {

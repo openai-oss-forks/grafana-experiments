@@ -16,7 +16,6 @@ const (
 
 var allowedStepSizes = map[string]time.Duration{
 	"1m":  time.Minute,
-	"2m":  2 * time.Minute,
 	"5m":  5 * time.Minute,
 	"10m": 10 * time.Minute,
 	"20m": 20 * time.Minute,
