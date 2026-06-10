@@ -167,7 +167,11 @@ export {
   type VizLayoutLegendProps,
   type VizLayoutProps,
 } from './components/VizLayout/VizLayout';
-export { type VizLegendItem, SeriesVisibilityChangeBehavior } from './components/VizLegend/types';
+export {
+  type VizLegendItem,
+  type VizLegendItemSource,
+  SeriesVisibilityChangeBehavior,
+} from './components/VizLegend/types';
 export { VizLegend } from './components/VizLegend/VizLegend';
 export { VizLegendListItem } from './components/VizLegend/VizLegendListItem';
 

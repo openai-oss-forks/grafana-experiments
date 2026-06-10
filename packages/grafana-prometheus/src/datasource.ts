@@ -467,9 +467,11 @@ export class PrometheusDatasource
       return this.directAccessError();
     }
 
-    // Use incremental query only if enabled and no instant queries or no $__range variables
+    // Compact responses must retain their binary ownership through rendering. The incremental
+    // cache stores and merges DataFrames, so legacy JSON queries are the only eligible inputs.
     const shouldUseIncrementalQuery =
       this.hasIncrementalQuery &&
+      request.preferredQueryResultFormat !== 'compact-v1' &&
       !config.publicDashboardAccessToken &&
       !request.targets.some((target) => target.instant || target.expr?.includes('$__range'));
 
@@ -485,6 +487,10 @@ export class PrometheusDatasource
     const startTime = new Date();
     return super.query({ ...fullOrPartialRequest, targets: targets.flat() }).pipe(
       map((response) => {
+        if (response.compactSeries) {
+          return response;
+        }
+
         const amendedResponse = {
           ...response,
           data: this.cache.procFrames(request, requestInfo, response.data),
@@ -496,6 +502,15 @@ export class PrometheusDatasource
       tap((response: DataQueryResponse) => {
         trackQuery(response, request, startTime);
       })
+    );
+  }
+
+  protected shouldRequestCompactQueryResponse(request: DataQueryRequest<PromQuery>, queries: PromQuery[]): boolean {
+    return (
+      request.app === CoreApp.Dashboard &&
+      request.panelPluginId === 'timeseries' &&
+      !config.publicDashboardAccessToken &&
+      queries.every((query) => query.datasource?.type === this.type && isCompactTimeSeriesRangeQuery(query))
     );
   }
 
@@ -858,6 +873,13 @@ export class PrometheusDatasource
 
     return defaults;
   }
+}
+
+function isCompactTimeSeriesRangeQuery(query: PromQuery): boolean {
+  const { instant, range, exemplar, format } = query;
+  const responseFormat = format || 'time_series';
+
+  return instant !== true && range !== false && exemplar !== true && responseFormat === 'time_series';
 }
 
 function targetHasScopes(target: PromQuery): boolean {

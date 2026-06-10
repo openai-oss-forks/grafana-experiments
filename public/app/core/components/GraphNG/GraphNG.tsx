@@ -1,10 +1,11 @@
 import * as React from 'react';
 import { Component } from 'react';
-import uPlot, { AlignedData } from 'uplot';
+import { AlignedData } from 'uplot';
 
 import {
   DataFrame,
   DataLinkPostProcessor,
+  CompactTimeSeriesData,
   Field,
   FieldMatcherID,
   fieldMatchers,
@@ -18,6 +19,13 @@ import { DashboardCursorSync, VizLegendOptions } from '@grafana/schema';
 import { Themeable2, VizLayout, VizLayoutLegendProps } from '@grafana/ui';
 import { AxisProps, pluginLog, Renderers, ScaleProps, UPlotChart, UPlotConfigBuilder } from '@grafana/ui/internal';
 
+import { GraphNGRendererGate } from './GraphNGRenderVisibility';
+import {
+  CompactNativeRenderPlan,
+  createCompactNativeRenderPlan,
+  hasSameCompactNativeTopology,
+} from './compactNativePlan';
+import { CompactFieldConfigOptions } from './compactTypes';
 import { GraphNGLegendEvent, XYFieldMatchers } from './types';
 import { preparePlotFrame as defaultPreparePlotFrame } from './utils';
 
@@ -28,6 +36,8 @@ export type PropDiffFn<T extends Record<string, unknown> = {}> = (prev: T, next:
 
 export interface GraphNGProps extends Themeable2 {
   frames: DataFrame[];
+  compactSeries?: CompactTimeSeriesData;
+  compactFieldConfig?: CompactFieldConfigOptions;
   structureRev?: number; // a number that will change when the frames[] structure changes
   width: number;
   height: number;
@@ -39,16 +49,26 @@ export interface GraphNGProps extends Themeable2 {
   tweakScale?: (opts: ScaleProps, forField: Field) => ScaleProps;
   tweakAxis?: (opts: AxisProps, forField: Field) => AxisProps;
   onLegendClick?: (event: GraphNGLegendEvent) => void;
-  children?: (builder: UPlotConfigBuilder, alignedFrame: DataFrame) => React.ReactNode;
+  children?: (builder: UPlotConfigBuilder, alignedFrame: DataFrame, sourceFrames: DataFrame[]) => React.ReactNode;
+  compactChildren?: (builder: UPlotConfigBuilder, plan: CompactNativeRenderPlan) => React.ReactNode;
   prepConfig: (
     alignedFrame: DataFrame,
     allFrames: DataFrame[],
     getTimeRange: () => TimeRange,
     annotationLanes?: number
   ) => UPlotConfigBuilder;
+  prepCompactConfig?: (
+    plan: CompactNativeRenderPlan,
+    getTimeRange: () => TimeRange,
+    annotationLanes?: number
+  ) => UPlotConfigBuilder;
   propsToDiff?: Array<string | PropDiffFn>;
   preparePlotFrame?: (frames: DataFrame[], dimFields: XYFieldMatchers) => DataFrame | null;
-  renderLegend: (config: UPlotConfigBuilder) => React.ReactElement<VizLayoutLegendProps> | null;
+  renderLegend: (config: UPlotConfigBuilder, frames: DataFrame[]) => React.ReactElement<VizLayoutLegendProps> | null;
+  renderCompactLegend?: (
+    config: UPlotConfigBuilder,
+    plan: CompactNativeRenderPlan
+  ) => React.ReactElement<VizLayoutLegendProps> | null;
   replaceVariables: InterpolateFunction;
   dataLinkPostProcessor?: DataLinkPostProcessor;
   cursorSync?: DashboardCursorSync;
@@ -95,9 +115,23 @@ function sameProps<T extends Record<string, unknown>>(
  * @internal -- not a public API
  */
 export interface GraphNGState {
-  alignedFrame: DataFrame;
+  alignedFrame?: DataFrame;
+  sourceFrames?: DataFrame[];
   alignedData?: AlignedData;
   config?: UPlotConfigBuilder;
+  compactPlan?: CompactNativeRenderPlan;
+  compactFieldConfig?: CompactFieldConfigOptions;
+}
+
+function emptyGraphState(): GraphNGState {
+  return {
+    alignedFrame: undefined,
+    sourceFrames: undefined,
+    alignedData: undefined,
+    config: undefined,
+    compactPlan: undefined,
+    compactFieldConfig: undefined,
+  };
 }
 
 const defaultMatchers = {
@@ -108,23 +142,66 @@ const defaultMatchers = {
 /**
  * "Time as X" core component, expects ascending x
  */
-export class GraphNG extends Component<GraphNGProps, GraphNGState> {
-  private plotInstance: React.RefObject<uPlot | null>;
+export function GraphNG(props: GraphNGProps) {
+  return (
+    <GraphNGRendererGate suspendWhenInactive={props.compactSeries != null}>
+      <GraphNGRenderer {...props} />
+    </GraphNGRendererGate>
+  );
+}
 
+export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
   constructor(props: GraphNGProps) {
     super(props);
-    let state = this.prepState(props);
-    state.alignedData = state.config!.prepData!([state.alignedFrame]) as AlignedData;
+    const state = this.prepState(props);
+    if (state.config && !state.alignedData && state.alignedFrame) {
+      state.alignedData = this.prepareData(state.config, state.alignedFrame);
+    }
     this.state = state;
-    this.plotInstance = React.createRef();
   }
 
   getTimeRange = () => this.props.timeRange;
 
-  prepState(props: GraphNGProps, withConfig = true) {
-    let state: GraphNGState = null as any;
+  prepState(props: GraphNGProps, withConfig = true): GraphNGState {
+    const {
+      frames,
+      compactSeries,
+      compactFieldConfig,
+      fields = defaultMatchers,
+      preparePlotFrame,
+      replaceVariables,
+      dataLinkPostProcessor,
+    } = props;
 
-    const { frames, fields = defaultMatchers, preparePlotFrame, replaceVariables, dataLinkPostProcessor } = props;
+    if (compactSeries) {
+      if (props.width <= 0 || props.height <= 0) {
+        return emptyGraphState();
+      }
+      if (!compactFieldConfig) {
+        throw new Error('Compact GraphNG rendering requires field configuration');
+      }
+      if (!props.prepCompactConfig) {
+        throw new Error('Compact GraphNG rendering requires descriptor-native plot configuration');
+      }
+
+      const canReusePlan =
+        this.state?.compactPlan?.data === compactSeries && this.state.compactFieldConfig === compactFieldConfig;
+      const plan = canReusePlan
+        ? this.state.compactPlan!
+        : createCompactNativeRenderPlan(compactSeries, compactFieldConfig);
+      const config = withConfig
+        ? props.prepCompactConfig(plan, this.getTimeRange, props.annotationLanes)
+        : this.state?.config;
+
+      return {
+        alignedFrame: undefined,
+        sourceFrames: undefined,
+        alignedData: undefined,
+        config,
+        compactPlan: plan,
+        compactFieldConfig,
+      };
+    }
 
     const preparePlotFrameFn = preparePlotFrame ?? defaultPreparePlotFrame;
 
@@ -203,78 +280,136 @@ export class GraphNG extends Component<GraphNGProps, GraphNGState> {
         pluginLog('GraphNG', false, 'config prepared', config);
       }
 
-      state = {
+      const state: GraphNGState = {
         alignedFrame: alignedFrameFinal,
+        sourceFrames: frames,
         config,
+        compactPlan: undefined,
+        compactFieldConfig: undefined,
       };
 
       pluginLog('GraphNG', false, 'data prepared', state.alignedData);
+      return state;
     }
 
-    return state;
+    return emptyGraphState();
   }
 
   componentDidUpdate(prevProps: GraphNGProps) {
-    const { frames, structureRev, timeZone, cursorSync, propsToDiff } = this.props;
+    const { frames, compactSeries, compactFieldConfig, structureRev, timeZone, cursorSync, propsToDiff } = this.props;
 
     const propsChanged = !sameProps(prevProps, this.props, propsToDiff);
+    const compactInputChanged =
+      compactSeries !== prevProps.compactSeries || compactFieldConfig !== prevProps.compactFieldConfig;
+    const legacyFramesChanged = !compactSeries && frames !== prevProps.frames;
 
     if (
-      frames !== prevProps.frames ||
+      legacyFramesChanged ||
+      compactInputChanged ||
       propsChanged ||
       timeZone !== prevProps.timeZone ||
-      cursorSync !== prevProps.cursorSync
+      cursorSync !== prevProps.cursorSync ||
+      (!this.state.config && this.props.width > 0 && this.props.height > 0)
     ) {
       let newState = this.prepState(this.props, false);
 
-      if (newState) {
-        const shouldReconfig =
-          this.state.config === undefined ||
-          timeZone !== prevProps.timeZone ||
-          cursorSync !== prevProps.cursorSync ||
-          structureRev !== prevProps.structureRev ||
-          !structureRev ||
-          propsChanged;
+      const compactTopologyChanged = !hasSameCompactNativeTopology(newState.compactPlan, this.state.compactPlan);
+      const shouldReconfig =
+        this.state.config === undefined ||
+        timeZone !== prevProps.timeZone ||
+        cursorSync !== prevProps.cursorSync ||
+        (!compactSeries && structureRev !== prevProps.structureRev) ||
+        compactTopologyChanged ||
+        compactFieldConfig !== prevProps.compactFieldConfig ||
+        (!compactSeries && !structureRev) ||
+        propsChanged;
 
+      if (newState.compactPlan || newState.alignedFrame) {
         if (shouldReconfig) {
-          newState.config = this.props.prepConfig(
-            newState.alignedFrame,
-            this.props.frames,
-            this.getTimeRange,
-            this.props.annotationLanes
-          );
+          if (compactSeries) {
+            if (!this.props.prepCompactConfig || !newState.compactPlan) {
+              throw new Error('Compact GraphNG rendering requires descriptor-native plot configuration');
+            }
+            newState.config = this.props.prepCompactConfig(
+              newState.compactPlan,
+              this.getTimeRange,
+              this.props.annotationLanes
+            );
+          } else {
+            newState.config = this.props.prepConfig(
+              newState.alignedFrame!,
+              newState.sourceFrames!,
+              this.getTimeRange,
+              this.props.annotationLanes
+            );
+          }
           pluginLog('GraphNG', false, 'config recreated', newState.config);
         }
 
-        newState.alignedData = newState.config!.prepData!([newState.alignedFrame]) as AlignedData;
-
-        this.setState(newState);
+        if (!newState.compactPlan && !newState.alignedData) {
+          if (!newState.config) {
+            return;
+          }
+          if (!newState.alignedFrame) {
+            return;
+          }
+          newState.alignedData = this.prepareData(newState.config, newState.alignedFrame);
+        }
       }
+
+      this.setState(newState);
     }
   }
 
   render() {
-    const { width, height, children, renderLegend } = this.props;
-    const { config, alignedFrame, alignedData } = this.state;
+    const { width, height, children, compactChildren, renderLegend, renderCompactLegend } = this.props;
+    const { config, alignedData, compactPlan } = this.state;
 
     if (!config) {
       return null;
     }
 
+    if (compactPlan) {
+      return (
+        <VizLayout width={width} height={height} legend={renderCompactLegend?.(config, compactPlan) ?? null}>
+          {(vizWidth: number, vizHeight: number) => (
+            <UPlotChart config={config} data={compactPlan.source} width={vizWidth} height={vizHeight}>
+              {compactChildren ? compactChildren(config, compactPlan) : null}
+            </UPlotChart>
+          )}
+        </VizLayout>
+      );
+    }
+
+    if (!alignedData) {
+      return null;
+    }
+
+    const alignedFrame = this.state.alignedFrame;
+    const sourceFrames = this.state.sourceFrames;
+    if (!alignedFrame || !sourceFrames) {
+      return null;
+    }
+
     return (
-      <VizLayout width={width} height={height} legend={renderLegend(config)}>
+      <VizLayout width={width} height={height} legend={renderLegend(config, sourceFrames)}>
         {(vizWidth: number, vizHeight: number) => (
-          <UPlotChart
-            config={config}
-            data={alignedData!}
-            width={vizWidth}
-            height={vizHeight}
-            plotRef={(u) => ((this.plotInstance as React.MutableRefObject<uPlot>).current = u)}
-          >
-            {children ? children(config, alignedFrame) : null}
+          <UPlotChart config={config} data={alignedData} width={vizWidth} height={vizHeight}>
+            {children ? children(config, alignedFrame, sourceFrames) : null}
           </UPlotChart>
         )}
       </VizLayout>
     );
+  }
+
+  private prepareData(config: UPlotConfigBuilder, frame: DataFrame): AlignedData {
+    if (!config.prepData) {
+      throw new Error('GraphNG configuration is missing a data preparation function');
+    }
+    const data = config.prepData([frame]);
+    if (data[0] === null) {
+      throw new Error('GraphNG does not support faceted uPlot data');
+    }
+    return data;
   }
 }

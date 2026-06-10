@@ -7,7 +7,7 @@ import { toUtc } from '../datetime/moment_wrapper';
 import { dateTimeParse } from '../datetime/parser';
 import { GrafanaTheme2 } from '../themes/types';
 import { KeyValue } from '../types/data';
-import { Field, FieldType } from '../types/dataFrame';
+import { FieldConfig, FieldConfigTarget, FieldType } from '../types/dataFrame';
 import { DecimalCount, DisplayProcessor, DisplayValue } from '../types/displayValue';
 import { TimeZone } from '../types/time';
 import { anyToNumber } from '../utils/anyToNumber';
@@ -17,7 +17,7 @@ import { FormattedValue, getValueFormat, isBooleanUnit } from '../valueFormats/v
 import { getScaleCalculator } from './scale';
 
 interface DisplayProcessorOptions {
-  field: Partial<Field>;
+  field: Partial<FieldConfigTarget> & { config?: FieldConfig; values?: ArrayLike<unknown> };
   /**
    * Will pick browser timezone if not defined
    */
@@ -44,8 +44,17 @@ export function getDisplayProcessor(options?: DisplayProcessorOptions): DisplayP
     return toStringProcessor;
   }
 
-  const field = options.field as Field;
-  const config = field.config ?? {};
+  const input = options.field;
+  const field: FieldConfigTarget & { values?: ArrayLike<unknown> } = {
+    name: input.name ?? '',
+    type: input.type ?? FieldType.other,
+    config: input.config ?? {},
+    labels: input.labels,
+    state: input.state,
+    display: input.display,
+    values: input.values,
+  };
+  const config = field.config;
   const { palette } = options.theme.visualization;
 
   let unit = config.unit;
@@ -56,16 +65,13 @@ export function getDisplayProcessor(options?: DisplayProcessorOptions): DisplayP
     unit = `dateTimeAsSystem`;
     hasDateUnit = true;
     if (field.values && field.values.length > 1) {
-      let start = field.values[0];
-      let end = field.values[field.values.length - 1];
-      if (typeof start === 'string') {
-        start = dateTimeParse(start).unix();
-        end = dateTimeParse(end).unix();
-      } else {
-        start /= 1e3;
-        end /= 1e3;
+      const start = field.values[0];
+      const end = field.values[field.values.length - 1];
+      if (typeof start === 'string' && (typeof end === 'string' || typeof end === 'number')) {
+        showMs = Math.abs(dateTimeParse(end).unix() - dateTimeParse(start).unix()) < 60;
+      } else if (typeof start === 'number' && typeof end === 'number') {
+        showMs = Math.abs(end / 1e3 - start / 1e3) < 60;
       }
-      showMs = Math.abs(end - start) < 60; //show ms when minute or less
     }
   } else if (field.type === FieldType.boolean) {
     if (!isBooleanUnit(unit)) {

@@ -5,8 +5,10 @@ import { withTheme2 } from '@grafana/ui';
 import { hasVisibleLegendSeries, PlotLegend, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { GraphNG, GraphNGProps, PropDiffFn } from '../GraphNG/GraphNG';
+import { CompactNativeRenderPlan } from '../GraphNG/compactNativePlan';
 
-import { getXAxisConfig, preparePlotConfigBuilder } from './utils';
+import { CompactPlotLegend } from './CompactPlotLegend';
+import { getXAxisConfig, prepareCompactPlotConfigBuilder, preparePlotConfigBuilder } from './utils';
 
 const propsToDiff: Array<string | PropDiffFn> = ['legend', 'options', 'annotationLanes', 'theme'];
 
@@ -36,8 +38,30 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
     });
   };
 
-  renderLegend = (config: UPlotConfigBuilder) => {
-    const { legend, frames } = this.props;
+  prepCompactConfig = (plan: CompactNativeRenderPlan, getTimeRange: () => TimeRange, annotationLanes?: number) => {
+    const { theme, timeZone, options } = this.props;
+
+    return prepareCompactPlotConfigBuilder({
+      plan,
+      theme,
+      timeZones: Array.isArray(timeZone) ? timeZone : [timeZone],
+      getTimeRange,
+      hoverProximity: options?.tooltip?.hoverProximity,
+      orientation: options?.orientation,
+      xAxisConfig: getXAxisConfig(annotationLanes),
+    });
+  };
+
+  renderCompactLegend = (config: UPlotConfigBuilder, plan: CompactNativeRenderPlan) => {
+    const { legend } = this.props;
+    if (!legend?.showLegend) {
+      return null;
+    }
+    return <CompactPlotLegend config={config} plan={plan} {...legend} />;
+  };
+
+  renderLegend = (config: UPlotConfigBuilder, frames: DataFrame[]) => {
+    const { legend } = this.props;
 
     if (!config || (legend && !legend.showLegend) || !hasVisibleLegendSeries(config, frames)) {
       return null;
@@ -51,8 +75,10 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
       <GraphNG
         {...this.props}
         prepConfig={this.prepConfig}
+        prepCompactConfig={this.prepCompactConfig}
         propsToDiff={propsToDiff}
         renderLegend={this.renderLegend}
+        renderCompactLegend={this.renderCompactLegend}
       />
     );
   }

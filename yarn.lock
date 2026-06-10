@@ -3430,7 +3430,7 @@ __metadata:
     tslib: "npm:2.8.1"
     tsx: "npm:^4.21.0"
     typescript: "npm:5.9.2"
-    uplot: "npm:1.6.32"
+    uplot: "patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch"
     xss: "npm:^1.0.14"
     zod: "npm:^4.3.0"
   peerDependencies:
@@ -4018,6 +4018,32 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@grafana/scenes@patch:@grafana/scenes@npm%3A6.52.13#~/.yarn/patches/@grafana-scenes-npm-6.52.13-c21e6ee864.patch":
+  version: 6.52.13
+  resolution: "@grafana/scenes@patch:@grafana/scenes@npm%3A6.52.13#~/.yarn/patches/@grafana-scenes-npm-6.52.13-c21e6ee864.patch::version=6.52.13&hash=e6e62e"
+  dependencies:
+    "@floating-ui/react": "npm:^0.26.16"
+    "@leeoniya/ufuzzy": "npm:^1.0.16"
+    "@tanstack/react-virtual": "npm:^3.9.0"
+    i18next-parser: "npm:9.3.0"
+    react-grid-layout: "npm:1.3.4"
+    react-use: "npm:17.5.0"
+    react-virtualized-auto-sizer: "npm:1.0.24"
+    uuid: "npm:^9.0.0"
+  peerDependencies:
+    "@grafana/data": ">=10.4"
+    "@grafana/e2e-selectors": ">=10.4"
+    "@grafana/i18n": "*"
+    "@grafana/runtime": ">=10.4"
+    "@grafana/schema": ">=10.4"
+    "@grafana/ui": ">=10.4"
+    react: ^18.0.0
+    react-dom: ^18.0.0
+    react-router-dom: ^6.28.0
+  checksum: 10/919661b87857f668f7527948cae2d0e00e5cd3c22781aea8343c8d223e72e66c1f57def060720e86c6280224d077cf8992118a095a5232c133e00d6564d37145
+  languageName: node
+  linkType: hard
+
 "@grafana/schema@npm:12.4.4, @grafana/schema@workspace:*, @grafana/schema@workspace:packages/grafana-schema":
   version: 0.0.0-use.local
   resolution: "@grafana/schema@workspace:packages/grafana-schema"
@@ -4247,7 +4273,7 @@ __metadata:
     tinycolor2: "npm:1.6.0"
     tslib: "npm:2.8.1"
     typescript: "npm:5.9.2"
-    uplot: "npm:1.6.32"
+    uplot: "patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch"
     uuid: "npm:11.1.0"
     uwrap: "npm:0.1.2"
     webpack: "npm:^5.105.0"
@@ -21046,7 +21072,7 @@ __metadata:
     tween-functions: "npm:^1.2.0"
     type-fest: "npm:^4.18.2"
     typescript: "npm:5.9.2"
-    uplot: "npm:1.6.32"
+    uplot: "patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch"
     uuid: "npm:11.1.0"
     vis-data: "npm:^8.0.0"
     vis-network: "npm:10.0.2"
@@ -35278,6 +35304,13 @@ __metadata:
   version: 1.6.32
   resolution: "uplot@npm:1.6.32"
   checksum: 10/78a4ea0cf46ee1ea2814304b3c24002d52b7e98995dfc5fe9dcf05ce4873b62d26f81f03613dbb8b63e451cbfe369e314591c4fe8113f8453860ca71b8dc7430
+  languageName: node
+  linkType: hard
+
+"uplot@patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch":
+  version: 1.6.32
+  resolution: "uplot@patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch::version=1.6.32&hash=a41bb7"
+  checksum: 10/f68e9f7a56fa59b75ea20c1ae5e352c4737a4ddfb0c5537a06a1a039cc4500e19ae8bcf352f05ec663a560291a49d95a36bbe28ba9dc33e70bc3bb76a9a548a3
   languageName: node
   linkType: hard
 

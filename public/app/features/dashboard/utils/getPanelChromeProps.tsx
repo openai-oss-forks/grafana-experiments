@@ -80,6 +80,7 @@ export function getPanelChromeProps(props: CommonProps) {
   const showTitleItems =
     (props.panel.links && props.panel.links.length > 0 && onShowPanelLinks) ||
     (props.data.series.length > 0 && props.data.series.some((v) => (v.meta?.notices?.length ?? 0) > 0)) ||
+    (props.data.compactSeries?.notices?.length ?? 0) > 0 ||
     (props.data.request && props.data.request.timeInfo) ||
     alertState;
 

@@ -17,6 +17,7 @@ import {
   LoadingState,
   PanelData,
   TimeRange,
+  isCompactTimeSeriesSeriesCollection,
 } from '@grafana/data';
 import { config, isMigrationHandler, migrateRequest, toDataQueryError, isExpressionReference } from '@grafana/runtime';
 import { backendSrv } from 'app/core/services/backend_srv';
@@ -55,6 +56,7 @@ export function processResponsePacket(packet: DataQueryResponse, state: RunningQ
 
   const series: DataQueryResponseData[] = [];
   const annotations: DataQueryResponseData[] = [];
+  let compactSeries: PanelData['compactSeries'];
 
   for (const key in packets) {
     const packet = packets[key];
@@ -75,6 +77,10 @@ export function processResponsePacket(packet: DataQueryResponse, state: RunningQ
         series.push(dataItem);
       }
     }
+
+    if (packet.compactSeries) {
+      compactSeries = packet.compactSeries;
+    }
   }
 
   const timeRange = getRequestTimeRange(request, loadingState);
@@ -82,6 +88,7 @@ export function processResponsePacket(packet: DataQueryResponse, state: RunningQ
   const panelData: PanelData = {
     state: loadingState,
     series,
+    compactSeries,
     annotations,
     error,
     errors,
@@ -151,6 +158,19 @@ export function runRequest(
 
       // filter out responses for hidden queries
       const hiddenQueries = request.targets.filter((q) => q.hide);
+      const hiddenRefIds = new Set(hiddenQueries.map((query) => query.refId));
+      if (packet.compactSeries && hiddenRefIds.size > 0) {
+        const visibleSeries = isCompactTimeSeriesSeriesCollection(packet.compactSeries.series)
+          ? packet.compactSeries.series.excludeRefIds(hiddenRefIds)
+          : packet.compactSeries.series.filter((series) => !hiddenRefIds.has(series.refId));
+        packet.compactSeries =
+          visibleSeries.length === 0
+            ? undefined
+            : {
+                ...packet.compactSeries,
+                series: visibleSeries,
+              };
+      }
       for (const query of hiddenQueries) {
         packet.data = packet.data.filter((d) => d.refId !== query.refId);
       }

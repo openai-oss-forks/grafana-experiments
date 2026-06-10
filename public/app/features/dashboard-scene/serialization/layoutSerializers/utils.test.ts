@@ -1,3 +1,4 @@
+import { SceneDataTransformer } from '@grafana/scenes';
 import {
   defaultDataQueryKind,
   defaultPanelSpec,
@@ -7,7 +8,67 @@ import {
 import { SHARED_DASHBOARD_QUERY } from 'app/plugins/datasource/dashboard/constants';
 import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSource';
 
-import { ensureUniqueRefIds, getPanelDataSource, getRuntimePanelDataSource } from './utils';
+import { DashboardSceneQueryRunner } from '../../scene/DashboardSceneQueryRunner';
+
+import { createPanelDataProvider, ensureUniqueRefIds, getPanelDataSource, getRuntimePanelDataSource } from './utils';
+
+describe('createPanelDataProvider', () => {
+  it('does not retain a no-op transformer for panels without transformations', () => {
+    const panel: PanelKind = {
+      kind: 'Panel',
+      spec: {
+        ...defaultPanelSpec(),
+        id: 1,
+        title: 'Panel',
+        data: {
+          kind: 'QueryGroup',
+          spec: {
+            queries: [
+              {
+                kind: 'PanelQuery',
+                spec: {
+                  refId: 'A',
+                  hidden: false,
+                  query: {
+                    kind: 'DataQuery',
+                    version: defaultDataQueryKind().version,
+                    group: 'prometheus',
+                    spec: {},
+                  },
+                },
+              },
+            ],
+            queryOptions: {},
+            transformations: [],
+          },
+        },
+      },
+    };
+
+    expect(createPanelDataProvider(panel)).toBeInstanceOf(DashboardSceneQueryRunner);
+  });
+
+  it('keeps the transformer when transformations are configured', () => {
+    const panel: PanelKind = {
+      kind: 'Panel',
+      spec: {
+        ...defaultPanelSpec(),
+        id: 1,
+        title: 'Panel',
+        data: {
+          kind: 'QueryGroup',
+          spec: {
+            queries: [],
+            queryOptions: {},
+            transformations: [{ kind: 'reduce', spec: { id: 'reduce', options: {} } }],
+          },
+        },
+      },
+    };
+
+    expect(createPanelDataProvider(panel)).toBeInstanceOf(SceneDataTransformer);
+  });
+});
 
 describe('getRuntimePanelDataSource', () => {
   it('should return uid and type when explicit datasource UID is provided', () => {

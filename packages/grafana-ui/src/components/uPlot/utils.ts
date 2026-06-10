@@ -407,8 +407,11 @@ export const getDisplayValuesForCalcs = (calcs: string[], field: Field, theme: G
   const fmt = field.display ?? defaultFormatter;
   let countFormatter: DisplayProcessor | null = null;
 
+  const reducerField = field.state?.reducerValues
+    ? { ...field, values: field.state.reducerValues, state: field.state }
+    : field;
   const fieldCalcs = reduceField({
-    field: field,
+    field: reducerField,
     reducers: calcs,
   });
 

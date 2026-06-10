@@ -20,6 +20,7 @@ interface VizTooltipRowProps extends Omit<VizTooltipItem, 'value'> {
   isPinned: boolean;
   showValueScroll?: boolean;
   isHiddenFromViz?: boolean;
+  wrapLabel?: boolean;
 }
 
 enum LabelValueTypes {
@@ -45,8 +46,9 @@ export const VizTooltipRow = ({
   lineStyle,
   showValueScroll,
   isHiddenFromViz,
+  wrapLabel = false,
 }: VizTooltipRowProps) => {
-  const styles = useStyles2(getStyles, justify, marginRight);
+  const styles = useStyles2(getStyles, justify, marginRight, wrapLabel);
 
   const innerValueScrollStyle: CSSProperties = showValueScroll
     ? {
@@ -219,7 +221,7 @@ export const VizTooltipRow = ({
   );
 };
 
-const getStyles = (theme: GrafanaTheme2, justify = 'start', marginRight?: string) => ({
+const getStyles = (theme: GrafanaTheme2, justify = 'start', marginRight?: string, wrapLabel = false) => ({
   contentWrapper: css({
     display: 'flex',
     maxWidth: '100%',
@@ -227,7 +229,11 @@ const getStyles = (theme: GrafanaTheme2, justify = 'start', marginRight?: string
     justifyContent: justify,
     columnGap: theme.spacing(0.75),
   }),
-  label: css({ display: 'inline' }),
+  label: css({
+    display: wrapLabel ? 'block' : 'inline',
+    overflowWrap: wrapLabel ? 'anywhere' : undefined,
+    whiteSpace: wrapLabel ? 'normal' : undefined,
+  }),
   value: css({
     fontWeight: 500,
     textOverflow: 'ellipsis',
@@ -239,7 +245,7 @@ const getStyles = (theme: GrafanaTheme2, justify = 'start', marginRight?: string
   }),
   labelWrapper: css({
     flexGrow: 1,
-    overflow: 'hidden',
+    overflow: wrapLabel ? 'visible' : 'hidden',
     textOverflow: 'ellipsis',
     color: theme.colors.text.secondary,
     fontWeight: 400,

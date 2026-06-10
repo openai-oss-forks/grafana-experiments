@@ -134,6 +134,7 @@ export const AnnotationsPlugin2 = ({
   newRangeRef.current = newRange;
 
   const xAxisRef = useRef<HTMLDivElement | undefined>(undefined);
+  const redrawTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useLayoutEffect(() => {
     config.addHook('ready', (u) => {
@@ -230,10 +231,17 @@ export const AnnotationsPlugin2 = ({
       // this forces a second redraw after uPlot is updated (in the Plot.tsx didUpdate) with new data/scales
       // and ensures the anno marker positions in the dom are re-rendered in correct places
       // (this is temp fix until uPlot integrtion is refactored)
-      setTimeout(() => {
+      redrawTimerRef.current = setTimeout(() => {
+        redrawTimerRef.current = undefined;
         forceUpdate();
       }, 0);
     }
+    return () => {
+      if (redrawTimerRef.current !== undefined) {
+        clearTimeout(redrawTimerRef.current);
+        redrawTimerRef.current = undefined;
+      }
+    };
   }, [xAnnos, plot]);
 
   if (plot) {

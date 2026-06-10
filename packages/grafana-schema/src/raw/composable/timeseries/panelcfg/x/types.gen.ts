@@ -16,6 +16,7 @@ export const pluginVersion = "12.4.4";
 
 export interface Options extends common.OptionsWithTimezones, common.OptionsWithAnnotations {
   disableKeyboardEvents?: boolean;
+  highlightSeriesOnHover?: boolean;
   legend: common.VizLegendOptions;
   orientation?: common.VizOrientation;
   timeCompare?: common.TimeCompareOptions;

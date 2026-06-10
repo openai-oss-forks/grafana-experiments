@@ -22,6 +22,9 @@ export class DashboardQueryVariable extends QueryVariable {
   public override validateAndUpdate() {
     return super.validateAndUpdate().pipe(
       tap({
+        next: () => {
+          this.hasCompletedInitialOptionsHydration = true;
+        },
         complete: () => {
           this.hasCompletedInitialOptionsHydration = true;
         },

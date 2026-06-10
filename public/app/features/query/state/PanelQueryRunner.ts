@@ -100,6 +100,7 @@ export class PanelQueryRunner {
     let lastFieldConfig: ApplyFieldOverrideOptions | undefined = undefined;
     let lastProcessedFrames: DataFrame[] = [];
     let lastRawFrames: DataFrame[] = [];
+    let lastCompactSeries = this.lastResult?.compactSeries;
     let lastTransformations: DataTransformerConfig[] | undefined;
     let isFirstPacket = true;
     let lastConfigRev = -1;
@@ -121,6 +122,7 @@ export class PanelQueryRunner {
 
         if (
           data.series === lastRawFrames &&
+          data.compactSeries === lastCompactSeries &&
           lastFieldConfig?.fieldConfig === fieldConfig?.fieldConfig &&
           lastTransformations === transformations
         ) {
@@ -130,6 +132,8 @@ export class PanelQueryRunner {
         lastFieldConfig = fieldConfig;
         lastTransformations = transformations;
         lastRawFrames = data.series;
+        const compactStructureChanged = data.compactSeries !== lastCompactSeries;
+        lastCompactSeries = data.compactSeries;
         let dataWithTransforms = of(data);
 
         if (withTransforms) {
@@ -211,6 +215,10 @@ export class PanelQueryRunner {
               structureRev++;
             }
 
+            if (compactStructureChanged) {
+              structureRev++;
+            }
+
             lastProcessedFrames = processedData.series;
 
             return { ...processedData, structureRev };
@@ -226,6 +234,14 @@ export class PanelQueryRunner {
     const allTransformationsDisabled = transformations && transformations.every((t) => t.disabled);
     if (allTransformationsDisabled || !transformations || transformations.length === 0) {
       return of(data);
+    }
+
+    if (data.compactSeries) {
+      return of({
+        ...data,
+        state: LoadingState.Error,
+        errors: [toDataQueryError(new Error('Compact time series cannot be used with panel transformations'))],
+      });
     }
 
     const ctx: DataTransformContext = {
@@ -401,6 +417,7 @@ export class PanelQueryRunner {
 
         if (last != null && next.state !== LoadingState.Streaming) {
           let sameSeries = compareArrayValues(last.series ?? [], next.series ?? [], (a, b) => a === b);
+          let sameCompactSeries = last.compactSeries === next.compactSeries;
           let sameAnnotations = compareArrayValues(last.annotations ?? [], next.annotations ?? [], (a, b) => a === b);
           let sameState = last.state === next.state;
           let sameErrors = compareArrayValues(last.errors ?? [], next.errors ?? [], (a, b) => isEqual(a, b));
@@ -409,11 +426,15 @@ export class PanelQueryRunner {
             next.series = last.series;
           }
 
+          if (sameCompactSeries) {
+            next.compactSeries = last.compactSeries;
+          }
+
           if (sameAnnotations) {
             next.annotations = last.annotations;
           }
 
-          if (sameSeries && sameAnnotations && sameState && sameErrors) {
+          if (sameSeries && sameCompactSeries && sameAnnotations && sameState && sameErrors) {
             return;
           }
         }
@@ -480,6 +501,9 @@ export class PanelQueryRunner {
     if (this.subscription) {
       this.subscription.unsubscribe();
     }
+
+    this.lastResult = undefined;
+    this.lastRequest = undefined;
   }
 
   useLastResultFrom(runner: PanelQueryRunner) {

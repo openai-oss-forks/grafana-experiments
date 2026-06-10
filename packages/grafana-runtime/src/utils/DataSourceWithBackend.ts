@@ -36,7 +36,12 @@ import {
 
 import { publicDashboardQueryHandler } from './publicDashboardQueryHandler';
 import { isQueryServiceCompatible } from './qscheck';
-import { BackendDataSourceResponse, toDataQueryResponse } from './queryResponse';
+import {
+  BackendDataSourceResponse,
+  QUERY_DATA_COMPACT_HEADER,
+  QUERY_DATA_COMPACT_VERSION,
+  toDataQueryResponse,
+} from './queryResponse';
 import { UserStorage } from './userStorage';
 
 interface StepSizedDataQuery extends DataQuery {
@@ -252,7 +257,7 @@ class DataSourceWithBackend<
       to: range?.to.valueOf().toString(),
     };
 
-    const headers: Record<string, string> = request.headers ?? {};
+    const headers: Record<string, string> = { ...request.headers };
     headers[PluginRequestHeaders.PluginID] = Array.from(pluginIDs).join(', ');
     headers[PluginRequestHeaders.DatasourceUID] = Array.from(dsUIDs).join(', ');
 
@@ -299,18 +304,28 @@ class DataSourceWithBackend<
     if (request.skipQueryCache) {
       headers[PluginRequestHeaders.SkipQueryCache] = 'true';
     }
+    const requestCompactResponse =
+      request.preferredQueryResultFormat === QUERY_DATA_COMPACT_VERSION &&
+      url.startsWith('/api/ds/query') &&
+      this.shouldRequestCompactQueryResponse(request, queries);
+    if (requestCompactResponse) {
+      headers[QUERY_DATA_COMPACT_HEADER] = QUERY_DATA_COMPACT_VERSION;
+    } else {
+      delete headers[QUERY_DATA_COMPACT_HEADER];
+    }
     return getBackendSrv()
-      .fetch<BackendDataSourceResponse>({
+      .fetch<BackendDataSourceResponse | ArrayBuffer>({
         url,
         method: 'POST',
         data: body,
         requestId,
         hideFromInspector,
         headers,
+        ...(requestCompactResponse ? { responseType: 'arraybuffer' as const } : {}),
       })
       .pipe(
         switchMap((raw) => {
-          const rsp = toDataQueryResponse(raw, queries);
+          const rsp = toDataQueryResponse(raw, queries, requestCompactResponse);
           // Check if any response should subscribe to a live stream
           if (rsp.data?.length && rsp.data.find((f: DataFrame) => f.meta?.channel)) {
             return toStreamingDataResponse(rsp, request, this.streamOptionsProvider);
@@ -321,6 +336,10 @@ class DataSourceWithBackend<
           return of(toDataQueryResponse(err));
         })
       );
+  }
+
+  protected shouldRequestCompactQueryResponse(_request: DataQueryRequest<TQuery>, _queries: DataQuery[]): boolean {
+    return false;
   }
 
   /** Get request headers with plugin ID+UID set */

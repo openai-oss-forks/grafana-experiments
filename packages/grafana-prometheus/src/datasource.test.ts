@@ -104,6 +104,52 @@ describe('PrometheusDatasource', () => {
   });
 
   describe('Query', () => {
+    it('requests compact responses only for time-series range queries', async () => {
+      const compactRequest = (targets: PromQuery[]) =>
+        createDataRequest(targets, {
+          panelPluginId: 'timeseries',
+          preferredQueryResultFormat: 'compact-v1',
+        });
+
+      await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true }])));
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
+
+      fetchMock.mockClear();
+      await lastValueFrom(
+        ds.query(
+          compactRequest([{ expr: 'up', refId: 'A', range: undefined, instant: false, exemplar: false, format: '' }])
+        )
+      );
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
+
+      fetchMock.mockClear();
+      await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', instant: true, range: false }])));
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBeUndefined();
+
+      fetchMock.mockClear();
+      await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', instant: false, range: false }])));
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBeUndefined();
+
+      fetchMock.mockClear();
+      await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true, format: 'table' }])));
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBeUndefined();
+
+      fetchMock.mockClear();
+      await lastValueFrom(
+        ds.query(
+          compactRequest([
+            { expr: 'up', refId: 'A', range: true },
+            {
+              refId: 'B',
+              datasource: { type: '__expr__', uid: '__expr__' },
+              range: true,
+            } as PromQuery,
+          ])
+        )
+      );
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBeUndefined();
+    });
+
     it('throws if using direct access', async () => {
       const instanceSettings = {
         url: 'proxied',
@@ -1333,6 +1379,18 @@ describe('PrometheusDatasource incremental query logic', () => {
     const request = createDataRequest([{ expr: 'up', refId: 'A' }]);
     await lastValueFrom(ds.query(request));
     expect(mockCache.requestInfo).toHaveBeenCalled();
+  });
+
+  it('should preserve compact responses instead of using the DataFrame incremental cache', async () => {
+    const request = createDataRequest([{ expr: 'up', refId: 'A', range: true }], {
+      panelPluginId: 'timeseries',
+      preferredQueryResultFormat: 'compact-v1',
+    });
+
+    await lastValueFrom(ds.query(request));
+
+    expect(mockCache.requestInfo).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
   });
 
   it('should disable incremental query when query contains $__range', async () => {

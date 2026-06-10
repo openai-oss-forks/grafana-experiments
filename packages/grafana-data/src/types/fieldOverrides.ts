@@ -6,7 +6,7 @@ import { GrafanaTheme2 } from '../themes/types';
 
 import { OptionsEditorItem } from './OptionsUIRegistryBuilder';
 import { ScopedVars } from './ScopedVars';
-import { DataFrame, Field, FieldConfig, ValueLinkConfig } from './dataFrame';
+import { DataFrame, Field, FieldConfig, FieldConfigTarget, ValueLinkConfig } from './dataFrame';
 import { DataLink, LinkModel } from './dataLink';
 import { OptionEditorConfig } from './options';
 import { InterpolateFunction } from './panel';
@@ -65,6 +65,7 @@ export interface FieldConfigSource<TOptions = any> {
 
 export interface FieldOverrideContext extends StandardEditorContext<any> {
   field?: Field;
+  target?: FieldConfigTarget;
   dataFrameIndex?: number; // The index for the selected field frame
 }
 
@@ -131,6 +132,8 @@ export interface ApplyFieldOverrideOptions {
   theme: GrafanaTheme2;
   timeZone?: TimeZone;
   dataLinkPostProcessor?: DataLinkPostProcessor;
+  /** @internal Apply configuration directly to caller-owned frames. */
+  mutateData?: boolean;
 }
 
 export enum FieldConfigProperty {

@@ -9,9 +9,10 @@ import { PanelHeaderNotice } from './PanelHeaderNotice';
 interface Props {
   panelId: number;
   frames: DataFrame[];
+  notices?: readonly QueryResultMetaNotice[];
 }
 
-export const PanelHeaderNotices = ({ frames, panelId }: Props) => {
+export const PanelHeaderNotices = ({ frames, notices: compactNotices, panelId }: Props) => {
   const openInspect = useCallback(
     (e: React.SyntheticEvent, tab: string) => {
       e.stopPropagation();
@@ -22,6 +23,9 @@ export const PanelHeaderNotices = ({ frames, panelId }: Props) => {
 
   // dedupe on severity
   const notices: Record<string, QueryResultMetaNotice> = {};
+  for (const notice of compactNotices ?? []) {
+    notices[notice.severity] = notice;
+  }
   for (const frame of frames) {
     if (!frame.meta || !frame.meta.notices) {
       continue;

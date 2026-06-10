@@ -35,6 +35,7 @@ import {
   getDefaultVizPanel,
   getLibraryPanelBehavior,
   getPanelIdForVizPanel,
+  getQueryRunnerFor,
 } from '../utils/utils';
 
 import { DataProviderSharer } from './PanelDataPane/DataProviderSharer';
@@ -94,6 +95,25 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private _activationHandler() {
     const panel = this.state.panelRef.resolve();
     const dashboard = getDashboardSceneFor(this);
+    const queryRunner = getQueryRunnerFor(panel);
+    const hasCompactData =
+      queryRunner?.state.data?.compactSeries !== undefined ||
+      queryRunner?.state.data?.request?.preferredQueryResultFormat === 'compact-v1';
+    const requestsCompactData =
+      queryRunner != null && dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat === 'compact-v1';
+    const compactDataSource = hasCompactData || requestsCompactData ? panel.state.$data : undefined;
+    let compactEditWrapper: SceneDataTransformer | undefined;
+
+    if (compactDataSource && !(compactDataSource instanceof SceneDataTransformer)) {
+      compactDataSource.clearParent();
+      compactEditWrapper = new SceneDataTransformer({
+        $data: compactDataSource,
+        transformations: [],
+      });
+      panel.setState({
+        $data: compactEditWrapper,
+      });
+    }
 
     // Clear any panel selection when entering panel edit mode.
     // Need to clear selection here since selection is activated when panel edit mode is entered through the panel actions menu. This causes sidebar panel editor to be open when exiting panel edit mode
@@ -112,10 +132,23 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     );
 
     const deactivateParents = activateSceneObjectAndParentTree(panel);
+    if (queryRunner && hasCompactData) {
+      queryRunner.cancelQuery();
+      queryRunner.runQueries();
+    }
 
     this.waitForPlugin();
 
     return () => {
+      if (
+        compactEditWrapper &&
+        panel.state.$data === compactEditWrapper &&
+        compactEditWrapper.state.transformations.length === 0
+      ) {
+        compactDataSource?.clearParent();
+        panel.setState({ $data: compactDataSource });
+      }
+
       this.commitChanges();
 
       if (deactivateParents) {

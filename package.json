@@ -7,6 +7,11 @@
   "repository": "github:grafana/grafana",
   "scripts": {
     "check-frontend-dev": "./scripts/check-frontend-dev.sh",
+    "benchmark:compact": "node devenv/compact-high-cardinality/suite.mjs",
+    "benchmark:compact:dashboard": "node devenv/compact-high-cardinality/dashboard-suite.mjs",
+    "benchmark:compact:hover": "node devenv/compact-high-cardinality/hover-benchmark.mjs",
+    "benchmark:compact:parity": "node devenv/compact-high-cardinality/parity-suite.mjs",
+    "benchmark:compact:uplot": "node devenv/compact-high-cardinality/uplot-upstream-benchmark.mjs",
     "build": "NODE_ENV=production nx exec --verbose -- webpack --config scripts/webpack/webpack.prod.js",
     "build:nominify": "yarn run build -- --env noMinify=1",
     "build:stats": "NODE_ENV=production webpack --progress --config scripts/webpack/webpack.stats.js",
@@ -435,7 +440,7 @@
     "tslib": "2.8.1",
     "tween-functions": "^1.2.0",
     "type-fest": "^4.18.2",
-    "uplot": "1.6.32",
+    "uplot": "patch:uplot@npm%3A1.6.32#~/.yarn/patches/uplot-npm-1.6.32-350d2da00d.patch",
     "uuid": "11.1.0",
     "vis-data": "^8.0.0",
     "vis-network": "10.0.2",
@@ -464,7 +469,8 @@
     "js-yaml@npm:4.1.0": "^4.1.0",
     "js-yaml@npm:=4.1.0": "^4.1.0",
     "nodemailer": "7.0.12",
-    "@storybook/core@npm:8.6.18": "patch:@storybook/core@npm%3A8.6.18#~/.yarn/patches/@storybook-core-npm-8.6.18-cff02a3017.patch"
+    "@storybook/core@npm:8.6.18": "patch:@storybook/core@npm%3A8.6.18#~/.yarn/patches/@storybook-core-npm-8.6.18-cff02a3017.patch",
+    "@grafana/scenes@npm:6.52.13": "patch:@grafana/scenes@npm%3A6.52.13#~/.yarn/patches/@grafana-scenes-npm-6.52.13-c21e6ee864.patch"
   },
   "workspaces": {
     "packages": [

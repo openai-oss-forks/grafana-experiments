@@ -137,7 +137,7 @@ export interface ValueLinkConfig {
   valueRowIndex?: number;
 }
 
-export interface Field<T = any> {
+export interface FieldConfigTarget<TOptions = FieldConfig['custom']> {
   /**
    * Name of the field (column)
    */
@@ -149,8 +149,18 @@ export interface Field<T = any> {
   /**
    *  Meta info about how field and how to display it
    */
-  config: FieldConfig;
+  config: FieldConfig<TOptions>;
 
+  labels?: Labels;
+
+  /** Cached metadata used while configuring and displaying a field. */
+  state?: FieldState | null;
+
+  /** Convert a value for display. */
+  display?: DisplayProcessor;
+}
+
+export interface Field<T = any> extends FieldConfigTarget {
   /**
    * The raw field values
    */
@@ -162,18 +172,6 @@ export interface Field<T = any> {
    * 0 and 999999.
    */
   nanos?: number[];
-
-  labels?: Labels;
-
-  /**
-   * Cached values with appropriate display and id values
-   */
-  state?: FieldState | null;
-
-  /**
-   * Convert a value for display
-   */
-  display?: DisplayProcessor;
 
   /**
    * Get value data links with variables interpolated
@@ -192,6 +190,9 @@ export interface FieldState {
    * Cache of reduced values
    */
   calcs?: FieldCalcs;
+
+  /** Values used for reductions when renderer alignment changes field length. @internal */
+  reducerValues?: Field['values'];
 
   /**
    * The numeric range for values in this field.  This value will respect the min/max

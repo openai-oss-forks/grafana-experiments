@@ -18,6 +18,7 @@ import { mapMouseEventToMode } from './utils';
  */
 export function VizLegend<T>({
   items,
+  itemSource,
   thresholdItems,
   mappingItems,
   displayMode,
@@ -25,12 +26,15 @@ export function VizLegend<T>({
   seriesVisibilityChangeBehavior = SeriesVisibilityChangeBehavior.Isolate,
   sortDesc,
   onLabelClick,
+  onSeriesVisibilityChange,
   onToggleSort,
   placement,
   className,
   itemRenderer,
   readonly,
   isSortable,
+  getItemDisplayValues,
+  displayValueColumns,
 }: LegendProps<T>) {
   const { eventBus, onToggleSeriesVisibility, onToggleLegendSort } = usePanelContext();
 
@@ -75,7 +79,9 @@ export function VizLegend<T>({
       if (onLabelClick) {
         onLabelClick(item, event);
       }
-      if (onToggleSeriesVisibility) {
+      if (onSeriesVisibilityChange) {
+        onSeriesVisibilityChange(item, event);
+      } else if (onToggleSeriesVisibility) {
         onToggleSeriesVisibility(
           item.fieldName ?? item.label,
           seriesVisibilityChangeBehavior === SeriesVisibilityChangeBehavior.Hide
@@ -84,11 +90,11 @@ export function VizLegend<T>({
         );
       }
     },
-    [onToggleSeriesVisibility, onLabelClick, seriesVisibilityChangeBehavior]
+    [onToggleSeriesVisibility, onLabelClick, onSeriesVisibilityChange, seriesVisibilityChangeBehavior]
   );
 
   const makeVizLegendList = useCallback(
-    (items: VizLegendItem[]) => {
+    (items: VizLegendItem[], indexedSource?: typeof itemSource) => {
       return (
         <VizLegendList<T>
           className={className}
@@ -99,10 +105,12 @@ export function VizLegend<T>({
           itemRenderer={itemRenderer}
           readonly={readonly}
           items={items}
+          itemSource={indexedSource}
+          getItemDisplayValues={getItemDisplayValues}
         />
       );
     },
-    [className, placement, onMouseOver, onMouseOut, onLegendLabelClick, itemRenderer, readonly]
+    [className, placement, onMouseOver, onMouseOut, onLegendLabelClick, itemRenderer, readonly, getItemDisplayValues]
   );
 
   switch (displayMode) {
@@ -111,6 +119,7 @@ export function VizLegend<T>({
         <VizLegendTable<T>
           className={className}
           items={items}
+          itemSource={itemSource}
           placement={placement}
           sortBy={sortKey}
           sortDesc={sortDesc}
@@ -121,21 +130,24 @@ export function VizLegend<T>({
           itemRenderer={itemRenderer}
           readonly={readonly}
           isSortable={isSortable}
+          getItemDisplayValues={getItemDisplayValues}
+          displayValueColumns={displayValueColumns}
         />
       );
     case LegendDisplayMode.List:
       const isThresholdsEnabled = thresholdItems && thresholdItems.length > 1;
       const isValueMappingEnabled = mappingItems && mappingItems.length > 0;
+      const itemCount = itemSource?.length ?? items.length;
       return (
         <>
           {/* render items when single series and there is no thresholds and no value mappings
            * render items when multi series and there is no thresholds
            */}
-          {!isThresholdsEnabled && (!isValueMappingEnabled || items.length > 1) && makeVizLegendList(items)}
+          {!isThresholdsEnabled && (!isValueMappingEnabled || itemCount > 1) && makeVizLegendList(items, itemSource)}
           {/* render threshold colors if From thresholds scheme selected */}
-          {isThresholdsEnabled && makeVizLegendList(thresholdItems)}
+          {isThresholdsEnabled && makeVizLegendList(thresholdItems, undefined)}
           {/* render value mapping colors */}
-          {isValueMappingEnabled && makeVizLegendList(mappingItems)}
+          {isValueMappingEnabled && makeVizLegendList(mappingItems, undefined)}
         </>
       );
     default:

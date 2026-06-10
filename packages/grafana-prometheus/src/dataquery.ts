@@ -7,7 +7,7 @@ export enum QueryEditorMode {
   Code = 'code',
 }
 
-export type PromQueryFormat = 'time_series' | 'table' | 'heatmap';
+export type PromQueryFormat = '' | 'time_series' | 'table' | 'heatmap';
 
 export interface Prometheus extends common.DataQuery {
   /**

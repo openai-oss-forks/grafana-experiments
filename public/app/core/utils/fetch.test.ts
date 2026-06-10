@@ -101,13 +101,14 @@ describe('parseHeaders', () => {
 
 describe('isContentTypeJson', () => {
   it.each`
-    headers                                                                 | expected
-    ${undefined}                                                            | ${false}
-    ${new Headers({ 'cOnTent-tYpe': 'application/json' })}                  | ${true}
-    ${new Headers({ 'content-type': 'AppLiCatIon/JsOn' })}                  | ${true}
-    ${new Headers({ 'cOnTent-tYpe': 'AppLiCatIon/JsOn' })}                  | ${true}
-    ${new Headers({ 'content-type': 'application/x-www-form-urlencoded' })} | ${false}
-    ${new Headers({ auth: 'Basic akdjasdkjalksdjasd' })}                    | ${false}
+    headers                                                                                   | expected
+    ${undefined}                                                                              | ${false}
+    ${new Headers({ 'cOnTent-tYpe': 'application/json' })}                                    | ${true}
+    ${new Headers({ 'content-type': 'AppLiCatIon/JsOn' })}                                    | ${true}
+    ${new Headers({ 'cOnTent-tYpe': 'AppLiCatIon/JsOn' })}                                    | ${true}
+    ${new Headers({ 'content-type': 'application/vnd.grafana.querydata.compact;version=1' })} | ${false}
+    ${new Headers({ 'content-type': 'application/x-www-form-urlencoded' })}                   | ${false}
+    ${new Headers({ auth: 'Basic akdjasdkjalksdjasd' })}                                      | ${false}
   `("when called with headers: 'headers' then the result should be '$expected'", ({ headers, expected }) => {
     expect(isContentTypeJson(headers)).toEqual(expected);
   });

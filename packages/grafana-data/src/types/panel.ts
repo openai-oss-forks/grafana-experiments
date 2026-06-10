@@ -5,6 +5,7 @@ import { Registry } from '../utils/Registry';
 import { OptionsEditorItem } from './OptionsUIRegistryBuilder';
 import { ScopedVars } from './ScopedVars';
 import { AlertStateInfo } from './alerts';
+import { CompactTimeSeriesData } from './compactTimeSeries';
 import { PanelModel } from './dashboard';
 import { LoadingState } from './data';
 import { DataFrame } from './dataFrame';
@@ -35,6 +36,9 @@ export interface PanelData {
 
   /** Contains data frames with field overrides applied */
   series: DataFrame[];
+
+  /** Buffer-backed time series for compact-native visualizations. @internal */
+  compactSeries?: CompactTimeSeriesData;
 
   /**
    * This is a key that will change when the DataFrame[] structure changes.

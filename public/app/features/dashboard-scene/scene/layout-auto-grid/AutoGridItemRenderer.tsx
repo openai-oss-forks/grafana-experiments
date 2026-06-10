@@ -2,7 +2,7 @@ import { css, cx } from '@emotion/css';
 import { memo, useMemo } from 'react';
 
 import { GrafanaTheme2 } from '@grafana/data';
-import { LazyLoader, sceneGraph, SceneComponentProps, VizPanel } from '@grafana/scenes';
+import { sceneGraph, SceneComponentProps, VizPanel } from '@grafana/scenes';
 import { useStyles2 } from '@grafana/ui';
 
 import { ConditionalRenderingGroup } from '../../conditional-rendering/group/ConditionalRenderingGroup';
@@ -10,7 +10,8 @@ import { useIsConditionallyHidden } from '../../conditional-rendering/hooks/useI
 import { useDashboardState } from '../../utils/utils';
 import { SoloPanelContextValueWithSearchStringFilter } from '../PanelSearchLayout';
 import { useSoloPanelContext, renderMatchingSoloPanels } from '../SoloPanelContext';
-import { getIsLazy } from '../layouts-shared/utils';
+import { DashboardPanelLazyLoader, DashboardPanelRenderSuspender } from '../layouts-shared/DashboardPanelLazyLoader';
+import { getIsLazy, shouldSuspendGraphNGOffscreen } from '../layouts-shared/utils';
 import { AUTO_GRID_ITEM_DROP_TARGET_ATTR } from '../types/DashboardDropTarget';
 
 import { AutoGridItem } from './AutoGridItem';
@@ -24,6 +25,7 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
   const styles = useStyles2(getStyles);
   const soloPanelContext = useSoloPanelContext();
   const isLazy = useMemo(() => getIsLazy(preload), [preload]);
+  const suspendGraphNGOffscreen = !soloPanelContext && shouldSuspendGraphNGOffscreen();
 
   // Check if this grid is a drop target for external drags
   const layoutManager = sceneGraph.getAncestor(model, AutoGridLayoutManager);
@@ -51,6 +53,19 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
           const [isConditionallyHidden, conditionalRenderingClass, conditionalRenderingOverlay, renderHidden] =
             useIsConditionallyHidden(conditionalRendering);
 
+          const wrapperClassName = cx(
+            conditionalRenderingClass,
+            styles.wrapper,
+            isDragged && !isRepeat && styles.draggedWrapper,
+            isDragged && isRepeat && styles.draggedRepeatWrapper
+          );
+          const panelContent = (
+            <>
+              <item.Component model={item} />
+              {conditionalRenderingOverlay}
+            </>
+          );
+
           return isConditionallyHidden && !isEditing && !renderHidden ? null : (
             <div
               {...(addDndContainer
@@ -62,37 +77,26 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
               {
                 // The lazy loader causes issues when used with conditional rendering
                 isLazy && (!isConditionallyHidden || !renderHidden) ? (
-                  <LazyLoader
+                  <DashboardPanelLazyLoader
                     key={item.state.key!}
-                    className={cx(
-                      conditionalRenderingClass,
-                      styles.wrapper,
-                      isDragged && !isRepeat && styles.draggedWrapper,
-                      isDragged && isRepeat && styles.draggedRepeatWrapper
-                    )}
+                    suspendGraphNGOffscreen={suspendGraphNGOffscreen}
+                    className={wrapperClassName}
                   >
-                    <item.Component model={item} />
-                    {conditionalRenderingOverlay}
-                  </LazyLoader>
+                    {panelContent}
+                  </DashboardPanelLazyLoader>
+                ) : suspendGraphNGOffscreen ? (
+                  <DashboardPanelRenderSuspender className={wrapperClassName}>
+                    {panelContent}
+                  </DashboardPanelRenderSuspender>
                 ) : (
-                  <div
-                    className={cx(
-                      conditionalRenderingClass,
-                      styles.wrapper,
-                      isDragged && !isRepeat && styles.draggedWrapper,
-                      isDragged && isRepeat && styles.draggedRepeatWrapper
-                    )}
-                  >
-                    <item.Component model={item} />
-                    {conditionalRenderingOverlay}
-                  </div>
+                  <div className={wrapperClassName}>{panelContent}</div>
                 )
               }
             </div>
           );
         }
       ),
-    [model, isLazy, key, styles, isEditing]
+    [model, isLazy, key, styles, isEditing, suspendGraphNGOffscreen]
   );
 
   if (soloPanelContext) {

@@ -1,4 +1,4 @@
-import { Field } from '../types/dataFrame';
+import { FieldConfigTarget } from '../types/dataFrame';
 import { FALLBACK_COLOR } from '../types/fieldColor';
 import { Threshold, ThresholdsMode } from '../types/thresholds';
 
@@ -22,7 +22,7 @@ export function getActiveThreshold(value: number, thresholds: Threshold[] | unde
   return active;
 }
 
-export function getActiveThresholdForValue(field: Field, value: number, percent: number): Threshold {
+export function getActiveThresholdForValue(field: FieldConfigTarget, value: number, percent: number): Threshold {
   const { thresholds } = field.config;
 
   if (thresholds?.mode === ThresholdsMode.Percentage) {

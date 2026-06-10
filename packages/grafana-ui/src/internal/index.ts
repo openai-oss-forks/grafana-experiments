@@ -11,6 +11,20 @@
  */
 
 export { UPlotChart } from '../components/uPlot/Plot';
+export {
+  CompactRenderController,
+  CompactSeriesFlag,
+  getCompactHoverStageProbe,
+  getCompactRenderController,
+  installCompactRenderer,
+  isCompactRenderSource,
+  type CompactCursorSnapshot,
+  type CompactRenderColumns,
+  type CompactRenderSource,
+  type CompactScaleRecord,
+  type CompactStyleRecord,
+  type CompactVisibilityState,
+} from '../components/uPlot/compactRenderer';
 export { type AxisProps, UPLOT_AXIS_FONT_SIZE, timeUnitSize } from '../components/uPlot/config/UPlotAxisBuilder';
 export {
   type Renderers,
@@ -94,6 +108,7 @@ export { VizTooltipWrapper } from '../components/VizTooltip/VizTooltipWrapper';
 export { VizTooltipRow } from '../components/VizTooltip/VizTooltipRow';
 export { getContentItems } from '../components/VizTooltip/utils';
 export { ColorIndicator, ColorPlacement, type VizTooltipItem } from '../components/VizTooltip/types';
+export { useFixedVirtualWindow, type FixedVirtualItem } from '../components/Virtualization/useFixedVirtualWindow';
 export { mapMouseEventToMode } from '../components/VizLegend/utils';
 export { Carousel } from '../components/Carousel/Carousel';
 

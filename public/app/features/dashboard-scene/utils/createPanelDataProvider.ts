@@ -35,11 +35,12 @@ export function createPanelDataProvider(panel: PanelModel): SceneDataProvider | 
     $behaviors: [new DashboardDatasourceBehaviour({})],
   });
 
-  // Wrap inner data provider in a data transformer
-  return new SceneDataTransformer({
-    $data: dataProvider,
-    transformations: panel.transformations || [],
-  });
+  const transformations = panel.transformations ?? [];
+  if (transformations.length === 0) {
+    return dataProvider;
+  }
+
+  return new SceneDataTransformer({ $data: dataProvider, transformations });
 }
 
 function findFirstDatasource(targets: DataQuery[]): DataSourceRef | undefined {

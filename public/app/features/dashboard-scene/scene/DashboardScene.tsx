@@ -9,6 +9,7 @@ import {
   SceneObjectBase,
   SceneObjectRef,
   SceneObjectState,
+  SceneDataTransformer,
   SceneTimeRange,
   sceneUtils,
   SceneVariable,
@@ -33,6 +34,7 @@ import { PanelModel } from 'app/features/dashboard/state/PanelModel';
 import { DecoratedRevisionModel } from 'app/features/dashboard/types/revisionModels';
 import { dashboardWatcher } from 'app/features/live/dashboard/dashboardWatcher';
 import { DashboardJson } from 'app/features/manage-dashboards/types';
+import { getPreferredDashboardQueryFormat } from 'app/features/query/state/compactQueryPolicy';
 import { VariablesChanged } from 'app/features/variables/types';
 import { defaultGraphStyleConfig } from 'app/plugins/panel/timeseries/config';
 import { DashboardDTO, DashboardMeta, SaveDashboardResponseDTO } from 'app/types/dashboard';
@@ -48,6 +50,7 @@ import {
 } from '../../apiserver/types';
 import { DashboardEditPane } from '../edit-pane/DashboardEditPane';
 import { dashboardEditActions } from '../edit-pane/shared';
+import { PanelInspectDrawer } from '../inspect/PanelInspectDrawer';
 import { PanelEditor } from '../panel-edit/PanelEditor';
 import { DashboardSceneChangeTracker } from '../saving/DashboardSceneChangeTracker';
 import { SaveDashboardDrawer } from '../saving/SaveDashboardDrawer';
@@ -93,6 +96,7 @@ import { DashboardGridItem } from './layout-default/DashboardGridItem';
 import { DefaultGridLayoutManager } from './layout-default/DefaultGridLayoutManager';
 import { addNewRowTo } from './layouts-shared/addNew';
 import { clearClipboard } from './layouts-shared/paste';
+import { PanelTimeRange } from './panel-timerange/PanelTimeRange';
 import { DashboardLayoutManager } from './types/DashboardLayoutManager';
 import { LayoutParent } from './types/LayoutParent';
 
@@ -922,6 +926,24 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
       }
     }
 
+    const dataProvider = panel?.state.$data;
+    const transformations = dataProvider instanceof SceneDataTransformer ? dataProvider.state.transformations : [];
+    const hasTimeComparison =
+      panel?.state.$timeRange instanceof PanelTimeRange && Boolean(panel.state.$timeRange.state.compareWith);
+    const legend = panel?.state.options ? Reflect.get(panel.state.options, 'legend') : undefined;
+    const legendCalcs = typeof legend === 'object' && legend !== null ? Reflect.get(legend, 'calcs') : undefined;
+    const preferredQueryResultFormat = getPreferredDashboardQueryFormat({
+      app: CoreApp.Dashboard,
+      panelPluginId: panel?.state.pluginId,
+      transformations,
+      isInspecting: dashboard.state.overlay instanceof PanelInspectDrawer,
+      isPublicDashboard: Boolean(config.publicDashboardAccessToken),
+      hasTimeComparison,
+      fieldConfig: panel?.state.fieldConfig,
+      legendCalcs: Array.isArray(legendCalcs) ? legendCalcs : undefined,
+      panelOptions: panel?.state.options,
+    });
+
     return {
       app: CoreApp.Dashboard,
       dashboardUID: this.state.uid,
@@ -929,6 +951,7 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
       panelName: panel?.state?.title,
       panelPluginId: panel?.state.pluginId,
       dashboardTitle: this.state.title,
+      preferredQueryResultFormat,
     };
   }
 

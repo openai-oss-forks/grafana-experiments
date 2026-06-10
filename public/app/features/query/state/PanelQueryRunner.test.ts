@@ -276,7 +276,7 @@ describe('PanelQueryRunner', () => {
     it('should use the requested step size as the request interval', async () => {
       expect(ctx.queryCalledWith?.interval).toBe('30m');
       expect(ctx.queryCalledWith?.intervalMs).toBe(1800000);
-      expect(ctx.queryCalledWith?.maxDataPoints).toBe(337);
+      expect(ctx.queryCalledWith?.maxDataPoints).toBe(1500);
       expect(ctx.queryCalledWith?.stepSize).toBe('30m');
       expect(ctx.queryCalledWith?.scopedVars.__interval!.value).toBe('30m');
       expect(ctx.queryCalledWith?.scopedVars.__interval_ms!.value).toBe(1800000);
@@ -297,7 +297,7 @@ describe('PanelQueryRunner', () => {
     it('should clamp to the next allowed step size under 1500 datapoints', async () => {
       expect(ctx.queryCalledWith?.interval).toBe('10m');
       expect(ctx.queryCalledWith?.intervalMs).toBe(600000);
-      expect(ctx.queryCalledWith?.maxDataPoints).toBe(1009);
+      expect(ctx.queryCalledWith?.maxDataPoints).toBe(1500);
       expect(ctx.queryCalledWith?.stepSize).toBe('1m');
     });
   });

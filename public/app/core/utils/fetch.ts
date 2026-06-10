@@ -89,19 +89,11 @@ export const isContentTypeJson = (headers: Headers) => {
   }
 
   const contentType = headers.get('content-type');
-  if (
-    contentType &&
-    [
-      'application/json',
-      'application/json-patch+json',
-      'application/merge-patch+json',
-      'application/strategic-merge-patch+json',
-    ].includes(contentType.toLowerCase())
-  ) {
-    return true;
-  }
+  const mediaType = contentType?.split(';', 1)[0].trim().toLowerCase();
 
-  return false;
+  return (
+    mediaType === 'application/json' || Boolean(mediaType?.startsWith('application/') && mediaType.endsWith('+json'))
+  );
 };
 
 export const parseBody = (options: BackendSrvRequest, isAppJson: boolean) => {

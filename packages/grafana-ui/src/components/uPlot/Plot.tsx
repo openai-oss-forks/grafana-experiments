@@ -1,7 +1,8 @@
 import { Component, createRef } from 'react';
 import uPlot, { AlignedData, Options } from 'uplot';
 
-import { PlotProps } from './types';
+import { getCompactRenderController, isCompactRenderSource } from './compactRenderer';
+import { isCompactPlotSource, PlotProps } from './types';
 import { pluginLog } from './utils';
 
 import 'uplot/dist/uPlot.min.css';
@@ -16,6 +17,17 @@ function sameData(prevProps: PlotProps, nextProps: PlotProps) {
 
 function sameConfig(prevProps: PlotProps, nextProps: PlotProps) {
   return nextProps.config === prevProps.config;
+}
+
+function sameDataKind(prevProps: PlotProps, nextProps: PlotProps) {
+  if (isCompactPlotSource(prevProps.data) && isCompactPlotSource(nextProps.data)) {
+    return isCompactRenderSource(prevProps.data) === isCompactRenderSource(nextProps.data);
+  }
+  return isCompactPlotSource(prevProps.data) === isCompactPlotSource(nextProps.data);
+}
+
+function hasRenderableDimensions(props: PlotProps) {
+  return props.width > 0 && props.height > 0;
 }
 
 type UPlotChartState = {
@@ -37,21 +49,33 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
     super(props);
   }
 
-  reinitPlot() {
-    let { width, height, plotRef } = this.props;
-
-    this.plotInstance?.destroy();
-
-    if (width === 0 && height === 0) {
+  destroyPlot() {
+    if (!this.plotInstance) {
       return;
     }
 
-    this.props.config.addHook('setSize', (u) => {
-      const canvas = u.over;
-      if (!canvas) {
-        return;
-      }
-    });
+    this.plotInstance.destroy();
+    this.plotInstance = null;
+  }
+
+  reinitPlot() {
+    const { plotRef, width, height } = this.props;
+    const compactData = isCompactPlotSource(this.props.data);
+
+    this.destroyPlot();
+
+    if (compactData ? !hasRenderableDimensions(this.props) : width === 0 && height === 0) {
+      return;
+    }
+
+    if (!compactData) {
+      this.props.config.addHook('setSize', (plot) => {
+        const canvas = plot.over;
+        if (!canvas) {
+          return;
+        }
+      });
+    }
 
     const config: Options = {
       width: Math.floor(this.props.width),
@@ -60,7 +84,20 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
     };
 
     pluginLog('UPlot', false, 'Reinitializing plot', config);
-    const plot = new uPlot(config, this.props.data as AlignedData, this.plotContainer!.current!);
+    let plot: uPlot;
+    if (isCompactPlotSource(this.props.data)) {
+      if (!isCompactRenderSource(this.props.data)) {
+        throw new Error('Compact plot data requires typed renderer columns');
+      }
+      plot = uPlot.compact(
+        config,
+        this.props.data,
+        getCompactRenderController(this.props.data),
+        this.plotContainer.current!
+      );
+    } else {
+      plot = new uPlot(config, this.props.data as AlignedData, this.plotContainer.current!);
+    }
 
     if (plotRef) {
       plotRef(plot);
@@ -74,10 +111,44 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
   }
 
   componentWillUnmount() {
-    this.plotInstance?.destroy();
+    this.destroyPlot();
   }
 
   componentDidUpdate(prevProps: PlotProps) {
+    const compactData = isCompactPlotSource(this.props.data);
+    const previousCompactData = isCompactPlotSource(prevProps.data);
+    if (compactData || previousCompactData) {
+      if (compactData && !hasRenderableDimensions(this.props)) {
+        if (this.plotInstance) {
+          this.destroyPlot();
+        }
+        return;
+      }
+
+      if (
+        !compactData ||
+        !previousCompactData ||
+        !this.plotInstance ||
+        !hasRenderableDimensions(prevProps) ||
+        !sameConfig(prevProps, this.props) ||
+        !sameDataKind(prevProps, this.props)
+      ) {
+        this.reinitPlot();
+        return;
+      }
+
+      if (!sameDims(prevProps, this.props)) {
+        this.plotInstance.setSize({
+          width: Math.floor(this.props.width),
+          height: Math.floor(this.props.height),
+        });
+      }
+      if (!sameData(prevProps, this.props)) {
+        this.plotInstance.setCompactData!(this.props.data);
+      }
+      return;
+    }
+
     if (!sameDims(prevProps, this.props)) {
       this.plotInstance?.setSize({
         width: Math.floor(this.props.width),

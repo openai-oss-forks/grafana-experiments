@@ -11,6 +11,7 @@ import { ScopedVars } from './ScopedVars';
 import { WithAccessControlMetadata } from './accesscontrol';
 import { AnnotationEvent, AnnotationQuery, AnnotationSupport } from './annotations';
 import { CoreApp } from './app';
+import { CompactTimeSeriesData } from './compactTimeSeries';
 import { KeyValue, LoadingState, TableData, TimeSeries } from './data';
 import { DataFrame, DataFrameDTO } from './dataFrame';
 import { PanelData } from './panel';
@@ -518,6 +519,9 @@ export interface DataQueryResponse {
    */
   data: DataQueryResponseData[];
 
+  /** Buffer-backed time series used by the dashboard rendering fast path. @internal */
+  compactSeries?: CompactTimeSeriesData;
+
   /**
    * When returning multiple partial responses or streams
    * Use this key to inform Grafana how to combine the partial responses
@@ -607,6 +611,9 @@ export interface DataQueryRequest<TQuery extends DataQuery = DataQuery> {
   dashboardUID?: string;
   dashboardTitle?: string;
   headers?: Record<string, string>;
+
+  /** Explicit opt-in from a dashboard query runner. @internal */
+  preferredQueryResultFormat?: 'compact-v1';
 
   /** Filters to dynamically apply to all queries */
   filters?: AdHocVariableFilter[];

@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/grafana/pkg/api/dtos"
 	"github.com/grafana/grafana/pkg/apimachinery/errutil"
 	"github.com/grafana/grafana/pkg/components/simplejson"
 	"github.com/grafana/grafana/pkg/infra/db/dbtest"
@@ -25,6 +28,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/datasources"
 	fakeDatasources "github.com/grafana/grafana/pkg/services/datasources/fakes"
 	"github.com/grafana/grafana/pkg/services/dsquerierclient"
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/pluginsintegration/pluginconfig"
 	"github.com/grafana/grafana/pkg/services/pluginsintegration/plugincontext"
 	pluginSettings "github.com/grafana/grafana/pkg/services/pluginsintegration/pluginsettings/service"
@@ -112,6 +116,199 @@ func TestAPIEndpoint_Metrics_QueryMetricsV2(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		require.Equal(t, 0, queryCalls)
 	})
+}
+
+func TestAPIEndpoint_Metrics_QueryMetricsV2_CompactResponse(t *testing.T) {
+	cfg := setting.NewCfg()
+	qds := query.ProvideService(
+		cfg,
+		nil,
+		nil,
+		&fakeDataSourceRequestValidator{},
+		&fakePluginClient{
+			QueryDataHandlerFunc: func(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+				refID := req.Queries[0].RefID
+				middleTimestamp := int64(2_000)
+				if refID == "B" {
+					middleTimestamp = 2_500
+				}
+				timeField := data.NewField("Time", nil, []time.Time{
+					time.UnixMilli(1_000),
+					time.UnixMilli(middleTimestamp),
+					time.UnixMilli(3_000),
+				})
+				timeField.Config = &data.FieldConfig{Interval: 1_000}
+				frame := data.NewFrame(refID,
+					timeField,
+					data.NewField("Value", nil, []float64{1, 2, 3}),
+				)
+				frame.Meta = &data.FrameMeta{
+					Type:                   data.FrameTypeTimeSeriesMulti,
+					TypeVersion:            data.FrameTypeVersion{0, 1},
+					Custom:                 map[string]any{"resultType": "matrix", "calculatedMinStep": int64(1_000)},
+					ExecutedQueryString:    "Expr: test\nStep: 1s",
+					PreferredVisualization: data.VisTypeGraph,
+				}
+				return &backend.QueryDataResponse{
+					Responses: backend.Responses{
+						refID: {
+							Frames: data.Frames{frame},
+						},
+					},
+				}, nil
+			},
+		},
+		plugincontext.ProvideService(
+			cfg,
+			localcache.ProvideService(),
+			&pluginstore.FakePluginStore{
+				PluginList: []pluginstore.Plugin{
+					{
+						JSONData: plugins.JSONData{
+							ID: "grafana",
+						},
+					},
+				},
+			},
+			&fakeDatasources.FakeCacheService{},
+			&fakeDatasources.FakeDataSourceService{},
+			pluginSettings.ProvideService(
+				dbtest.NewFakeDB(),
+				secretstest.NewFakeSecretsService(),
+			),
+			pluginconfig.NewFakePluginRequestConfigProvider(),
+		),
+		dsquerierclient.NewNullQSDatasourceClientBuilder(),
+	)
+	server := SetupAPITestServer(t, func(hs *HTTPServer) {
+		hs.queryDataService = qds
+		hs.QuotaService = quotatest.New(false, nil)
+		hs.log = log.New("test-logger")
+		hs.Features = featuremgmt.WithFeatures(featuremgmt.FlagQueryServiceRewrite)
+	})
+
+	compactRequest := `{
+		"from": "1000",
+		"to": "3000",
+		"queries": [{
+				"datasource": {"type": "prometheus", "uid": "grafana"},
+			"intervalMs": 1000,
+			"refId": "A"
+		}]
+		}`
+	invalidReq := server.NewPostRequest("/api/ds/query", strings.NewReader(compactRequest))
+	invalidReq.Header.Set(compactQueryDataHeader, compactQueryDataVersion)
+	webtest.RequestWithSignedInUser(invalidReq, &user.SignedInUser{UserID: 1, OrgID: 1, Permissions: map[int64]map[string][]string{1: {datasources.ActionQuery: []string{datasources.ScopeAll}}}})
+	invalidResp, err := server.SendJSON(invalidReq)
+	require.NoError(t, err)
+	require.NoError(t, invalidResp.Body.Close())
+	require.Equal(t, http.StatusNotAcceptable, invalidResp.StatusCode)
+
+	req := server.NewPostRequest("/api/ds/query", strings.NewReader(compactRequest))
+	req.Header.Set(compactQueryDataHeader, compactQueryDataVersion)
+	req.Header.Set(query.HeaderDashboardUID, "dashboard-a")
+	req.Header.Set(query.HeaderPanelPluginId, "timeseries")
+	req.Header.Set("X-Plugin-Id", "prometheus")
+	webtest.RequestWithSignedInUser(req, &user.SignedInUser{UserID: 1, OrgID: 1, Permissions: map[int64]map[string][]string{1: {datasources.ActionQuery: []string{datasources.ScopeAll}}}})
+	resp, err := server.SendJSON(req)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, resp.Body.Close())
+	}()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, compactQueryDataMediaType, resp.Header.Get("Content-Type"))
+	require.Equal(t, compactQueryDataHeader+", Accept-Encoding", resp.Header.Get("Vary"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	decoded := decodeCompactTestResponse(t, body)
+	require.Equal(t, []compactRegularTimeAxis{{Start: 1_000, Step: 1_000, Count: 3}}, decoded.Axes)
+
+	fallbackRequest := strings.Replace(compactRequest, `"A"`, `"B"`, 1)
+	fallbackReq := server.NewPostRequest("/api/ds/query", strings.NewReader(fallbackRequest))
+	fallbackReq.Header.Set(compactQueryDataHeader, compactQueryDataVersion)
+	fallbackReq.Header.Set(query.HeaderDashboardUID, "dashboard-a")
+	fallbackReq.Header.Set(query.HeaderPanelPluginId, "timeseries")
+	fallbackReq.Header.Set("X-Plugin-Id", "prometheus")
+	webtest.RequestWithSignedInUser(fallbackReq, &user.SignedInUser{UserID: 1, OrgID: 1, Permissions: map[int64]map[string][]string{1: {datasources.ActionQuery: []string{datasources.ScopeAll}}}})
+	fallbackResp, err := server.SendJSON(fallbackReq)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, fallbackResp.Body.Close())
+	}()
+
+	require.Equal(t, http.StatusOK, fallbackResp.StatusCode)
+	require.Contains(t, fallbackResp.Header.Get("Content-Type"), "application/json")
+	fallbackBody, err := io.ReadAll(fallbackResp.Body)
+	require.NoError(t, err)
+	var fallbackJSON struct {
+		Results map[string]json.RawMessage `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(fallbackBody, &fallbackJSON))
+	require.Contains(t, fallbackJSON.Results, "B")
+}
+
+func TestIsCompactDashboardQuery(t *testing.T) {
+	baseRequest := func() *http.Request {
+		req, err := http.NewRequest(http.MethodPost, "/api/ds/query", nil)
+		require.NoError(t, err)
+		req.Header.Set(query.HeaderDashboardUID, "dashboard-a")
+		req.Header.Set(query.HeaderPanelPluginId, "timeseries")
+		req.Header.Set("X-Plugin-Id", "prometheus")
+		return req
+	}
+	baseQuery := func() *simplejson.Json {
+		return simplejson.NewFromAny(map[string]any{
+			"datasource": map[string]any{"type": "prometheus"},
+			"refId":      "A",
+			"range":      true,
+			"instant":    false,
+			"exemplar":   false,
+			"format":     "time_series",
+		})
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*http.Request, *simplejson.Json)
+		valid  bool
+	}{
+		{name: "eligible", valid: true},
+		{name: "missing dashboard", mutate: func(req *http.Request, _ *simplejson.Json) {
+			req.Header.Del(query.HeaderDashboardUID)
+		}},
+		{name: "wrong panel", mutate: func(req *http.Request, _ *simplejson.Json) {
+			req.Header.Set(query.HeaderPanelPluginId, "table")
+		}},
+		{name: "instant", mutate: func(_ *http.Request, target *simplejson.Json) {
+			target.Set("instant", true)
+		}},
+		{name: "exemplar", mutate: func(_ *http.Request, target *simplejson.Json) {
+			target.Set("exemplar", true)
+		}},
+		{name: "not range", mutate: func(_ *http.Request, target *simplejson.Json) {
+			target.Set("range", false)
+		}},
+		{name: "table format", mutate: func(_ *http.Request, target *simplejson.Json) {
+			target.Set("format", "table")
+		}},
+		{name: "wrong target datasource", mutate: func(_ *http.Request, target *simplejson.Json) {
+			target.SetPath([]string{"datasource", "type"}, "loki")
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := baseRequest()
+			target := baseQuery()
+			if test.mutate != nil {
+				test.mutate(req, target)
+			}
+			request := dtos.MetricRequest{Queries: []*simplejson.Json{target}}
+			require.Equal(t, test.valid, isCompactDashboardQuery(req, request))
+		})
+	}
 }
 
 var reqValid = `{

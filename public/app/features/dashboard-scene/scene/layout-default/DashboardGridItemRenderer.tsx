@@ -2,30 +2,46 @@ import { css } from '@emotion/css';
 import { RefObject, useMemo } from 'react';
 
 import { config } from '@grafana/runtime';
-import { LazyLoader, SceneComponentProps, VizPanel } from '@grafana/scenes';
+import { SceneComponentProps, VizPanel } from '@grafana/scenes';
 import { GRID_CELL_HEIGHT, GRID_CELL_VMARGIN } from 'app/core/constants';
 
 import { useDashboardState } from '../../utils/utils';
 import { SoloPanelContextValueWithSearchStringFilter } from '../PanelSearchLayout';
 import { renderMatchingSoloPanels, useSoloPanelContext } from '../SoloPanelContext';
-import { getIsLazy } from '../layouts-shared/utils';
+import { DashboardPanelLazyLoader, DashboardPanelRenderSuspender } from '../layouts-shared/DashboardPanelLazyLoader';
+import { getIsLazy, shouldSuspendGraphNGOffscreen } from '../layouts-shared/utils';
 
 import { DashboardGridItem, RepeatDirection } from './DashboardGridItem';
 
 interface PanelWrapperProps {
   panel: VizPanel;
   isLazy: boolean;
+  suspendGraphNGOffscreen: boolean;
   containerRef?: RefObject<HTMLDivElement>;
 }
 
-function PanelWrapper({ panel, isLazy, containerRef }: PanelWrapperProps) {
+function PanelWrapper({ panel, isLazy, suspendGraphNGOffscreen, containerRef }: PanelWrapperProps) {
   if (isLazy) {
     return (
-      <LazyLoader key={panel.state.key!} ref={containerRef} className={panelWrapper}>
+      <DashboardPanelLazyLoader
+        key={panel.state.key!}
+        ref={containerRef}
+        className={panelWrapper}
+        suspendGraphNGOffscreen={suspendGraphNGOffscreen}
+      >
         <panel.Component model={panel} />
-      </LazyLoader>
+      </DashboardPanelLazyLoader>
     );
   }
+
+  if (suspendGraphNGOffscreen) {
+    return (
+      <DashboardPanelRenderSuspender ref={containerRef} className={panelWrapper}>
+        <panel.Component model={panel} />
+      </DashboardPanelRenderSuspender>
+    );
+  }
+
   return (
     <div className={panelWrapper} ref={containerRef}>
       <panel.Component model={panel} />
@@ -38,6 +54,7 @@ export function DashboardGridItemRenderer({ model }: SceneComponentProps<Dashboa
   const soloPanelContext = useSoloPanelContext();
   const { preload } = useDashboardState(model);
   const isLazy = useMemo(() => getIsLazy(preload), [preload]);
+  const suspendGraphNGOffscreen = !soloPanelContext && shouldSuspendGraphNGOffscreen();
   const layoutStyle = useLayoutStyle(
     model.getRepeatDirection(),
     model.getChildCount(),
@@ -54,14 +71,26 @@ export function DashboardGridItemRenderer({ model }: SceneComponentProps<Dashboa
   }
 
   if (!variableName) {
-    return <PanelWrapper panel={body} isLazy={isLazy} containerRef={model.containerRef} />;
+    return (
+      <PanelWrapper
+        panel={body}
+        isLazy={isLazy}
+        suspendGraphNGOffscreen={suspendGraphNGOffscreen}
+        containerRef={model.containerRef}
+      />
+    );
   }
 
   return (
     <div className={layoutStyle} ref={model.containerRef}>
-      <PanelWrapper panel={body} isLazy={isLazy} />
+      <PanelWrapper panel={body} isLazy={isLazy} suspendGraphNGOffscreen={suspendGraphNGOffscreen} />
       {repeatedPanels.map((panel) => (
-        <PanelWrapper key={panel.state.key!} panel={panel} isLazy={isLazy} />
+        <PanelWrapper
+          key={panel.state.key!}
+          panel={panel}
+          isLazy={isLazy}
+          suspendGraphNGOffscreen={suspendGraphNGOffscreen}
+        />
       ))}
     </div>
   );

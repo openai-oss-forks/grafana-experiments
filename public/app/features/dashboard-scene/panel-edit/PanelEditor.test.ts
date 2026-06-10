@@ -1,6 +1,13 @@
 import { of } from 'rxjs';
 
-import { DataQueryRequest, DataSourceApi, LoadingState, PanelPlugin } from '@grafana/data';
+import {
+  COMPACT_TIME_SERIES_FORMAT,
+  DataQueryRequest,
+  DataSourceApi,
+  getDefaultTimeRange,
+  LoadingState,
+  PanelPlugin,
+} from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
 import { config } from '@grafana/runtime';
 import {
@@ -14,6 +21,7 @@ import {
   SceneVariableSet,
   VizPanel,
 } from '@grafana/scenes';
+import { VizOrientation } from '@grafana/schema';
 import { mockDataSource } from 'app/features/alerting/unified/mocks';
 import { setupDataSources } from 'app/features/alerting/unified/testSetup/datasources';
 import { DataSourceType } from 'app/features/alerting/unified/utils/datasource';
@@ -116,6 +124,177 @@ describe('PanelEditor', () => {
   });
 
   describe('Entering panel edit', () => {
+    it('reruns existing compact data through the panel editor wrapper', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries: {
+            kind: 'compact-response-view',
+            format: COMPACT_TIME_SERIES_FORMAT,
+            buffer: new ArrayBuffer(0),
+            metadata: {
+              getLabel: () => undefined,
+              forEachLabel: () => undefined,
+              materializeLabels: () => undefined,
+            },
+            decodeStats: {
+              responseBytes: 0,
+              axisCount: 0,
+              resultCount: 0,
+              stringCount: 0,
+              stringBytes: 0,
+              seriesCount: 0,
+            },
+            axes: [],
+            series: [],
+          },
+        },
+      });
+      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+
+      expect(runQueries).toHaveBeenCalled();
+      expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
+
+      deactivate();
+      deactivate = undefined;
+
+      expect(panel.state.$data).toBe(queryRunner);
+    });
+
+    it('wraps eligible compact dashboard data before the first response arrives', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+
+      expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
+    });
+
+    it('does not wrap dashboard data when compact rendering is unsupported', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({
+        key: 'panel-1',
+        pluginId: 'timeseries',
+        options: { orientation: VizOrientation.Vertical },
+        $data: queryRunner,
+      });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+
+      expect(panel.state.$data).toBe(queryRunner);
+    });
+
+    it('keeps transformations added to the compact edit wrapper', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries: {
+            kind: 'compact-response-view',
+            format: COMPACT_TIME_SERIES_FORMAT,
+            buffer: new ArrayBuffer(0),
+            metadata: {
+              getLabel: () => undefined,
+              forEachLabel: () => undefined,
+              materializeLabels: () => undefined,
+            },
+            decodeStats: {
+              responseBytes: 0,
+              axisCount: 0,
+              resultCount: 0,
+              stringCount: 0,
+              stringBytes: 0,
+              seriesCount: 0,
+            },
+            axes: [],
+            series: [],
+          },
+        },
+      });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+      const transformer = panel.state.$data;
+      expect(transformer).toBeInstanceOf(SceneDataTransformer);
+      (transformer as SceneDataTransformer).setState({
+        transformations: [{ id: 'organize', options: {} }],
+      });
+
+      deactivate();
+      deactivate = undefined;
+
+      expect(panel.state.$data).toBe(transformer);
+    });
+
+    it('does not unwrap an existing data transformer when leaving panel edit', () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const transformer = new SceneDataTransformer({ $data: queryRunner, transformations: [] });
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: transformer });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+      deactivate();
+      deactivate = undefined;
+
+      expect(panel.state.$data).toBe(transformer);
+    });
+
     it('should clear edit pane selection', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
 

@@ -14,6 +14,7 @@ import * as common from '@grafana/schema';
 
 export interface Options extends common.OptionsWithTimezones, common.OptionsWithAnnotations {
   disableKeyboardEvents?: boolean;
+  highlightSeriesOnHover?: boolean;
   legend: common.VizLegendOptions;
   orientation?: common.VizOrientation;
   timeCompare?: common.TimeCompareOptions;

@@ -13,10 +13,12 @@ export interface VizLegendBaseProps<T> {
   placement: LegendPlacement;
   className?: string;
   items: Array<VizLegendItem<T>>;
+  itemSource?: VizLegendItemSource<T>;
   thresholdItems?: Array<VizLegendItem<T>>;
   mappingItems?: Array<VizLegendItem<T>>;
   seriesVisibilityChangeBehavior?: SeriesVisibilityChangeBehavior;
   onLabelClick?: (item: VizLegendItem<T>, event: React.MouseEvent<HTMLButtonElement>) => void;
+  onSeriesVisibilityChange?: (item: VizLegendItem<T>, event: React.MouseEvent<HTMLButtonElement>) => void;
   itemRenderer?: (item: VizLegendItem<T>, index: number) => JSX.Element;
   onLabelMouseOver?: (
     item: VizLegendItem,
@@ -27,6 +29,23 @@ export interface VizLegendBaseProps<T> {
     event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>
   ) => void;
   readonly?: boolean;
+  getItemDisplayValues?: (item: VizLegendItem<T>) => DisplayValue[];
+  displayValueColumns?: Array<Pick<DisplayValue, 'title' | 'description'>>;
+}
+
+/**
+ * Index-based legend data for high-cardinality visualizations. Items and
+ * display values are created only for rows that are actually rendered.
+ *
+ * @internal
+ */
+export interface VizLegendItemSource<T = unknown> {
+  readonly length: number;
+  getItem(index: number): VizLegendItem<T>;
+  getItemKey(index: number): React.Key;
+  getItemsForYAxis?(yAxis: 1 | 2): VizLegendItemSource<T>;
+  getDisplayValues?(index: number): DisplayValue[];
+  getSortValue?(index: number, sortBy: string): number | string | undefined;
 }
 
 export interface VizLegendTableProps<T> extends VizLegendBaseProps<T> {

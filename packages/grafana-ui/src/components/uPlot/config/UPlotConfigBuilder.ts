@@ -172,6 +172,14 @@ export class UPlotConfigBuilder {
     };
   }
 
+  setDataFrames(frames: DataFrame[]) {
+    this.frames = frames;
+  }
+
+  setPointColorProvider(provider: (seriesIdx: number, dataIdx: number) => string | undefined) {
+    this.pointColorProvider = provider;
+  }
+
   setPadding(padding: Padding) {
     this.padding = padding;
   }
@@ -210,8 +218,13 @@ export class UPlotConfigBuilder {
 
         // interpolate for gradients/thresholds
         if (typeof s !== 'string') {
-          let field = this.frames![0].fields[seriesIdx];
-          s = field.display!(field.values[u.cursor.idxs![seriesIdx]!]).color!;
+          const dataIdx = u.cursor.idxs![seriesIdx]!;
+          s = this.pointColorProvider?.(seriesIdx, dataIdx);
+          if (s == null && this.frames) {
+            let field = this.frames![0].fields[seriesIdx];
+            s = field.display!(field.values[dataIdx]).color!;
+          }
+          s ??= 'transparent';
         }
 
         return s + alphaHex;
@@ -255,6 +268,8 @@ export class UPlotConfigBuilder {
 
     return this.tz ? uPlot.tzDate(date, this.tz) : date;
   };
+
+  private pointColorProvider?: (seriesIdx: number, dataIdx: number) => string | undefined;
 
   private ensureNonOverlappingAxes(axes: UPlotAxisBuilder[]): UPlotAxisBuilder[] {
     const xAxis = axes.find((a) => a.props.scaleKey === 'x');

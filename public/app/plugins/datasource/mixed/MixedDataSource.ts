@@ -129,6 +129,9 @@ export class MixedDatasource extends DataSourceApi<DataQuery> {
           dsRequest.requestId = mixedRequestId(i, dsRequest.requestId);
           dsRequest.targets = query.queries;
           dsRequest.scopedVars = query.scopedVars;
+          // Compact responses cannot be merged with legacy DataFrames from other
+          // datasource batches. Mixed panels stay on the common JSON contract.
+          dsRequest.preferredQueryResultFormat = undefined;
 
           return from(api.query(dsRequest)).pipe(
             map((response) => {

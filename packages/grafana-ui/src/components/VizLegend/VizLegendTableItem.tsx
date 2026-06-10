@@ -1,8 +1,8 @@
 import { css, cx } from '@emotion/css';
-import { useCallback } from 'react';
+import { CSSProperties, useCallback } from 'react';
 import * as React from 'react';
 
-import { formattedValueToString, GrafanaTheme2 } from '@grafana/data';
+import { DisplayValue, formattedValueToString, GrafanaTheme2 } from '@grafana/data';
 import { Trans } from '@grafana/i18n';
 
 import { useStyles2 } from '../../themes/ThemeContext';
@@ -25,6 +25,9 @@ export interface Props {
     event: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>
   ) => void;
   readonly?: boolean;
+  style?: CSSProperties;
+  displayValues?: DisplayValue[];
+  rowIndex?: number;
 }
 
 /**
@@ -37,6 +40,9 @@ export const LegendTableItem = ({
   onLabelMouseOut,
   className,
   readonly,
+  style,
+  displayValues,
+  rowIndex,
 }: Props) => {
   const styles = useStyles2(getStyles);
 
@@ -68,7 +74,7 @@ export const LegendTableItem = ({
   );
 
   return (
-    <tr className={cx(styles.row, className)}>
+    <tr aria-rowindex={rowIndex} className={cx(styles.row, className)} style={style}>
       <td>
         <span className={styles.itemWrapper}>
           <VizLegendSeriesIcon
@@ -97,14 +103,13 @@ export const LegendTableItem = ({
           </button>
         </span>
       </td>
-      {item.getDisplayValues &&
-        item.getDisplayValues().map((stat, index) => {
-          return (
-            <td className={styles.value} key={`${stat.title}-${index}`}>
-              {formattedValueToString(stat)}
-            </td>
-          );
-        })}
+      {(displayValues ?? item.getDisplayValues?.())?.map((stat, index) => {
+        return (
+          <td className={styles.value} key={`${stat.title}-${index}`}>
+            {formattedValueToString(stat)}
+          </td>
+        );
+      })}
     </tr>
   );
 };
