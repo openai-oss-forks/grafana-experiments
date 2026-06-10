@@ -195,7 +195,7 @@ describe('PanelEditor', () => {
       expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
     });
 
-    it('does not wrap dashboard data when compact rendering is unsupported', () => {
+    it('wraps non-compact dashboard data while editing and restores it on exit', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
       jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
@@ -215,6 +215,11 @@ describe('PanelEditor', () => {
       });
 
       deactivate = activateFullSceneTree(dashboard);
+
+      expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
+
+      deactivate();
+      deactivate = undefined;
 
       expect(panel.state.$data).toBe(queryRunner);
     });
