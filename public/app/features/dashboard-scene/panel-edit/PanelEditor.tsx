@@ -1,7 +1,7 @@
 import * as H from 'history';
 import { debounce } from 'lodash';
 
-import { NavIndex, PanelPlugin } from '@grafana/data';
+import { LoadingState, NavIndex, PanelPlugin } from '@grafana/data';
 import { t } from '@grafana/i18n';
 import { config, locationService } from '@grafana/runtime';
 import {
@@ -14,7 +14,6 @@ import {
   SceneObjectState,
   SceneObjectStateChangedEvent,
   SceneQueryRunner,
-  sceneUtils,
   VizPanel,
 } from '@grafana/scenes';
 import { Panel } from '@grafana/schema';
@@ -32,6 +31,7 @@ import { DashboardLayoutItem, isDashboardLayoutItem } from '../scene/types/Dashb
 import { vizPanelToPanel } from '../serialization/transformSceneToSaveModel';
 import {
   activateSceneObjectAndParentTree,
+  findVizPanelByKey,
   getDashboardSceneFor,
   getDefaultVizPanel,
   getLibraryPanelBehavior,
@@ -98,6 +98,12 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private _activationHandler() {
     const panel = this.state.panelRef.resolve();
     const dashboard = getDashboardSceneFor(this);
+    const queryRunner = getQueryRunnerFor(panel);
+    const hasCompactData =
+      queryRunner?.state.data?.compactSeries !== undefined ||
+      queryRunner?.state.data?.request?.preferredQueryResultFormat === 'compact-v1';
+
+    this.ensureEditorDataTransformer(panel);
 
     // Clear any panel selection when entering panel edit mode.
     // Need to clear selection here since selection is activated when panel edit mode is entered through the panel actions menu. This causes sidebar panel editor to be open when exiting panel edit mode
@@ -116,6 +122,10 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     );
 
     const deactivateParents = activateSceneObjectAndParentTree(panel);
+    if (queryRunner && (hasCompactData || queryRunner.state.data?.state === LoadingState.Loading)) {
+      queryRunner.cancelQuery();
+      queryRunner.runQueries();
+    }
 
     this.waitForPlugin();
 
@@ -156,6 +166,8 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     if (panel.state.$data === transformer && transformer.state.transformations.length === 0) {
       queryRunner.clearParent();
       panel.setState({ $data: queryRunner });
+      transformer.clearParent();
+    } else if (panel.state.$data !== transformer) {
       transformer.clearParent();
     }
 
@@ -202,6 +214,10 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   }
 
   private waitForPlugin(retry = 0) {
+    if (!this.isActive) {
+      return;
+    }
+
     const panel = this.getPanel();
     const plugin = panel.getPlugin();
 
@@ -220,29 +236,25 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private setOriginalState(panelRef: SceneObjectRef<VizPanel>) {
     const panel = panelRef.resolve();
     const transformer = this._editorDataTransformer;
-    const queryRunner = this._editorQueryRunner;
-    const shouldTemporarilyUnwrap =
-      transformer !== undefined &&
-      queryRunner !== undefined &&
-      panel.state.$data === transformer &&
-      transformer.state.transformations.length === 0;
+    const shouldUnwrapSnapshot =
+      transformer !== undefined && panel.state.$data === transformer && transformer.state.transformations.length === 0;
 
-    if (shouldTemporarilyUnwrap) {
-      queryRunner.clearParent();
-      panel.setState({ $data: queryRunner });
-      transformer.clearParent();
-    }
+    this._originalSaveModel = vizPanelToPanel(panel);
+    const layoutItemClone = this._layoutItem.clone();
+    const clonedPanel = findVizPanelByKey(layoutItemClone, panel.state.key);
 
-    try {
-      this._originalSaveModel = vizPanelToPanel(panel);
-      this._layoutItemState = sceneUtils.cloneSceneObjectState(this._layoutItem.state);
-    } finally {
-      if (shouldTemporarilyUnwrap) {
-        queryRunner.clearParent();
-        transformer.setState({ $data: queryRunner });
-        panel.setState({ $data: transformer });
+    if (shouldUnwrapSnapshot && clonedPanel) {
+      const clonedTransformer = clonedPanel?.state.$data;
+      if (clonedTransformer instanceof SceneDataTransformer && clonedTransformer.state.$data) {
+        const clonedQueryRunner = clonedTransformer.state.$data;
+        clonedQueryRunner.clearParent();
+        clonedPanel.setState({ $data: clonedQueryRunner });
+        clonedTransformer.clearParent();
       }
     }
+
+    clonedPanel?.clearParent();
+    this._layoutItemState = layoutItemClone.state;
   }
 
   /**
@@ -285,17 +297,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     if (this.state.isInitializing) {
       this.setOriginalState(this.state.panelRef);
       this._setupChangeDetection();
-      this.ensureEditorDataTransformer(panel);
       this._updateDataPane(plugin);
-
-      const queryRunner = getQueryRunnerFor(panel);
-      const hasCompactData =
-        queryRunner?.state.data?.compactSeries !== undefined ||
-        queryRunner?.state.data?.request?.preferredQueryResultFormat === 'compact-v1';
-      if (queryRunner && hasCompactData) {
-        queryRunner.cancelQuery();
-        queryRunner.runQueries();
-      }
 
       // Listen for panel plugin changes
       this._subs.add(
