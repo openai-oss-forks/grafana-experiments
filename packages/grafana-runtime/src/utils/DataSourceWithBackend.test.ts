@@ -210,6 +210,36 @@ describe('DataSourceWithBackend', () => {
     expect(args.data.queries[0]).not.toHaveProperty('minInterval');
   });
 
+  test('passes request-level step size as prometheus query parameter', () => {
+    const { mock, ds } = createMockDatasource('prometheus');
+    ds.query({
+      maxDataPoints: 1000,
+      interval: '1m',
+      intervalMs: 60000,
+      stepSize: '1m',
+      minInterval: '15s',
+      targets: [{ refId: 'A' }],
+      range: {
+        from: dateTime('2023-10-12T12:00:00Z'),
+        to: dateTime('2023-10-13T00:00:00Z'),
+        raw: { from: 'now-12h', to: 'now' },
+      },
+    } as DataQueryRequest);
+
+    const args = mock.calls[0][0];
+
+    expect(args.data.queries[0]).toMatchObject({
+      intervalMs: 60000,
+      maxDataPoints: 1500,
+      stepSize: '1m',
+      __grafanaQueryOptions: {
+        stepSize: '1m',
+        minInterval: '15s',
+      },
+    });
+    expect(args.data.queries[0]).not.toHaveProperty('minInterval');
+  });
+
   test('applies query-level step size metadata to backend query interval', () => {
     const { mock, ds } = createMockDatasource('prometheus');
     ds.query({

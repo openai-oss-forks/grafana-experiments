@@ -69,6 +69,91 @@ func TestParse(t *testing.T) {
 		require.Equal(t, 5*time.Minute, res.Step)
 	})
 
+	t.Run("parsing query model with explicit step size ignores t-shirt interval", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "1m",
+			"intervalMs": 60000,
+			"stepSize": "1m",
+			"refId": "A"
+		}`, timeRange, time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, time.Minute, res.Step)
+	})
+
+	t.Run("parsing query model with explicit step size uses provided interval above query min step", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "5m",
+			"intervalMs": 1800000,
+			"stepSize": "30m",
+			"refId": "A"
+		}`, timeRange, 30*time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, 30*time.Minute, res.Step)
+	})
+
+	t.Run("parsing query model with explicit step size ignores interval factor", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "1m",
+			"intervalMs": 60000,
+			"intervalFactor": 10,
+			"stepSize": "1m",
+			"refId": "A"
+		}`, timeRange, time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, time.Minute, res.Step)
+	})
+
+	t.Run("parsing query model with explicit step size respects datasource scrape interval", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "1m",
+			"intervalMs": 60000,
+			"stepSize": "1m",
+			"refId": "A"
+		}`, timeRange, time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "2m", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, 2*time.Minute, res.Step)
+	})
+
 	t.Run("parsing query model without step parameter", func(t *testing.T) {
 		timeRange := backend.TimeRange{
 			From: now,

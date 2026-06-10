@@ -202,6 +202,7 @@ type internalQueryModel struct {
 	// Timezone offset to align start & end time on backend
 	UtcOffsetSec int64  `json:"utcOffsetSec,omitempty"`
 	Interval     string `json:"interval,omitempty"`
+	StepSize     string `json:"stepSize,omitempty"`
 }
 
 func Parse(ctx context.Context, log glog.Logger, span trace.Span, query backend.DataQuery, dsScrapeInterval string, intervalCalculator intervalv2.Calculator, fromAlert bool) (*Query, error) {
@@ -212,7 +213,7 @@ func Parse(ctx context.Context, log glog.Logger, span trace.Span, query backend.
 	span.SetAttributes(attribute.String("rawExpr", model.Expr))
 
 	// Final step value for prometheus
-	calculatedStep, err := calculatePrometheusInterval(model.Interval, dsScrapeInterval, int64(model.IntervalMS), model.IntervalFactor, query, intervalCalculator)
+	calculatedStep, err := calculatePrometheusInterval(model.Interval, model.StepSize, dsScrapeInterval, int64(model.IntervalMS), model.IntervalFactor, query, intervalCalculator)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +316,7 @@ func (query *Query) TimeRange() TimeRange {
 }
 
 func calculatePrometheusInterval(
-	queryInterval, dsScrapeInterval string,
+	queryInterval, stepSize, dsScrapeInterval string,
 	intervalMs, intervalFactor int64,
 	query backend.DataQuery,
 	intervalCalculator intervalv2.Calculator,
@@ -329,11 +330,23 @@ func calculatePrometheusInterval(
 		queryInterval = ""
 	}
 
-	minInterval, err := gtime.GetIntervalFrom(dsScrapeInterval, queryInterval, intervalMs, 15*time.Second)
+	var minInterval time.Duration
+	var err error
+	if stepSize != "" {
+		minInterval, err = getExplicitStepMinInterval(stepSize, queryInterval, dsScrapeInterval, 15*time.Second)
+	} else {
+		minInterval, err = gtime.GetIntervalFrom(dsScrapeInterval, queryInterval, intervalMs, 15*time.Second)
+	}
 	if err != nil {
 		return time.Duration(0), err
 	}
-	calculatedInterval := intervalCalculator.Calculate(query.TimeRange, minInterval, query.MaxDataPoints)
+
+	var calculatedInterval intervalv2.Interval
+	if stepSize != "" {
+		calculatedInterval = intervalCalculator.CalculateResolutionBased(query.TimeRange, minInterval, query.MaxDataPoints)
+	} else {
+		calculatedInterval = intervalCalculator.Calculate(query.TimeRange, minInterval, query.MaxDataPoints)
+	}
 	safeInterval := intervalCalculator.CalculateSafeInterval(query.TimeRange, int64(safeResolution))
 
 	adjustedInterval := safeInterval.Value
@@ -346,11 +359,31 @@ func calculatePrometheusInterval(
 	}
 
 	queryIntervalFactor := intervalFactor
-	if queryIntervalFactor == 0 {
+	if queryIntervalFactor == 0 || stepSize != "" {
 		queryIntervalFactor = 1
 	}
 
 	return time.Duration(int64(adjustedInterval) * queryIntervalFactor), nil
+}
+
+func getExplicitStepMinInterval(stepSize, queryInterval, dsScrapeInterval string, defaultInterval time.Duration) (time.Duration, error) {
+	minInterval := defaultInterval
+
+	for _, interval := range []string{stepSize, queryInterval, dsScrapeInterval} {
+		if interval == "" || interval == "0s" {
+			continue
+		}
+
+		parsedInterval, err := gtime.ParseIntervalStringToTimeDuration(interval)
+		if err != nil {
+			return time.Duration(0), err
+		}
+		if parsedInterval > minInterval {
+			minInterval = parsedInterval
+		}
+	}
+
+	return minInterval, nil
 }
 
 // calculateRateInterval calculates the $__rate_interval value.

@@ -56,6 +56,18 @@ func TestIntervalCalculator_CalculateLegacyUsesMaxDataPoints(t *testing.T) {
 	assert.Equal(t, "15s", interval.Text)
 }
 
+func TestIntervalCalculator_CalculateResolutionBasedIgnoresTshirtSize(t *testing.T) {
+	calculator := NewCalculator(CalculatorOptions{TshirtSizeStepSizeEnabled: true})
+	timeNow := time.Now()
+	timeRange := backend.TimeRange{From: timeNow, To: timeNow.Add(12 * time.Hour)}
+
+	interval := calculator.Calculate(timeRange, time.Minute, 1500)
+	assert.Equal(t, "5m", interval.Text)
+
+	interval = calculator.CalculateResolutionBased(timeRange, time.Minute, 1500)
+	assert.Equal(t, "1m", interval.Text)
+}
+
 func TestIntervalCalculator_CalculateWithOneMinuteMinimumStep(t *testing.T) {
 	calculator := NewCalculator(CalculatorOptions{MinInterval: time.Minute, TshirtSizeStepSizeEnabled: true})
 	timeNow := time.Now()

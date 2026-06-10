@@ -237,6 +237,7 @@ class DataSourceWithBackend<
 
       return {
         ...interpolatedQuery,
+        ...(isPrometheusQuery && queryStepSize ? { stepSize: queryStepSize } : {}),
         datasource,
         datasourceId, // deprecated!
         intervalMs: queryInterval?.intervalMs ?? intervalMs,
