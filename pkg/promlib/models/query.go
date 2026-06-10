@@ -155,6 +155,18 @@ const (
 
 var safeResolution = 11000
 
+var allowedExplicitStepSizes = map[string]time.Duration{
+	"1m":  time.Minute,
+	"2m":  2 * time.Minute,
+	"5m":  5 * time.Minute,
+	"10m": 10 * time.Minute,
+	"20m": 20 * time.Minute,
+	"30m": 30 * time.Minute,
+	"1h":  time.Hour,
+	"2h":  2 * time.Hour,
+	"5h":  5 * time.Hour,
+}
+
 // QueryModel includes both the common and specific values
 // NOTE: this struct may have issues when decoding JSON that requires the special handling
 // registered in https://github.com/grafana/grafana-plugin-sdk-go/blob/v0.228.0/experimental/apis/data/v0alpha1/query.go#L298
@@ -367,9 +379,15 @@ func calculatePrometheusInterval(
 }
 
 func getExplicitStepMinInterval(stepSize, queryInterval, dsScrapeInterval string, defaultInterval time.Duration) (time.Duration, error) {
-	minInterval := defaultInterval
+	minInterval, ok := allowedExplicitStepSizes[stepSize]
+	if !ok {
+		return time.Duration(0), fmt.Errorf("invalid stepSize: %s", stepSize)
+	}
+	if minInterval < defaultInterval {
+		minInterval = defaultInterval
+	}
 
-	for _, interval := range []string{stepSize, queryInterval, dsScrapeInterval} {
+	for _, interval := range []string{queryInterval, dsScrapeInterval} {
 		if interval == "" || interval == "0s" {
 			continue
 		}

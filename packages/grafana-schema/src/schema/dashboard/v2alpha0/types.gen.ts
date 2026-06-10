@@ -259,7 +259,7 @@ export const defaultMatcherConfig = (): MatcherConfig => ({
 	id: "",
 });
 
-export type QueryStepSize = "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h";
+export type QueryStepSize = "1m" | "2m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h";
 
 export interface QueryOptionsSpec {
 	timeFrom?: string;

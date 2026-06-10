@@ -5,12 +5,13 @@ import { type TimeRange } from '../types/time';
 export const MAX_STEP_SIZE_DATA_POINTS = 1500;
 export const AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS = MAX_STEP_SIZE_DATA_POINTS;
 
-export const ALLOWED_STEP_SIZES = ['1m', '5m', '10m', '20m', '30m', '1h', '2h', '5h'] as const;
+export const ALLOWED_STEP_SIZES = ['1m', '2m', '5m', '10m', '20m', '30m', '1h', '2h', '5h'] as const;
 
 export type QueryStepSize = (typeof ALLOWED_STEP_SIZES)[number];
 
 const STEP_SIZE_LABELS: Record<QueryStepSize, string> = {
   '1m': '1m',
+  '2m': '2m',
   '5m': '5m',
   '10m': '10m',
   '20m': '20m',
