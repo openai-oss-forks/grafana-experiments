@@ -1,3 +1,33 @@
+diff --git a/dist/esm/packages/scenes/src/core/SceneObjectBase.js b/dist/esm/packages/scenes/src/core/SceneObjectBase.js
+index a26c64b2e71f44b18487aa529ff46d13429d9b46..1523775082e7e7df8cfd2493fc41041322182df0 100644
+--- a/dist/esm/packages/scenes/src/core/SceneObjectBase.js
++++ b/dist/esm/packages/scenes/src/core/SceneObjectBase.js
+@@ -1,4 +1,4 @@
+-import { useState, useEffect } from 'react';
++import { useState, useEffect, useRef } from 'react';
+ import { Subscription } from 'rxjs';
+ import { v4 } from 'uuid';
+ import { EventBusSrv } from '@grafana/data';
+@@ -291,7 +291,7 @@ class SceneObjectBase {
+ function useSceneObjectState(model, options) {
+   var _a;
+   const [_, setState] = useState(model.state);
+-  const stateAtFirstRender = model.state;
++  const stateAtFirstRender = useRef(model.state);
+   const shouldActivateOrKeepAlive = (_a = options == null ? void 0 : options.shouldActivateOrKeepAlive) != null ? _a : false;
+   useEffect(() => {
+     let unactivate;
+@@ -302,7 +302,9 @@ function useSceneObjectState(model, options) {
+     const s = model.subscribeToState((state) => {
+       setState(state);
+     });
+-    if (model.state !== stateAtFirstRender) {
++    const initialState = stateAtFirstRender.current;
++    stateAtFirstRender.current = void 0;
++    if (model.state !== initialState) {
+       setState(model.state);
+     }
+     return () => {
 diff --git a/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js b/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
 index a08e6f4cb91f4714d649a39bd7d8ca166bcfd351..6b1400d4fc6436ce3f011f8a503fe084c3a40e49 100644
 --- a/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
@@ -50,6 +80,26 @@ diff --git a/dist/index.js b/dist/index.js
 index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e951732f6b6 100644
 --- a/dist/index.js
 +++ b/dist/index.js
+@@ -442,7 +442,7 @@ class SceneObjectBase {
+ function useSceneObjectState(model, options) {
+   var _a;
+   const [_, setState] = React.useState(model.state);
+-  const stateAtFirstRender = model.state;
++  const stateAtFirstRender = React.useRef(model.state);
+   const shouldActivateOrKeepAlive = (_a = options == null ? void 0 : options.shouldActivateOrKeepAlive) != null ? _a : false;
+   React.useEffect(() => {
+     let unactivate;
+@@ -453,7 +453,9 @@ function useSceneObjectState(model, options) {
+     const s = model.subscribeToState((state) => {
+       setState(state);
+     });
+-    if (model.state !== stateAtFirstRender) {
++    const initialState = stateAtFirstRender.current;
++    stateAtFirstRender.current = void 0;
++    if (model.state !== initialState) {
+       setState(model.state);
+     }
+     return () => {
 @@ -8730,8 +8730,8 @@ class SceneDataTransformer extends SceneObjectBase {
      if (data === this._prevDataFromSource) {
        return true;

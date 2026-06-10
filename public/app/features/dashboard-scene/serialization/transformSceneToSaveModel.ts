@@ -1,6 +1,6 @@
 import { defaults, isEqual } from 'lodash';
 
-import { isEmptyObject, ScopedVars, TimeRange } from '@grafana/data';
+import { isEmptyObject, isValidStepSize, ScopedVars, TimeRange } from '@grafana/data';
 import {
   behaviors,
   SceneGridItemLike,
@@ -339,7 +339,7 @@ function vizPanelDataToPanel(
       panel.interval = queryRunner.state.minInterval;
     }
     const stepSize = (queryRunner.state as { stepSize?: string | null }).stepSize;
-    if (stepSize) {
+    if (isValidStepSize(stepSize)) {
       panel.stepSize = stepSize;
     }
   }

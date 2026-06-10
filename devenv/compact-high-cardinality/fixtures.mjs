@@ -52,7 +52,7 @@ export async function createDashboardFixture({
     : createBuiltInDashboard(scenarioName, pointCount);
 }
 
-export async function createFullDashboardFixture(filePath, pointCount) {
+export async function createFullDashboardFixture(filePath, pointCount, { preserveRefresh = false } = {}) {
   const exported = JSON.parse(await fs.readFile(filePath, 'utf8'));
   const sourceDashboard = exported.dashboard ?? exported;
   const dashboard = structuredClone(sourceDashboard);
@@ -63,7 +63,7 @@ export async function createFullDashboardFixture(filePath, pointCount) {
   dashboard.uid = DASHBOARD_UID;
   dashboard.title = `Full replay: ${sourceDashboard.title}`;
   dashboard.version = 0;
-  dashboard.refresh = '';
+  dashboard.refresh = preserveRefresh ? sourceDashboard.refresh : '';
   dashboard.templating = { list: createConstantVariables(sourceDashboard.templating?.list) };
   dashboard.annotations = { list: [] };
   dashboard.panels = rewriteFullDashboardPanels(sourceDashboard.panels ?? [], pointCount);
@@ -95,6 +95,8 @@ export async function createFullDashboardFixture(filePath, pointCount) {
       omittedPanelCount: sourcePanels.length - replayPanels.length,
       replayTimeSeriesPanelCount: replayPanels.filter((panel) => panel.type === 'timeseries').length,
       replayTimeSeriesPanels,
+      originalRefresh: sourceDashboard.refresh ?? '',
+      replayRefresh: dashboard.refresh ?? '',
     },
   };
 }

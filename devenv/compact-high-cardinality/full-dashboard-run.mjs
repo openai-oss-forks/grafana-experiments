@@ -31,6 +31,12 @@ Environment:
   SAMPLE_EVERY            Retain a full sample every N steps (default: 5)
   SCROLL_CYCLES           Full refresh-and-scroll cycles in one browser session (default: 1)
   BIDIRECTIONAL_SCROLL    Scroll back to the top within each cycle when set to 1
+  PRESERVE_DASHBOARD_REFRESH
+                           Keep the exported dashboard refresh interval when set to 1
+  AUTO_REFRESHES          Automatic refresh batches to observe before scrolling (default: 0)
+  AUTO_REFRESH_PANEL_ID   Panel kept visible while observing automatic refreshes
+  AUTO_REFRESH_TIMEOUT_MS Maximum wait for each automatic refresh batch (default: 120000)
+  VERIFY_INTERACTIONS     Set to 0 to skip tooltip checks in refresh-only stress runs
   REQUIRE_ALL_TIMESERIES_COMPACT
                            Fail when any queried time-series panel omits compact-v1
   GC_MODE                 none, settled, or retained (default: none)
@@ -60,6 +66,11 @@ const options = {
   sampleEvery: readPositiveInteger('SAMPLE_EVERY', 5),
   scrollCycles: readPositiveInteger('SCROLL_CYCLES', 1),
   bidirectionalScroll: process.env.BIDIRECTIONAL_SCROLL === '1',
+  preserveDashboardRefresh: process.env.PRESERVE_DASHBOARD_REFRESH === '1',
+  autoRefreshes: readNonNegativeInteger('AUTO_REFRESHES', 0),
+  autoRefreshPanelId: process.env.AUTO_REFRESH_PANEL_ID,
+  autoRefreshTimeoutMs: readPositiveInteger('AUTO_REFRESH_TIMEOUT_MS', 120_000),
+  verifyInteractions: process.env.VERIFY_INTERACTIONS !== '0',
   requireAllTimeSeriesCompact: process.env.REQUIRE_ALL_TIMESERIES_COMPACT === '1',
   gcMode: readGcMode(),
   offscreenSettleMs: readNonNegativeInteger('OFFSCREEN_SETTLE_MS', 0),
@@ -75,8 +86,13 @@ if ((options.dashboardFrom == null) !== (options.dashboardTo == null)) {
 if (options.dashboardFrom != null && options.dashboardTo <= options.dashboardFrom) {
   throw new Error('DASHBOARD_TO must be greater than DASHBOARD_FROM');
 }
+if (options.autoRefreshes > 0 && !options.preserveDashboardRefresh) {
+  throw new Error('AUTO_REFRESHES requires PRESERVE_DASHBOARD_REFRESH=1');
+}
 
-const fixture = await createFullDashboardFixture(dashboardJson, options.pointCount);
+const fixture = await createFullDashboardFixture(dashboardJson, options.pointCount, {
+  preserveRefresh: options.preserveDashboardRefresh,
+});
 fixture.dashboard.uid = options.dashboardUid;
 await fs.mkdir(options.outputDir, { recursive: true });
 
@@ -223,9 +239,18 @@ try {
   report.navigationMs = round(performance.now() - navigationStartedAt);
   report.initialPanelRenders = await collectPanelRenderDiagnostics(page);
   report.samples.push(await collectBrowserSample(cdp, page, 'scroll-0', options.gcMode === 'retained'));
-  report.interactions = {
-    initial: await verifyVisibleChartInteraction(page),
-  };
+  report.interactions = options.verifyInteractions
+    ? {
+        initial: await verifyVisibleChartInteraction(page),
+      }
+    : {};
+  if (options.autoRefreshPanelId != null) {
+    report.autoRefreshTarget = await focusAutoRefreshPanel(page, options.autoRefreshPanelId);
+  }
+  report.autoRefreshes = [];
+  for (let refreshIndex = 0; refreshIndex < options.autoRefreshes; refreshIndex++) {
+    report.autoRefreshes.push(await observeAutomaticRefresh(page, cdp, refreshIndex + 1));
+  }
   report.scrollCycles = [];
 
   for (let cycle = 1; cycle <= options.scrollCycles; cycle++) {
@@ -244,14 +269,18 @@ try {
     report.scrollCycles.push(scroll);
     report.scroll ??= scroll;
     if (scroll.reachedBottom) {
-      const bottomInteraction = await verifyVisibleChartInteraction(page, false);
-      report.interactions[`cycle-${cycle}-bottom`] = bottomInteraction;
-      report.interactions.bottom = bottomInteraction;
+      if (options.verifyInteractions) {
+        const bottomInteraction = await verifyVisibleChartInteraction(page, false);
+        report.interactions[`cycle-${cycle}-bottom`] = bottomInteraction;
+        report.interactions.bottom = bottomInteraction;
+      }
     }
     if (options.bidirectionalScroll && scroll.reachedBottom) {
       const reverse = await scrollDashboard(page, cdp, report, cycle, true);
       report.scrollCycles.push(reverse);
-      report.interactions[`cycle-${cycle}-top`] = await verifyVisibleChartInteraction(page);
+      if (options.verifyInteractions) {
+        report.interactions[`cycle-${cycle}-top`] = await verifyVisibleChartInteraction(page);
+      }
     }
   }
 
@@ -273,10 +302,12 @@ try {
     durationMs: round(performance.now() - reentryStartedAt),
     additionalRequests: queryRequests.length - requestsBeforeReentry,
   };
-  if (report.reentry.additionalRequests !== 0) {
+  if (!options.preserveDashboardRefresh && report.reentry.additionalRequests !== 0) {
     throw new Error(`Dashboard reentry issued ${report.reentry.additionalRequests} unexpected queries`);
   }
-  report.interactions.reentry = await verifyVisibleChartInteraction(page);
+  if (options.verifyInteractions) {
+    report.interactions.reentry = await verifyVisibleChartInteraction(page);
+  }
   report.samples.push(await collectBrowserSample(cdp, page, 'reentry-top', options.gcMode !== 'none'));
   await page.screenshot({ path: path.join(options.outputDir, 'dashboard-top.png') });
 
@@ -396,15 +427,104 @@ async function scrollDashboard(page, cdp, report, cycle, reverse = false) {
   };
 }
 
-async function waitForQueryIdle(timeoutMs) {
+async function waitForQueryIdle(timeoutMs, quietMs = 500) {
   const startedAt = performance.now();
   while (performance.now() - startedAt < timeoutMs) {
-    if (activeRequests === 0 && performance.now() - lastRequestActivityAt >= 500) {
+    if (activeRequests === 0 && performance.now() - lastRequestActivityAt >= quietMs) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for dashboard queries to become idle (${activeRequests} active)`);
+}
+
+async function observeAutomaticRefresh(page, cdp, index) {
+  const requestStartIndex = queryRequests.length;
+  const waitStartedAt = performance.now();
+  await page.evaluate(() => window.__dashboardCanvasActivity.arm());
+  while (queryRequests.length === requestStartIndex) {
+    if (performance.now() - waitStartedAt >= options.autoRefreshTimeoutMs) {
+      throw new Error(`Timed out waiting for automatic dashboard refresh ${index}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  const firstRequestObservedAt = performance.now();
+  await waitForQueryIdle(options.autoRefreshTimeoutMs);
+  await waitForCanvasIdle(page, options.autoRefreshTimeoutMs);
+  await assertNoVisiblePanelErrors(page);
+  const completedAt = performance.now();
+  const requests = queryRequests.slice(requestStartIndex);
+  if (
+    options.autoRefreshPanelId != null &&
+    !requests.some((request) => String(request.panelId) === options.autoRefreshPanelId)
+  ) {
+    throw new Error(`Automatic refresh ${index} did not query panel ${options.autoRefreshPanelId}`);
+  }
+  const label = `auto-refresh-${index}`;
+  report.samples.push(await collectBrowserSample(cdp, page, label, false));
+
+  return {
+    index,
+    waitForStartMs: round(firstRequestObservedAt - waitStartedAt),
+    requestToCanvasIdleMs: round(completedAt - firstRequestObservedAt),
+    requestCount: requests.length,
+    compactRequestCount: requests.filter((request) => request.responseFormat === 'compact-v1').length,
+    jsonRequestCount: requests.filter((request) => request.responseFormat === 'json').length,
+    rawResponseMB: round(requests.reduce((total, request) => total + (request.rawResponseBytes ?? 0), 0) / 1024 / 1024),
+    panelRenders: await collectPanelRenderDiagnostics(page),
+  };
+}
+
+async function focusAutoRefreshPanel(page, panelId) {
+  const panels = fixture.source.replayTimeSeriesPanels.filter((candidate) => candidate.id === panelId);
+  const panel = panels[0];
+  if (!panel) {
+    throw new Error(`AUTO_REFRESH_PANEL_ID ${panelId} is not a replayed time-series panel`);
+  }
+  if (panels.length > 1) {
+    throw new Error(`AUTO_REFRESH_PANEL_ID ${panelId} is ambiguous in the replayed dashboard`);
+  }
+
+  const requestsBeforeFocus = queryRequests.length;
+  const dimensions = await page.evaluate(() => window.__dashboardScrollHarness.metrics());
+  const bottom = Math.max(0, dimensions.documentHeight - dimensions.viewportHeight);
+  const step = Math.max(1, Math.floor(dimensions.viewportHeight / 2));
+  let found = false;
+  for (let top = 0; top <= bottom; top = Math.min(top + step, bottom)) {
+    await scrollDashboardTo(page, top);
+    await page.waitForTimeout(100);
+    found = await page.evaluate((title) => {
+      const expected = `data-testid Panel header ${title}`;
+      const header = Array.from(document.querySelectorAll('[data-testid^="data-testid Panel header "]')).find(
+        (candidate) => candidate.getAttribute('data-testid') === expected
+      );
+      header?.scrollIntoView({ block: 'center' });
+      return header != null;
+    }, panel.title);
+    if (found || top === bottom) {
+      break;
+    }
+  }
+  if (!found) {
+    throw new Error(`Could not find dashboard panel ${panelId} (${panel.title})`);
+  }
+
+  await waitForQueryIdle(120_000, 5_000);
+  await waitForCanvasIdle(page, 120_000);
+  await assertNoVisiblePanelErrors(page);
+  const targetWasQueried = queryRequests
+    .slice(requestsBeforeFocus)
+    .some((request) => String(request.panelId) === panelId);
+  if (!targetWasQueried && !queryRequests.some((request) => String(request.panelId) === panelId)) {
+    throw new Error(`Panel ${panelId} did not query after being scrolled into view`);
+  }
+
+  return {
+    panelId,
+    panelTitle: panel.title,
+    additionalRequests: queryRequests.length - requestsBeforeFocus,
+  };
 }
 
 async function waitForVisibleCharts(page) {
@@ -597,6 +717,15 @@ function summarize(report) {
     ),
     panelCompleteP95Ms: percentile(
       panelRenders.map((render) => render.completeLatencyMs),
+      0.95
+    ),
+    autoRefreshCount: report.autoRefreshes?.length ?? 0,
+    autoRefreshRequestToCanvasIdleP75Ms: percentile(
+      (report.autoRefreshes ?? []).map((refresh) => refresh.requestToCanvasIdleMs),
+      0.75
+    ),
+    autoRefreshRequestToCanvasIdleP95Ms: percentile(
+      (report.autoRefreshes ?? []).map((refresh) => refresh.requestToCanvasIdleMs),
       0.95
     ),
   };
@@ -852,8 +981,13 @@ function printReport(report, reportPath) {
     console.log(
       `Scroll: median=${report.summary.medianScrollStepMs}ms max=${report.summary.maxScrollStepMs}ms reentry=${report.reentry.durationMs}ms requests=${report.reentry.additionalRequests}`
     );
+    if (report.summary.autoRefreshCount > 0) {
+      console.log(
+        `Auto refresh: count=${report.summary.autoRefreshCount} request-to-canvas-idle p75=${report.summary.autoRefreshRequestToCanvasIdleP75Ms}ms p95=${report.summary.autoRefreshRequestToCanvasIdleP95Ms}ms`
+      );
+    }
   }
-  if (report.interactions) {
+  if (report.interactions?.initial) {
     const bottom = report.interactions.bottom?.tooltipVisible
       ? ` bottom=${report.interactions.bottom.hoverToTooltipMs}ms`
       : report.interactions.bottom
