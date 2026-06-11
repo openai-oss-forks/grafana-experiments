@@ -93,6 +93,7 @@ Environment:
   HEADLESS                Set to 1 for headless Chromium
   EDIT_PANEL              Set to 1 to open the selected panel in edit mode
   VERIFY_PANEL_EDITOR     Set to 1 to require the time-series panel editor and hover control
+                          toggle, including compact highlight removal/restoration
   HIGHLIGHT_SERIES_ON_HOVER
                           Override the selected panel's hover highlighting with true or false
   CHROMIUM_PATH           Optional Chromium executable
@@ -302,7 +303,7 @@ try {
     if (!options.editPanel) {
       throw new Error('VERIFY_PANEL_EDITOR requires EDIT_PANEL=1');
     }
-    report.panelEditor = await verifyPanelEditor(page);
+    report.panelEditor = await verifyPanelEditor(page, queryRequests[0].responseFormat, queryRequests[0].seriesCount);
   }
   await captureChart(page, path.join(options.outputDir, 'chart.png'));
   if (options.cpuProfile) {
@@ -454,12 +455,59 @@ async function recordRender(page, cdp, report, requestNumber, label) {
   report.samples.push(sample);
 }
 
-async function verifyPanelEditor(page) {
+async function verifyPanelEditor(page, responseFormat, seriesCount) {
   const highlightControl = page.getByText('Highlight hovered series', { exact: true });
   await highlightControl.waitFor({ state: 'visible', timeout: 30_000 });
+  const highlightSwitch = highlightControl
+    .locator('xpath=ancestor::*[.//input[@role="switch"]][1]')
+    .getByRole('switch');
+  await highlightSwitch.waitFor({ state: 'visible', timeout: 30_000 });
+  const highlightSwitchId = await highlightSwitch.getAttribute('id');
+  if (!highlightSwitchId) {
+    throw new Error('Highlight hovered series switch has no input ID');
+  }
+  const highlightSwitchLabel = highlightSwitch.locator('xpath=following-sibling::label[1]');
+  if (!(await highlightSwitch.isChecked())) {
+    throw new Error('Highlight hovered series is not enabled by default');
+  }
+
+  const requestCount = queryRequests.length;
+  const plotOverlay = page.locator('.uplot .u-over').first();
+  const bounds = await plotOverlay.boundingBox();
+  if (!bounds) {
+    throw new Error('Panel editor chart plot area has no visible bounds');
+  }
+  const expectHighlight = responseFormat === 'compact-v1' && seriesCount > 1;
+  const enabledOverlayCount = await verifyFocusOverlay(page, bounds, responseFormat, expectHighlight);
+
+  await highlightSwitchLabel.click();
+  await page.waitForFunction(
+    (id) => document.getElementById(id) instanceof HTMLInputElement && !document.getElementById(id).checked,
+    highlightSwitchId
+  );
+  await page.locator('.u-compact-focus-overlay').waitFor({ state: 'detached', timeout: 10_000 });
+  await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + bounds.height * 0.5);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const disabledOverlayCount = await verifyFocusOverlay(page, bounds, responseFormat, false);
+
+  await highlightSwitchLabel.click();
+  await page.waitForFunction(
+    (id) => document.getElementById(id) instanceof HTMLInputElement && document.getElementById(id).checked,
+    highlightSwitchId
+  );
+  const restoredOverlayCount = await verifyFocusOverlay(page, bounds, responseFormat, expectHighlight);
+  if (queryRequests.length !== requestCount) {
+    throw new Error('Changing hover highlighting unexpectedly issued a datasource query');
+  }
+
   return {
     url: page.url(),
     highlightControlVisible: true,
+    initialChecked: true,
+    enabledOverlayCount,
+    disabledOverlayCount,
+    restoredOverlayCount,
+    datasourceQueriesIssued: 0,
   };
 }
 

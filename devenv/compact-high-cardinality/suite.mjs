@@ -4,6 +4,33 @@ import path from 'node:path';
 
 const profile = process.env.BENCHMARK_PROFILE ?? 'standard';
 const rootOutput = process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-suite';
+const panelEditorScenarios = [
+  {
+    name: 'compact-panel-editor-interaction',
+    env: {
+      SCENARIO: 'synthetic',
+      SERIES_PER_QUERY: '12',
+      POINT_COUNT: '120',
+      REFRESHES: '0',
+      EDIT_PANEL: '1',
+      VERIFY_PANEL_EDITOR: '1',
+    },
+  },
+  {
+    name: 'legacy-panel-editor-interaction',
+    env: {
+      SCENARIO: 'synthetic',
+      SERIES_PER_QUERY: '12',
+      POINT_COUNT: '120',
+      REFRESHES: '0',
+      EDIT_PANEL: '1',
+      VERIFY_PANEL_EDITOR: '1',
+      REQUEST_FORMAT: 'json',
+      RESPONSE_FORMAT: 'json',
+      EXPECTED_FORMAT: 'json',
+    },
+  },
+];
 const scenarios = {
   smoke: [
     {
@@ -16,6 +43,7 @@ const scenarios = {
         VERIFY_INTERACTIONS: '1',
       },
     },
+    ...panelEditorScenarios,
   ],
   standard: [
     {
@@ -28,6 +56,7 @@ const scenarios = {
         VERIFY_INTERACTIONS: '1',
       },
     },
+    ...panelEditorScenarios,
     {
       name: 'multi-query-refresh',
       env: { SCENARIO: 'synthetic', SERIES_PER_QUERY: '500', POINT_COUNT: '180', REFRESHES: '3' },

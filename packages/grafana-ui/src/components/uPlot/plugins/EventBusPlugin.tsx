@@ -52,9 +52,10 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
       let viaSync = compact ? u!.compactCursorOrigin === 'native-sync' : u!.cursor.event == null;
 
       if (!viaSync) {
+        const compactCursor = u!.compactCursor;
         let dataIdx = compact
-          ? u!.compactCursor != null && u!.compactCursor.seriesIndex >= 0
-            ? u!.compactCursor.dataIndex
+          ? compactCursor?.hasPoint === true
+            ? compactCursor.dataIndex
             : null
           : u!.cursor.idxs!.find((v) => v != null);
 
@@ -64,9 +65,9 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
           let rowIdx = dataIdx;
           // DataFrame column zero is the X field, so compact Y indexes are offset by one.
           let colIdx = compact
-            ? u!.compactCursor == null
-              ? null
-              : u!.compactCursor.seriesIndex + 1
+            ? compactCursor?.hasPoint === true
+              ? compactCursor.seriesIndex + 1
+              : null
             : closestSeriesIdx;
 
           payload.point.time = compact ? u!.getX!(rowIdx) : (u!.data[0] ?? u!.data[1][0])[rowIdx];

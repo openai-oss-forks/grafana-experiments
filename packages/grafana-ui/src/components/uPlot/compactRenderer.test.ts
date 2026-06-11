@@ -503,6 +503,22 @@ describe('CompactRenderController', () => {
     expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 1, top: 2 });
   });
 
+  test('clears candidate coordinates when focus proximity rejects the nearest point', () => {
+    const source = createSource([[10]], [CompactSeriesFlag.Linear]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+      dataIndex: -1,
+      left: -10,
+      top: -10,
+      size: 0,
+    });
+  });
+
   test('keeps exact gap values while applying plot-aware focus proximity', () => {
     const source = createSource([[1, null, 3]], [CompactSeriesFlag.Linear], 0, 'series', 'single');
     const controller = new CompactRenderController(source);

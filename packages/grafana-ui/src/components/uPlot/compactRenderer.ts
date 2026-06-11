@@ -172,6 +172,7 @@ const enum ScanOperation {
 const controllers = new WeakMap<CompactRenderSource, CompactRenderController>();
 const PROGRESSIVE_SAMPLE_THRESHOLD = 1_000_000;
 const PROGRESSIVE_POINT_BUDGET = 32_000;
+const CURSOR_STACK_CACHE_SIZE = 4;
 const hoverStageProbe = getCompactHoverStageProbe();
 
 export function getCompactHoverStageProbe():
@@ -272,6 +273,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private stackAreaLength = 0;
   private cursorStacks = new Float64Array(0);
   private cursorStackIndexes = new Int32Array(0);
+  private cursorStackNextSeries = new Int32Array(0);
   private cursorSnapshotValues = new Float64Array(0);
   private cursorSnapshotStates = new Uint8Array(0);
   private cursorSnapshotDataIndexes: Int32Array | null = null;
@@ -442,6 +444,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.stackAreaLength = 0;
     this.cursorStacks = new Float64Array(0);
     this.cursorStackIndexes = new Int32Array(0);
+    this.cursorStackNextSeries = new Int32Array(0);
     this.cursorSnapshotValues = new Float64Array(0);
     this.cursorSnapshotStates = new Uint8Array(0);
     this.cursorSnapshotDataIndexes = null;
@@ -787,6 +790,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     state.left = -10;
     state.top = -10;
     state.size = 0;
+    state.fill = '';
+    state.stroke = '';
 
     if (index == null || index < 0 || index >= this.source.pointCount) {
       return null;
@@ -816,6 +821,15 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     });
     const focus = plot.focus;
     state.hasPoint = state.seriesIndex >= 0 && focus.prox >= 0 && state.distance <= focus.prox;
+    if (!state.hasPoint) {
+      state.seriesIndex = -1;
+      state.dataIndex = -1;
+      state.left = -10;
+      state.top = -10;
+      state.size = 0;
+      state.fill = '';
+      state.stroke = '';
+    }
     return state;
   }
 
@@ -1719,14 +1733,31 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       return value;
     }
     const group = this.getStackGroup(series);
-    const offset = group - 1;
-    if (this.cursorStackIndexes[offset] === dataIndex) {
-      this.cursorStacks[offset] += value;
-      return this.cursorStacks[offset];
+    const firstSlot = (group - 1) * CURSOR_STACK_CACHE_SIZE;
+    const lastSlot = firstSlot + CURSOR_STACK_CACHE_SIZE;
+    let slot = -1;
+    let emptySlot = -1;
+    for (let candidateSlot = firstSlot; candidateSlot < lastSlot; candidateSlot++) {
+      const cachedIndex = this.cursorStackIndexes[candidateSlot];
+      if (cachedIndex === dataIndex) {
+        slot = candidateSlot;
+        break;
+      }
+      if (cachedIndex < 0 && emptySlot < 0) {
+        emptySlot = candidateSlot;
+      }
     }
 
-    let stackedValue = value;
-    for (let candidate = 0; candidate < series; candidate++) {
+    if (slot < 0 && emptySlot >= 0) {
+      slot = emptySlot;
+      this.cursorStackIndexes[slot] = dataIndex;
+      this.cursorStackNextSeries[slot] = 0;
+      this.cursorStacks[slot] = 0;
+    }
+
+    let stackedValue = slot < 0 ? 0 : this.cursorStacks[slot];
+    const firstSeries = slot < 0 ? 0 : this.cursorStackNextSeries[slot];
+    for (let candidate = firstSeries; candidate < series; candidate++) {
       if (
         !this.isVisible(candidate) ||
         (this.source.columns.flags[candidate] & CompactSeriesFlag.Stack) === 0 ||
@@ -1739,8 +1770,11 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         stackedValue += candidateValue;
       }
     }
-    this.cursorStackIndexes[offset] = dataIndex;
-    this.cursorStacks[offset] = stackedValue;
+    stackedValue += value;
+    if (slot >= 0) {
+      this.cursorStacks[slot] = stackedValue;
+      this.cursorStackNextSeries[slot] = series + 1;
+    }
     return stackedValue;
   }
 
@@ -1770,10 +1804,11 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   }
 
   private ensureStackCursorScratch(): void {
-    const required = this.source.stackGroupCount;
+    const required = this.source.stackGroupCount * CURSOR_STACK_CACHE_SIZE;
     if (this.cursorStacks.length !== required) {
       this.cursorStacks = new Float64Array(required);
       this.cursorStackIndexes = new Int32Array(required);
+      this.cursorStackNextSeries = new Int32Array(required);
     }
   }
 
