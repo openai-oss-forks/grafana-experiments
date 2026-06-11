@@ -169,6 +169,32 @@ describe('CompactRenderController', () => {
     });
   });
 
+  test('keeps stacked cursor values exact across many gap-resolved timestamps', () => {
+    const source = createSource(
+      Array.from({ length: 6 }, (_, series) => [
+        series + 1,
+        series + 1,
+        series + 1,
+        series + 1,
+        series + 1,
+        series + 1,
+        null,
+      ]),
+      new Array(6).fill(CompactSeriesFlag.Stack),
+      1
+    );
+    source.nearestPresent = (series) => series;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 6, 21, 'native-sync')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 5,
+      dataIndex: 5,
+      top: 21,
+    });
+  });
+
   test('preserves query-owned response storage after transferring controller ownership', () => {
     const first = createSource([[1, 2]], [CompactSeriesFlag.Linear]);
     const release = jest.fn(first.release);
