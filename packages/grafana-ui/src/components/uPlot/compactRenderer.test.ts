@@ -531,6 +531,8 @@ describe('CompactRenderController', () => {
       dataIndex: 1,
       top: 2,
       size: 8,
+      fill: '#f00',
+      stroke: '#ff000080',
     });
   });
 
@@ -1083,7 +1085,7 @@ function createVirtualSource(seriesCount: number, pointCount: number): TestSourc
       flags: new Uint8Array(seriesCount).fill(CompactSeriesFlag.DrawLine),
       visibility: new Uint8Array(seriesCount).fill(1),
     },
-    styles: [{ stroke: '#f00', lineWidth: 1 }],
+    styles: [{ stroke: '#f00', cursorStroke: '#ff000080', lineWidth: 1 }],
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount: 0,
     cursorMode: 'single',
@@ -1106,7 +1108,13 @@ function createSource(
   stackGroupCount = 0,
   identity = 'series',
   cursorMode: CompactRenderSource['cursorMode'] = 'single',
-  style: CompactStyleRecord = { stroke: '#f00', fill: '#fcc', lineWidth: 1, pointSize: 4 },
+  style: Omit<CompactStyleRecord, 'cursorStroke'> & { cursorStroke?: string } = {
+    stroke: '#f00',
+    cursorStroke: '#ff000080',
+    fill: '#fcc',
+    lineWidth: 1,
+    pointSize: 4,
+  },
   highlightSeriesOnHover = false
 ): TestSource {
   const pointCount = values[0].length;
@@ -1146,7 +1154,7 @@ function createSource(
       visibility: new Uint8Array(values.length).fill(1),
       stackGroupIds: new Uint8Array(values.length).fill(stackGroupCount === 0 ? 0 : 1),
     },
-    styles: [style],
+    styles: [{ ...style, cursorStroke: style.cursorStroke ?? style.stroke }],
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount,
     cursorMode,

@@ -704,6 +704,7 @@ function createRenderSource(
       rendererStyleId = styles.length;
       styles.push({
         stroke: lineColor,
+        cursorStroke: colorManipulator.alpha(lineColor, 0.5),
         fill: lineColor,
         areaFill,
         areaGradient,

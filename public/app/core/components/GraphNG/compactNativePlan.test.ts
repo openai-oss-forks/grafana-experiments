@@ -517,6 +517,7 @@ describe('CompactNativeRenderPlan', () => {
 
     const style = plan.source.styles[0];
     expect(style.areaFill).toBe(colorManipulator.alpha(style.stroke, 0.35));
+    expect(style.cursorStroke).toBe(colorManipulator.alpha(style.stroke, 0.5));
     expect(style.fill).toBe(style.stroke);
     expect(style.lineWidth).toBe(0);
   });

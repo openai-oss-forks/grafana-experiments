@@ -106,21 +106,42 @@ describe('uPlot compact X host', () => {
     plot.destroy();
   });
 
-  test('passes native synchronization origin to receiving compact plots', async () => {
+  test('renders receiver-local compact marker state for native synchronization', async () => {
     const sourceController = createController();
     const receiverController = createController();
+    receiverController.updateCursor.mockImplementation((_plot, index, _mouseY, origin) =>
+      index != null && origin === 'native-sync'
+        ? {
+            hasPoint: true,
+            seriesIndex: 0,
+            dataIndex: index,
+            distance: 100,
+            left: 140,
+            top: 60,
+            size: 10,
+            fill: 'rgb(12, 34, 56)',
+            stroke: 'rgba(12, 34, 56, 0.5)',
+          }
+        : null
+    );
     const syncKey = `compact-test-${Math.random()}`;
     const options = {
       ...createOptions(true),
-      cursor: { show: true, sync: { key: syncKey, scales: ['x', null] as [string, null] } },
+      cursor: {
+        show: true,
+        points: {
+          one: true,
+          size: (plot, seriesIndex) => plot.series[seriesIndex].points.size * 2,
+          width: (_plot, _seriesIndex, size) => size / 4,
+        },
+        focus: { prox: 30 },
+        sync: { key: syncKey, scales: ['x', null] as [string, null] },
+      },
     };
-    const sourcePlot = uPlot.compact(options, createSource([1, 2, 3]), sourceController, document.createElement('div'));
-    const receiverPlot = uPlot.compact(
-      options,
-      createSource([1, 2, 3]),
-      receiverController,
-      document.createElement('div')
-    );
+    const sourceTarget = document.createElement('div');
+    const receiverTarget = document.createElement('div');
+    const sourcePlot = uPlot.compact(options, createSource([1, 2, 3]), sourceController, sourceTarget);
+    const receiverPlot = uPlot.compact(options, createSource([1, 2, 3]), receiverController, receiverTarget);
     await flushCommit();
 
     sourcePlot.setCursor({ left: 100, top: 50 }, true, true);
@@ -133,6 +154,17 @@ describe('uPlot compact X host', () => {
     );
     expect(sourcePlot.compactCursorOrigin).toBe('programmatic');
     expect(receiverPlot.compactCursorOrigin).toBe('native-sync');
+    const marker = receiverTarget.querySelector<HTMLElement>('.u-cursor-pt');
+    expect(marker).not.toBeNull();
+    expect(marker?.classList.contains('u-off')).toBe(false);
+    expect(marker?.style.transform).toBe('translate(140px,60px)');
+    expect(marker?.style.width).toBe('10px');
+    expect(marker?.style.height).toBe('10px');
+    expect(marker?.style.marginLeft).toBe('-5px');
+    expect(marker?.style.marginTop).toBe('-5px');
+    expect(marker?.style.background).toBe('rgb(12, 34, 56)');
+    expect(marker?.style.borderColor).toBe('rgba(12, 34, 56, 0.5)');
+    expect(marker?.style.borderWidth).toBe('2.5px');
 
     Reflect.set(receiverPlot.cursor, 'event', new MouseEvent('mousemove'));
     receiverPlot.setCursor({ left: 120, top: 40 }, true, false, 'native-sync');
@@ -142,6 +174,11 @@ describe('uPlot compact X host', () => {
       40,
       'native-sync'
     );
+
+    receiverController.updateCursor.mockReturnValue(null);
+    sourcePlot.setCursor({ left: 120, top: 50 }, true, true);
+    expect(marker?.classList.contains('u-off')).toBe(true);
+    expect(marker?.style.transform).toBe('translate(-10px,-10px)');
 
     receiverController.updateCursor.mockClear();
     receiverPlot.setCompactData?.(createSource([2, 3, 4]));

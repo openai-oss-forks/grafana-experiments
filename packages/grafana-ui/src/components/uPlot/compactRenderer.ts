@@ -31,6 +31,8 @@ export interface CompactRenderColumns {
 
 export interface CompactStyleRecord {
   readonly stroke: string;
+  /** Series color at legacy cursor-border opacity. */
+  readonly cursorStroke: string;
   readonly fill?: string | null;
   readonly areaFill?: string | null;
   readonly areaGradient?: readonly [string, string] | null;
@@ -911,8 +913,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.cursorState.left = plot.valToPos(this.source.xAt(dataIndex), 'x');
     this.cursorState.top = top;
     this.cursorState.size = (style.pointSize ?? Math.max(5, (style.lineWidth ?? 1) * 3)) * 2;
-    this.cursorState.fill = style.fill ?? style.stroke;
-    this.cursorState.stroke = style.stroke;
+    this.cursorState.fill = style.stroke;
+    this.cursorState.stroke = style.cursorStroke;
   }
 
   private isCursorSnapshotCurrent(index: number, plot?: uPlot): boolean {
