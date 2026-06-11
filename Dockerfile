@@ -15,7 +15,7 @@ ARG JS_SRC=js-builder
 FROM alpine:3.23.3 AS alpine-base
 FROM ubuntu:24.04 AS ubuntu-base
 FROM golang:1.25.9-alpine AS go-builder-base
-FROM --platform=$BUILDPLATFORM node:24-alpine3.22 AS js-builder-base
+FROM --platform=$BUILDPLATFORM node:26-alpine3.22 AS js-builder-base
 # Javascript build stage
 FROM --platform=$BUILDPLATFORM ${JS_IMAGE} AS js-builder
 ARG JS_NODE_ENV=production
