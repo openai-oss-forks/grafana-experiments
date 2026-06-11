@@ -49,10 +49,14 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
     });
 
     config.addHook('setLegend', () => {
-      let viaSync = u!.cursor.event == null;
+      let viaSync = compact ? u!.compactCursorOrigin === 'native-sync' : u!.cursor.event == null;
 
       if (!viaSync) {
-        let dataIdx = compact ? (u!.compactCursor?.dataIndex ?? u!.cursor.idx) : u!.cursor.idxs!.find((v) => v != null);
+        let dataIdx = compact
+          ? u!.compactCursor != null && u!.compactCursor.seriesIndex >= 0
+            ? u!.compactCursor.dataIndex
+            : null
+          : u!.cursor.idxs!.find((v) => v != null);
 
         if (dataIdx == null) {
           throttledClear();
@@ -96,10 +100,15 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
         //   return;
         // }
 
-        u!.setCursor({
-          left,
-          top: u!.rect.height / 2,
-        });
+        u!.setCursor(
+          {
+            left,
+            top: u!.rect.height / 2,
+          },
+          undefined,
+          undefined,
+          'native-sync'
+        );
       }
     }
 
@@ -149,10 +158,15 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
 
             // @ts-ignore
             if (!u!.cursor._lock) {
-              u!.setCursor({
-                left: -10,
-                top: -10,
-              });
+              u!.setCursor(
+                {
+                  left: -10,
+                  top: -10,
+                },
+                undefined,
+                undefined,
+                'native-sync'
+              );
             }
           },
         })

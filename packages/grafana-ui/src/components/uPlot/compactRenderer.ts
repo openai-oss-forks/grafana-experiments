@@ -271,6 +271,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private stackAreaIndexes = new Int32Array(0);
   private stackAreaLength = 0;
   private cursorStacks = new Float64Array(0);
+  private cursorStackIndexes = new Int32Array(0);
   private cursorSnapshotValues = new Float64Array(0);
   private cursorSnapshotStates = new Uint8Array(0);
   private cursorSnapshotDataIndexes: Int32Array | null = null;
@@ -330,6 +331,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   };
 
   private readonly cursorState: uPlot.CompactCursorState = {
+    hasPoint: false,
     seriesIndex: -1,
     dataIndex: -1,
     distance: Number.POSITIVE_INFINITY,
@@ -439,6 +441,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.stackAreaIndexes = new Int32Array(0);
     this.stackAreaLength = 0;
     this.cursorStacks = new Float64Array(0);
+    this.cursorStackIndexes = new Int32Array(0);
     this.cursorSnapshotValues = new Float64Array(0);
     this.cursorSnapshotStates = new Uint8Array(0);
     this.cursorSnapshotDataIndexes = null;
@@ -761,8 +764,14 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.visibleSeriesCount = visibleSeriesCount;
   }
 
-  updateCursor(plot: uPlot, index: number | null, mouseY: number): uPlot.CompactCursorState | null {
+  updateCursor(
+    plot: uPlot,
+    index: number | null,
+    mouseY: number,
+    origin: uPlot.CompactCursorOrigin
+  ): uPlot.CompactCursorState | null {
     const state = this.cursorState;
+    state.hasPoint = false;
     state.seriesIndex = -1;
     state.dataIndex = -1;
     state.distance = Number.POSITIVE_INFINITY;
@@ -774,67 +783,117 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       return null;
     }
 
-    const viaSync = plot.cursor != null && plot.cursor.event == null;
-    if (viaSync || this.source.cursorMode === 'none') {
-      state.dataIndex = index;
-      state.left = plot.valToPos(this.source.xAt(index), 'x');
-      state.top = mouseY;
-      return state;
-    }
-
-    const cursorSnapshot = this.source.cursorMode === 'multi' ? this.getCursorSnapshot(index, plot) : null;
     const focusStartedAt = hoverStageProbe ? performance.now() : 0;
     if (this.source.stackGroupCount > 0) {
-      this.cursorStacks.fill(0);
+      this.cursorStackIndexes.fill(-1);
     }
-    for (let series = 0; series < this.source.seriesCount; series++) {
-      if (!this.isVisible(series)) {
-        continue;
-      }
-      let dataIndex: number = index;
-      let rawValue: CompactPlotValue;
-      if (cursorSnapshot) {
-        rawValue = cursorSnapshot.valueAt(series);
-        dataIndex = cursorSnapshot.dataIndexAt(series);
-        if (dataIndex !== index) {
-          rawValue = this.source.yAt(series, dataIndex);
-        }
+    const needsSnapshot = origin !== 'native-sync' && this.source.cursorMode === 'multi';
+    if (needsSnapshot) {
+      this.ensureCursorSnapshotScratch();
+      if (!this.isCursorSnapshotCurrent(index, plot)) {
+        this.populateCursorSnapshot(index, plot, mouseY);
       } else {
-        rawValue = this.source.yAt(series, dataIndex);
-        if (rawValue == null) {
-          const nearest = this.nearestPresentAtCursor(plot, series, index);
-          if (nearest == null) {
-            continue;
-          }
-          dataIndex = nearest;
-          rawValue = this.source.yAt(series, dataIndex);
-        }
+        this.selectCursorPointFromSnapshot(plot, index, mouseY);
       }
-      if (rawValue == null || !this.isWithinCursorProximity(plot, series, index, dataIndex)) {
-        continue;
-      }
-      const value = this.stackCursorValue(series, rawValue);
-      const scaleKey = this.getScaleKey(series);
-      const top = plot.valToPos(value, scaleKey);
-      const distance = Math.abs(top - mouseY);
-      if (distance < state.distance) {
-        const style = this.getStyle(series);
-        state.seriesIndex = series;
-        state.dataIndex = dataIndex;
-        state.distance = distance;
-        state.left = plot.valToPos(this.source.xAt(dataIndex), 'x');
-        state.top = top;
-        state.size = style.pointSize ?? Math.max(5, (style.lineWidth ?? 1) * 3);
-        state.fill = style.fill ?? style.stroke;
-        state.stroke = style.stroke;
-      }
+    } else if (this.cursorSnapshotValues.length > 0 && this.isCursorSnapshotCurrent(index, plot)) {
+      this.selectCursorPointFromSnapshot(plot, index, mouseY);
+    } else {
+      this.selectCursorPointFromSource(plot, index, mouseY);
     }
     hoverStageProbe?.record('focusSelection', {
       durationMs: performance.now() - focusStartedAt,
       seriesVisits: this.source.seriesCount,
       found: state.seriesIndex >= 0,
     });
-    return state.seriesIndex < 0 ? null : state;
+    const focus = plot.focus;
+    state.hasPoint = state.seriesIndex >= 0 && focus.prox >= 0 && state.distance <= focus.prox;
+    return state;
+  }
+
+  private selectCursorPointFromSource(plot: uPlot, index: number, mouseY: number): void {
+    for (let seriesIndex = 0; seriesIndex < this.source.seriesCount; seriesIndex++) {
+      if (!this.isVisible(seriesIndex)) {
+        continue;
+      }
+      let dataIndex = index;
+      let value = this.source.yAt(seriesIndex, dataIndex);
+      if (value == null) {
+        const nearest = this.nearestPresentAtCursor(plot, seriesIndex, index);
+        if (nearest == null) {
+          continue;
+        }
+        dataIndex = nearest;
+        value = this.source.yAt(seriesIndex, dataIndex);
+      }
+      this.considerCursorPoint(plot, seriesIndex, index, dataIndex, value, mouseY);
+    }
+  }
+
+  private selectCursorPointFromSnapshot(plot: uPlot, index: number, mouseY: number): void {
+    for (let seriesIndex = 0; seriesIndex < this.source.seriesCount; seriesIndex++) {
+      if (!this.isVisible(seriesIndex)) {
+        continue;
+      }
+      const dataIndex = this.readCursorSnapshotDataIndex(seriesIndex);
+      const value =
+        dataIndex === index ? this.readCursorSnapshotValue(seriesIndex) : this.source.yAt(seriesIndex, dataIndex);
+      this.considerCursorPoint(plot, seriesIndex, index, dataIndex, value, mouseY);
+    }
+  }
+
+  private considerCursorPoint(
+    plot: uPlot,
+    seriesIndex: number,
+    cursorIndex: number,
+    dataIndex: number,
+    rawValue: CompactPlotValue,
+    mouseY: number
+  ): void {
+    if (rawValue == null || !this.isWithinCursorProximity(plot, seriesIndex, cursorIndex, dataIndex)) {
+      return;
+    }
+
+    const value = this.stackCursorValue(seriesIndex, dataIndex, rawValue);
+    const scaleKey = this.getScaleKey(seriesIndex);
+    const top = plot.valToPos(value, scaleKey);
+    const focus = plot.focus;
+    const distance = Math.abs(focus.dist?.(plot, seriesIndex + 1, dataIndex, top, mouseY) ?? top - mouseY);
+    const bias = focus.bias ?? 0;
+    if (bias !== 0) {
+      const mouseValue = plot.posToVal(mouseY, scaleKey);
+      const valueSign = value >= 0 ? 1 : -1;
+      const mouseSign = mouseValue >= 0 ? 1 : -1;
+      const matchesBias =
+        valueSign === mouseSign &&
+        (mouseSign === 1
+          ? bias === 1
+            ? value >= mouseValue
+            : value <= mouseValue
+          : bias === 1
+            ? value <= mouseValue
+            : value >= mouseValue);
+      if (!matchesBias) {
+        return;
+      }
+    }
+    if (!(distance < this.cursorState.distance)) {
+      return;
+    }
+
+    const style = this.getStyle(seriesIndex);
+    this.cursorState.seriesIndex = seriesIndex;
+    this.cursorState.dataIndex = dataIndex;
+    this.cursorState.distance = distance;
+    this.cursorState.left = plot.valToPos(this.source.xAt(dataIndex), 'x');
+    this.cursorState.top = top;
+    this.cursorState.size = style.pointSize ?? Math.max(5, (style.lineWidth ?? 1) * 3);
+    this.cursorState.fill = style.fill ?? style.stroke;
+    this.cursorState.stroke = style.stroke;
+  }
+
+  private isCursorSnapshotCurrent(index: number, plot?: uPlot): boolean {
+    const mouseX = plot?.cursor.left;
+    return this.cursorSnapshotIndex === index && (mouseX == null || mouseX === this.cursorSnapshotMouseX);
   }
 
   getCursorSnapshot(index: number, plot?: uPlot): CompactCursorSnapshot {
@@ -842,8 +901,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       throw new Error(`Compact cursor index ${index} is outside the source`);
     }
     this.ensureCursorSnapshotScratch();
-    const mouseX = plot?.cursor.left;
-    if (this.cursorSnapshotIndex !== index || (mouseX != null && mouseX !== this.cursorSnapshotMouseX)) {
+    if (!this.isCursorSnapshotCurrent(index, plot)) {
       this.populateCursorSnapshot(index, plot);
     }
     return this.cursorSnapshot;
@@ -1652,14 +1710,34 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     return (group - 1) * this.stackPointCount + (index - this.stackFrom);
   }
 
-  private stackCursorValue(series: number, value: number): number {
+  private stackCursorValue(series: number, dataIndex: number, value: number): number {
     if ((this.source.columns.flags[series] & CompactSeriesFlag.Stack) === 0) {
       return value;
     }
     const group = this.getStackGroup(series);
     const offset = group - 1;
-    this.cursorStacks[offset] += value;
-    return this.cursorStacks[offset];
+    if (this.cursorStackIndexes[offset] === dataIndex) {
+      this.cursorStacks[offset] += value;
+      return this.cursorStacks[offset];
+    }
+
+    let stackedValue = value;
+    for (let candidate = 0; candidate < series; candidate++) {
+      if (
+        !this.isVisible(candidate) ||
+        (this.source.columns.flags[candidate] & CompactSeriesFlag.Stack) === 0 ||
+        this.getStackGroup(candidate) !== group
+      ) {
+        continue;
+      }
+      const candidateValue = this.source.yAt(candidate, dataIndex);
+      if (candidateValue != null) {
+        stackedValue += candidateValue;
+      }
+    }
+    this.cursorStackIndexes[offset] = dataIndex;
+    this.cursorStacks[offset] = stackedValue;
+    return stackedValue;
   }
 
   private prepareStackScratch(from: number, to: number): void {
@@ -1691,6 +1769,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const required = this.source.stackGroupCount;
     if (this.cursorStacks.length !== required) {
       this.cursorStacks = new Float64Array(required);
+      this.cursorStackIndexes = new Int32Array(required);
     }
   }
 
@@ -1703,7 +1782,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
   }
 
-  private populateCursorSnapshot(index: number, plot?: uPlot): void {
+  private populateCursorSnapshot(index: number, plot?: uPlot, mouseY?: number): void {
     const source = this.source;
     const startedAt = hoverStageProbe ? performance.now() : 0;
     let valueReads = 0;
@@ -1749,6 +1828,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         this.cursorSnapshotValues[seriesIndex] = value;
       }
       this.cursorSnapshotStates[seriesIndex] = state;
+      if (mouseY !== undefined && plot != null && this.isVisible(seriesIndex)) {
+        const resolvedValue = dataIndex === index ? value : source.yAt(seriesIndex, dataIndex);
+        this.considerCursorPoint(plot, seriesIndex, index, dataIndex, resolvedValue, mouseY);
+      }
       if (
         !changed &&
         (state !== previousState ||

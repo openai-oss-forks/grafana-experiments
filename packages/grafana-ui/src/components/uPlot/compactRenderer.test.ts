@@ -132,7 +132,26 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 0, 5)).toMatchObject({ seriesIndex: 1, dataIndex: 0, top: 5 });
+    expect(controller.updateCursor(plot, 0, 5, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 0, top: 5 });
+  });
+
+  test('computes stacked cursor values at each gap-resolved timestamp', () => {
+    const source = createSource(
+      [
+        [1, null, 100],
+        [10, 20, null],
+      ],
+      [CompactSeriesFlag.Stack, CompactSeriesFlag.Stack],
+      1
+    );
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 20, 'native-sync')).toMatchObject({
+      seriesIndex: 1,
+      dataIndex: 1,
+      top: 20,
+    });
   });
 
   test('preserves query-owned response storage after transferring controller ownership', () => {
@@ -279,11 +298,11 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    const cursor = controller.updateCursor(plot, 1, 10);
+    const cursor = controller.updateCursor(plot, 1, 10, 'local');
     expect(cursor).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
 
     controller.setSeries(1, { show: false });
-    expect(controller.updateCursor(plot, 1, 2)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
   });
 
   test('uses the nearest present sample when cursor focus lands on a series gap', () => {
@@ -291,7 +310,7 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+    expect(controller.updateCursor(plot, 1, 1, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
   });
 
   test('matches legacy pointer proximity when a gap is between two samples', () => {
@@ -300,20 +319,20 @@ describe('CompactRenderController', () => {
     const { plot } = createPlot();
 
     plot.cursor.left = 1.25;
-    expect(controller.updateCursor(plot, 1, 3)).toMatchObject({ seriesIndex: 0, dataIndex: 2, top: 3 });
+    expect(controller.updateCursor(plot, 1, 3, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 2, top: 3 });
     const rightSnapshot = controller.getCursorSnapshot(1);
     expect(rightSnapshot.dataIndexAt(0)).toBe(2);
     const rightRevision = rightSnapshot.revision;
 
     plot.cursor.left = 0.75;
-    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+    expect(controller.updateCursor(plot, 1, 1, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
     const leftSnapshot = controller.getCursorSnapshot(1);
     expect(leftSnapshot.dataIndexAt(0)).toBe(0);
     expect(leftSnapshot.revision).toBeGreaterThan(rightRevision);
 
     plot.cursor.left = 1.5;
     plot.cursor.hover!.prox = 0.25;
-    expect(controller.updateCursor(plot, 1, 2)).toBeNull();
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
   });
 
   test('applies hover proximity when only one present sample borders a gap', () => {
@@ -325,7 +344,7 @@ describe('CompactRenderController', () => {
     plot.cursor.left = 200;
     plot.cursor.hover!.prox = 15;
 
-    expect(controller.updateCursor(plot, 2, 1)).toBeNull();
+    expect(controller.updateCursor(plot, 2, 1, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
     expect(controller.getCursorSnapshot(2).valueAt(0)).toBeNull();
   });
 
@@ -336,7 +355,7 @@ describe('CompactRenderController', () => {
     plot.cursor.left = 1.5;
     plot.cursor.hover!.prox = 0.25;
 
-    expect(controller.updateCursor(plot, 1, 2)).toBeNull();
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
   });
 
   test('resolves the nearest series for a local multi-series tooltip cursor', () => {
@@ -354,7 +373,7 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
+    expect(controller.updateCursor(plot, 1, 10, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
     expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
   });
 
@@ -375,7 +394,7 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    controller.updateCursor(plot, 1, 10);
+    controller.updateCursor(plot, 1, 10, 'local');
     const firstSnapshot = controller.getCursorSnapshot(1);
     const firstRevision = firstSnapshot.revision;
     expect(firstSnapshot.valueAt(0)).toBeNull();
@@ -385,14 +404,14 @@ describe('CompactRenderController', () => {
     expect(source.yAt).toHaveBeenCalledTimes(1);
     expect(source.nearestPresent).toHaveBeenCalledTimes(2);
 
-    controller.updateCursor(plot, 1, 2);
+    controller.updateCursor(plot, 1, 2, 'local');
     expect(controller.getCursorSnapshot(1)).toBe(firstSnapshot);
     expect(firstSnapshot.revision).toBe(firstRevision);
     expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
     expect(source.yAt).toHaveBeenCalledTimes(2);
     expect(source.nearestPresent).toHaveBeenCalledTimes(2);
 
-    controller.updateCursor(plot, 2, 2);
+    controller.updateCursor(plot, 2, 2, 'local');
     expect(source.cursorValueAt).toHaveBeenCalledTimes(4);
     expect(source.yAt).toHaveBeenCalledTimes(2);
   });
@@ -413,18 +432,60 @@ describe('CompactRenderController', () => {
     expect(snapshot.valueAt(2)).toBeNaN();
   });
 
-  test('does not scan series for a synchronized cursor update', () => {
+  test('does not select non-finite cursor points', () => {
+    const source = createSource([[Number.NaN]], [CompactSeriesFlag.Linear]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
+  });
+
+  test('snaps a synchronized cursor to the nearest receiver-local point', () => {
     const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear]);
     source.cursorValueAt = jest.fn(source.cursorValueAt);
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
-    Reflect.set(plot, 'cursor', { event: null });
 
-    expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
+    expect(controller.updateCursor(plot, 1, 10, 'native-sync')).toMatchObject({
+      seriesIndex: 0,
+      dataIndex: 1,
+      left: 1,
+      top: 2,
+    });
     expect(source.cursorValueAt).not.toHaveBeenCalled();
 
     expect(controller.getCursorSnapshot(1).valueAt(0)).toBe(2);
     expect(source.cursorValueAt).toHaveBeenCalledTimes(1);
+  });
+
+  test('defers a synchronized tooltip snapshot until the tooltip consumes it', () => {
+    const source = createSource(
+      [
+        [1, 2, 3],
+        [10, 11, 12],
+      ],
+      [CompactSeriesFlag.Linear, CompactSeriesFlag.Linear]
+    );
+    source.cursorValueAt = jest.fn(source.cursorValueAt);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 10, 'native-sync')).toMatchObject({
+      seriesIndex: 1,
+      dataIndex: 1,
+      top: 11,
+    });
+    expect(source.cursorValueAt).not.toHaveBeenCalled();
+    expect(controller.getCursorSnapshot(1, plot).valueAt(1)).toBe(11);
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps cursor point selection independent from tooltip visibility', () => {
+    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear], 0, 'series', 'none');
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 1, top: 2 });
   });
 
   test('keeps exact gap values while applying plot-aware focus proximity', () => {
@@ -433,7 +494,10 @@ describe('CompactRenderController', () => {
     const { plot } = createPlot();
     Reflect.set(plot, 'cursor', { left: 100, top: 1, event: null, hover: { prox: 15 } });
 
-    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
+    expect(controller.updateCursor(plot, 1, 1, 'native-sync')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+    });
     expect(controller.getCursorSnapshot(1, plot).valueAt(0)).toBeNull();
 
     Reflect.set(plot, 'cursor', { left: 1.9, top: 1, event: null, hover: { prox: 15 } });
@@ -1095,6 +1159,12 @@ function createPlot(): {
       top: 1,
       event: {},
       hover: { prox: 15 },
+    },
+    focus: {
+      prox: 30,
+      bias: 0,
+      dist: (_plot: uPlot, _seriesIndex: number, _dataIndex: number, valuePos: number, cursorPos: number) =>
+        valuePos - cursorPos,
     },
     valToPos: (value: number) => value,
     posToVal: (value: number) => value,
