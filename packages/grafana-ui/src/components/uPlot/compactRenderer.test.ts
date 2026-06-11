@@ -65,6 +65,21 @@ describe('CompactRenderController', () => {
     expect(controller.extent(plot, 'y', 0, 2)).toEqual([0, 3]);
   });
 
+  test('routes visibility through the current plot and preserves changes before attachment', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine]);
+    const controller = new CompactRenderController(source);
+
+    controller.setSeriesVisibility(0, false);
+    expect(source.columns.visibility[0]).toBe(0);
+
+    const { plot } = createPlot();
+    plot.setSeries = jest.fn();
+    controller.draw(plot, 0, 1);
+    controller.setSeriesVisibility(0, true);
+
+    expect(plot.setSeries).toHaveBeenCalledWith(1, { show: true });
+  });
+
   test('matches legacy stack presence semantics across gaps', () => {
     const source = createSource(
       [
@@ -132,7 +147,52 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 0, 5)).toMatchObject({ seriesIndex: 1, dataIndex: 0, top: 5 });
+    expect(controller.updateCursor(plot, 0, 5, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 0, top: 5 });
+  });
+
+  test('computes stacked cursor values at each gap-resolved timestamp', () => {
+    const source = createSource(
+      [
+        [1, null, 100],
+        [10, 20, null],
+      ],
+      [CompactSeriesFlag.Stack, CompactSeriesFlag.Stack],
+      1
+    );
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 20, 'native-sync')).toMatchObject({
+      seriesIndex: 1,
+      dataIndex: 1,
+      top: 20,
+    });
+  });
+
+  test('keeps stacked cursor values exact across many gap-resolved timestamps', () => {
+    const source = createSource(
+      Array.from({ length: 6 }, (_, series) => [
+        series + 1,
+        series + 1,
+        series + 1,
+        series + 1,
+        series + 1,
+        series + 1,
+        null,
+      ]),
+      new Array(6).fill(CompactSeriesFlag.Stack),
+      1
+    );
+    source.nearestPresent = (series) => series;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 6, 21, 'native-sync')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 5,
+      dataIndex: 5,
+      top: 21,
+    });
   });
 
   test('preserves query-owned response storage after transferring controller ownership', () => {
@@ -279,11 +339,11 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    const cursor = controller.updateCursor(plot, 1, 10);
+    const cursor = controller.updateCursor(plot, 1, 10, 'local');
     expect(cursor).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
 
     controller.setSeries(1, { show: false });
-    expect(controller.updateCursor(plot, 1, 2)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
   });
 
   test('uses the nearest present sample when cursor focus lands on a series gap', () => {
@@ -291,7 +351,7 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+    expect(controller.updateCursor(plot, 1, 1, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
   });
 
   test('matches legacy pointer proximity when a gap is between two samples', () => {
@@ -300,20 +360,20 @@ describe('CompactRenderController', () => {
     const { plot } = createPlot();
 
     plot.cursor.left = 1.25;
-    expect(controller.updateCursor(plot, 1, 3)).toMatchObject({ seriesIndex: 0, dataIndex: 2, top: 3 });
+    expect(controller.updateCursor(plot, 1, 3, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 2, top: 3 });
     const rightSnapshot = controller.getCursorSnapshot(1);
     expect(rightSnapshot.dataIndexAt(0)).toBe(2);
     const rightRevision = rightSnapshot.revision;
 
     plot.cursor.left = 0.75;
-    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+    expect(controller.updateCursor(plot, 1, 1, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
     const leftSnapshot = controller.getCursorSnapshot(1);
     expect(leftSnapshot.dataIndexAt(0)).toBe(0);
     expect(leftSnapshot.revision).toBeGreaterThan(rightRevision);
 
     plot.cursor.left = 1.5;
     plot.cursor.hover!.prox = 0.25;
-    expect(controller.updateCursor(plot, 1, 2)).toBeNull();
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
   });
 
   test('applies hover proximity when only one present sample borders a gap', () => {
@@ -325,7 +385,7 @@ describe('CompactRenderController', () => {
     plot.cursor.left = 200;
     plot.cursor.hover!.prox = 15;
 
-    expect(controller.updateCursor(plot, 2, 1)).toBeNull();
+    expect(controller.updateCursor(plot, 2, 1, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
     expect(controller.getCursorSnapshot(2).valueAt(0)).toBeNull();
   });
 
@@ -336,7 +396,7 @@ describe('CompactRenderController', () => {
     plot.cursor.left = 1.5;
     plot.cursor.hover!.prox = 0.25;
 
-    expect(controller.updateCursor(plot, 1, 2)).toBeNull();
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
   });
 
   test('resolves the nearest series for a local multi-series tooltip cursor', () => {
@@ -354,7 +414,7 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
+    expect(controller.updateCursor(plot, 1, 10, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
     expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
   });
 
@@ -375,7 +435,7 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    controller.updateCursor(plot, 1, 10);
+    controller.updateCursor(plot, 1, 10, 'local');
     const firstSnapshot = controller.getCursorSnapshot(1);
     const firstRevision = firstSnapshot.revision;
     expect(firstSnapshot.valueAt(0)).toBeNull();
@@ -385,14 +445,14 @@ describe('CompactRenderController', () => {
     expect(source.yAt).toHaveBeenCalledTimes(1);
     expect(source.nearestPresent).toHaveBeenCalledTimes(2);
 
-    controller.updateCursor(plot, 1, 2);
+    controller.updateCursor(plot, 1, 2, 'local');
     expect(controller.getCursorSnapshot(1)).toBe(firstSnapshot);
     expect(firstSnapshot.revision).toBe(firstRevision);
     expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
     expect(source.yAt).toHaveBeenCalledTimes(2);
     expect(source.nearestPresent).toHaveBeenCalledTimes(2);
 
-    controller.updateCursor(plot, 2, 2);
+    controller.updateCursor(plot, 2, 2, 'local');
     expect(source.cursorValueAt).toHaveBeenCalledTimes(4);
     expect(source.yAt).toHaveBeenCalledTimes(2);
   });
@@ -413,18 +473,98 @@ describe('CompactRenderController', () => {
     expect(snapshot.valueAt(2)).toBeNaN();
   });
 
-  test('does not scan series for a synchronized cursor update', () => {
+  test('does not select non-finite cursor points', () => {
+    const source = createSource([[Number.NaN]], [CompactSeriesFlag.Linear]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
+  });
+
+  test('snaps a synchronized cursor to the nearest receiver-local point', () => {
     const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear]);
     source.cursorValueAt = jest.fn(source.cursorValueAt);
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
-    Reflect.set(plot, 'cursor', { event: null });
 
-    expect(controller.updateCursor(plot, 1, 10)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
+    expect(controller.updateCursor(plot, 1, 10, 'native-sync')).toMatchObject({
+      seriesIndex: 0,
+      dataIndex: 1,
+      left: 1,
+      top: 2,
+    });
     expect(source.cursorValueAt).not.toHaveBeenCalled();
 
     expect(controller.getCursorSnapshot(1).valueAt(0)).toBe(2);
     expect(source.cursorValueAt).toHaveBeenCalledTimes(1);
+  });
+
+  test('defers a synchronized tooltip snapshot until the tooltip consumes it', () => {
+    const source = createSource(
+      [
+        [1, 2, 3],
+        [10, 11, 12],
+      ],
+      [CompactSeriesFlag.Linear, CompactSeriesFlag.Linear]
+    );
+    source.cursorValueAt = jest.fn(source.cursorValueAt);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 10, 'native-sync')).toMatchObject({
+      seriesIndex: 1,
+      dataIndex: 1,
+      top: 11,
+    });
+    expect(source.cursorValueAt).not.toHaveBeenCalled();
+    expect(controller.getCursorSnapshot(1, plot).valueAt(1)).toBe(11);
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps cursor point selection independent from tooltip visibility', () => {
+    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Linear], 0, 'series', 'none');
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({
+      seriesIndex: 0,
+      dataIndex: 1,
+      top: 2,
+      size: 8,
+      fill: '#f00',
+      stroke: '#ff000080',
+    });
+  });
+
+  test('clears candidate coordinates when focus proximity rejects the nearest point', () => {
+    const source = createSource([[10]], [CompactSeriesFlag.Linear]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+      dataIndex: -1,
+      left: -10,
+      top: -10,
+      size: 0,
+    });
+  });
+
+  test('keeps synchronized markers on the nearest receiver-local series across different scales', () => {
+    const source = createSource([[10]], [CompactSeriesFlag.Linear]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 0, 0, 'native-sync')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      dataIndex: 0,
+      top: 10,
+      size: 8,
+    });
   });
 
   test('keeps exact gap values while applying plot-aware focus proximity', () => {
@@ -433,7 +573,10 @@ describe('CompactRenderController', () => {
     const { plot } = createPlot();
     Reflect.set(plot, 'cursor', { left: 100, top: 1, event: null, hover: { prox: 15 } });
 
-    expect(controller.updateCursor(plot, 1, 1)).toMatchObject({ seriesIndex: -1, dataIndex: 1 });
+    expect(controller.updateCursor(plot, 1, 1, 'native-sync')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+    });
     expect(controller.getCursorSnapshot(1, plot).valueAt(0)).toBeNull();
 
     Reflect.set(plot, 'cursor', { left: 1.9, top: 1, event: null, hover: { prox: 15 } });
@@ -463,10 +606,13 @@ describe('CompactRenderController', () => {
     parent.append(mainCanvas, over);
     Object.defineProperty(context, 'canvas', { value: mainCanvas });
     Reflect.set(plot, 'over', over);
+    let backdropFillStyle: string | CanvasGradient | CanvasPattern | undefined;
     const overlayContext = {
       ...context,
       clearRect: jest.fn(),
-      fillRect: jest.fn(),
+      fillRect: jest.fn(() => {
+        backdropFillStyle = overlayContext.fillStyle;
+      }),
       stroke: jest.fn(),
     } as unknown as jest.Mocked<CanvasRenderingContext2D>;
     const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
@@ -482,7 +628,9 @@ describe('CompactRenderController', () => {
 
       expect(controller.setSeries(0, { focus: true })).toBe(false);
       expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
+      expect(backdropFillStyle).toBe('rgba(0, 0, 0, 0.5)');
       expect(overlayContext.fillRect).toHaveBeenCalledWith(0, 0, 100, 100);
+      expect(overlayContext.strokeStyle).toBe('#f00');
 
       expect(controller.setSeries(1, { show: false })).toBe(true);
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
@@ -941,7 +1089,7 @@ function createVirtualSource(seriesCount: number, pointCount: number): TestSourc
       flags: new Uint8Array(seriesCount).fill(CompactSeriesFlag.DrawLine),
       visibility: new Uint8Array(seriesCount).fill(1),
     },
-    styles: [{ stroke: '#f00', lineWidth: 1 }],
+    styles: [{ stroke: '#f00', cursorStroke: '#ff000080', lineWidth: 1 }],
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount: 0,
     cursorMode: 'single',
@@ -964,7 +1112,13 @@ function createSource(
   stackGroupCount = 0,
   identity = 'series',
   cursorMode: CompactRenderSource['cursorMode'] = 'single',
-  style: CompactStyleRecord = { stroke: '#f00', fill: '#fcc', lineWidth: 1, pointSize: 4 },
+  style: Omit<CompactStyleRecord, 'cursorStroke'> & { cursorStroke?: string } = {
+    stroke: '#f00',
+    cursorStroke: '#ff000080',
+    fill: '#fcc',
+    lineWidth: 1,
+    pointSize: 4,
+  },
   focusOverlayColor?: string
 ): TestSource {
   const pointCount = values[0].length;
@@ -1004,7 +1158,7 @@ function createSource(
       visibility: new Uint8Array(values.length).fill(1),
       stackGroupIds: new Uint8Array(values.length).fill(stackGroupCount === 0 ? 0 : 1),
     },
-    styles: [style],
+    styles: [{ ...style, cursorStroke: style.cursorStroke ?? style.stroke }],
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount,
     cursorMode,
@@ -1095,6 +1249,12 @@ function createPlot(): {
       top: 1,
       event: {},
       hover: { prox: 15 },
+    },
+    focus: {
+      prox: 30,
+      bias: 0,
+      dist: (_plot: uPlot, _seriesIndex: number, _dataIndex: number, valuePos: number, cursorPos: number) =>
+        valuePos - cursorPos,
     },
     valToPos: (value: number) => value,
     posToVal: (value: number) => value,

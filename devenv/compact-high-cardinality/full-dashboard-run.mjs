@@ -37,6 +37,8 @@ Environment:
   AUTO_REFRESH_PANEL_ID   Panel kept visible while observing automatic refreshes
   AUTO_REFRESH_TIMEOUT_MS Maximum wait for each automatic refresh batch (default: 120000)
   VERIFY_INTERACTIONS     Set to 0 to skip tooltip checks in refresh-only stress runs
+  VERIFY_SYNCED_CURSOR_MARKERS
+                           Require every visible synchronized receiver to render a cursor marker
   REQUIRE_ALL_TIMESERIES_COMPACT
                            Fail when any queried time-series panel omits compact-v1
   GC_MODE                 none, settled, or retained (default: none)
@@ -71,6 +73,7 @@ const options = {
   autoRefreshPanelId: process.env.AUTO_REFRESH_PANEL_ID,
   autoRefreshTimeoutMs: readPositiveInteger('AUTO_REFRESH_TIMEOUT_MS', 120_000),
   verifyInteractions: process.env.VERIFY_INTERACTIONS !== '0',
+  verifySyncedCursorMarkers: process.env.VERIFY_SYNCED_CURSOR_MARKERS === '1',
   requireAllTimeSeriesCompact: process.env.REQUIRE_ALL_TIMESERIES_COMPACT === '1',
   gcMode: readGcMode(),
   offscreenSettleMs: readNonNegativeInteger('OFFSCREEN_SETTLE_MS', 0),
@@ -244,6 +247,9 @@ try {
         initial: await verifyVisibleChartInteraction(page),
       }
     : {};
+  if (options.verifySyncedCursorMarkers) {
+    report.synchronizedCursorMarkers = await verifySynchronizedCursorMarkers(page);
+  }
   if (options.autoRefreshPanelId != null) {
     report.autoRefreshTarget = await focusAutoRefreshPanel(page, options.autoRefreshPanelId);
   }
@@ -307,6 +313,9 @@ try {
   }
   if (options.verifyInteractions) {
     report.interactions.reentry = await verifyVisibleChartInteraction(page);
+  }
+  if (options.verifySyncedCursorMarkers) {
+    report.synchronizedCursorMarkersReentry = await verifySynchronizedCursorMarkers(page);
   }
   report.samples.push(await collectBrowserSample(cdp, page, 'reentry-top', options.gcMode !== 'none'));
   await page.screenshot({ path: path.join(options.outputDir, 'dashboard-top.png') });
@@ -597,6 +606,107 @@ async function verifyVisibleChartInteraction(page, requireTooltip = true) {
     hoverToTooltipMs: null,
     tooltipVisible: false,
   };
+}
+
+async function verifySynchronizedCursorMarkers(page) {
+  const overlays = page.locator('.uplot .u-over:visible');
+  const count = await overlays.count();
+  if (count < 2) {
+    throw new Error('Synchronized cursor verification requires at least two visible plots');
+  }
+
+  const attempts = [];
+  for (let index = 0; index < count; index++) {
+    const overlay = overlays.nth(index);
+    const bounds = await overlay.boundingBox();
+    if (!bounds) {
+      continue;
+    }
+    const activePlotIndex = await overlay.evaluate((element) => {
+      const activePlot = element.closest('.uplot');
+      const visiblePlots = Array.from(document.querySelectorAll('.uplot')).filter((plot) => {
+        const bounds = plot.getBoundingClientRect();
+        return bounds.width > 0 && bounds.height > 0 && bounds.bottom > 0 && bounds.top < window.innerHeight;
+      });
+      return visiblePlots.indexOf(activePlot);
+    });
+
+    await page.mouse.move(1, 1);
+    await page.mouse.move(bounds.x + bounds.width * 0.55, bounds.y + bounds.height * 0.45);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.waitForTimeout(50);
+    const cursorMarkers = await collectVisibleCursorMarkers(page, activePlotIndex);
+    try {
+      assertSynchronizedCursorMarkers(cursorMarkers, activePlotIndex);
+      return { activePlotIndex, cursorMarkers, attempts };
+    } catch (error) {
+      attempts.push({
+        activePlotIndex,
+        cursorMarkers,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  throw new Error(`No visible plot produced synchronized cursor markers: ${JSON.stringify(attempts)}`);
+}
+
+async function collectVisibleCursorMarkers(page, activePlotIndex) {
+  return page.evaluate((sourceIndex) => {
+    const visiblePlots = Array.from(document.querySelectorAll('.uplot')).filter((plot) => {
+      const bounds = plot.getBoundingClientRect();
+      return bounds.width > 0 && bounds.height > 0 && bounds.bottom > 0 && bounds.top < window.innerHeight;
+    });
+    return visiblePlots.map((plot, plotIndex) => {
+      const marker = plot.querySelector('.u-cursor-pt');
+      const cursorLine = plot.querySelector('.u-cursor-x');
+      const markerStyle = marker ? getComputedStyle(marker) : null;
+      const cursorLineStyle = cursorLine ? getComputedStyle(cursorLine) : null;
+      const markerBounds = marker?.getBoundingClientRect();
+      return {
+        plotIndex,
+        source: plotIndex === sourceIndex,
+        cursorLineVisible:
+          cursorLine != null && !cursorLine.classList.contains('u-off') && cursorLineStyle?.display !== 'none',
+        markerVisible: marker != null && !marker.classList.contains('u-off') && markerStyle?.display !== 'none',
+        width: markerBounds?.width ?? 0,
+        height: markerBounds?.height ?? 0,
+        backgroundColor: markerStyle?.backgroundColor ?? '',
+        borderColor: markerStyle?.borderColor ?? '',
+        borderWidth: Number.parseFloat(markerStyle?.borderTopWidth ?? '0'),
+        transform: markerStyle?.transform ?? '',
+      };
+    });
+  }, activePlotIndex);
+}
+
+function assertSynchronizedCursorMarkers(cursorMarkers, activePlotIndex) {
+  if (activePlotIndex < 0 || cursorMarkers.length < 2) {
+    throw new Error('Synchronized cursor verification requires a visible source plot and at least one receiver');
+  }
+  const receivers = cursorMarkers.filter((marker) => !marker.source);
+  const invalid = receivers.filter(
+    (marker) =>
+      !marker.cursorLineVisible ||
+      !marker.markerVisible ||
+      marker.width <= 0 ||
+      marker.width !== marker.height ||
+      marker.borderWidth <= 0 ||
+      marker.backgroundColor === '' ||
+      marker.backgroundColor === 'rgba(0, 0, 0, 0)' ||
+      !hasTranslucentBorder(marker.borderColor)
+  );
+  if (invalid.length > 0) {
+    throw new Error(`Synchronized cursor receivers did not render valid markers: ${JSON.stringify(invalid)}`);
+  }
+}
+
+function hasTranslucentBorder(color) {
+  const match = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)$/.exec(color);
+  if (!match) {
+    return false;
+  }
+  const alpha = Number(match[1]);
+  return alpha > 0 && alpha < 1;
 }
 
 async function collectBrowserSample(cdp, page, label, collectGarbage) {

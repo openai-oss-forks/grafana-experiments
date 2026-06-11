@@ -49,10 +49,15 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
     });
 
     config.addHook('setLegend', () => {
-      let viaSync = u!.cursor.event == null;
+      let viaSync = compact ? u!.compactCursorOrigin === 'native-sync' : u!.cursor.event == null;
 
       if (!viaSync) {
-        let dataIdx = compact ? (u!.compactCursor?.dataIndex ?? u!.cursor.idx) : u!.cursor.idxs!.find((v) => v != null);
+        const compactCursor = u!.compactCursor;
+        let dataIdx = compact
+          ? compactCursor?.hasPoint === true
+            ? compactCursor.dataIndex
+            : null
+          : u!.cursor.idxs!.find((v) => v != null);
 
         if (dataIdx == null) {
           throttledClear();
@@ -60,9 +65,9 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
           let rowIdx = dataIdx;
           // DataFrame column zero is the X field, so compact Y indexes are offset by one.
           let colIdx = compact
-            ? u!.compactCursor == null
-              ? null
-              : u!.compactCursor.seriesIndex + 1
+            ? compactCursor?.hasPoint === true
+              ? compactCursor.seriesIndex + 1
+              : null
             : closestSeriesIdx;
 
           payload.point.time = compact ? u!.getX!(rowIdx) : (u!.data[0] ?? u!.data[1][0])[rowIdx];
@@ -96,10 +101,15 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
         //   return;
         // }
 
-        u!.setCursor({
-          left,
-          top: u!.rect.height / 2,
-        });
+        u!.setCursor(
+          {
+            left,
+            top: u!.rect.height / 2,
+          },
+          undefined,
+          undefined,
+          'native-sync'
+        );
       }
     }
 
@@ -149,10 +159,15 @@ export const EventBusPlugin = ({ config, eventBus, frame, compact = false }: Eve
 
             // @ts-ignore
             if (!u!.cursor._lock) {
-              u!.setCursor({
-                left: -10,
-                top: -10,
-              });
+              u!.setCursor(
+                {
+                  left: -10,
+                  top: -10,
+                },
+                undefined,
+                undefined,
+                'native-sync'
+              );
             }
           },
         })

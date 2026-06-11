@@ -1,9 +1,9 @@
-import { type MouseEvent, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent, useCallback, useMemo, useState } from 'react';
 
 import { DisplayValue, fieldReducers, isReducerID } from '@grafana/data';
 import { AxisPlacement, VizLegendOptions } from '@grafana/schema';
 import { VizLayout, VizLegend, VizLegendItem, VizLegendItemSource } from '@grafana/ui';
-import { UPlotConfigBuilder } from '@grafana/ui/internal';
+import { getCompactRenderController, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { CompactNativeRenderPlan, CompactNativeSeriesFlag } from '../GraphNG/compactNativePlan';
 
@@ -20,27 +20,15 @@ export function CompactPlotLegend({
   displayMode,
   ...legendProps
 }: CompactPlotLegendProps) {
-  const plotRef = useRef<import('uplot') | null>(null);
   const [, setVisibilityRevision] = useState(0);
-  useLayoutEffect(() => {
-    config.addHook('init', (plot) => {
-      plotRef.current = plot;
-    });
-    config.addHook('destroy', (plot) => {
-      if (plotRef.current === plot) {
-        plotRef.current = null;
-      }
-    });
-  }, [config]);
   const onSeriesVisibilityChange = useCallback(
     (item: VizLegendItem<number>, event: MouseEvent<HTMLButtonElement>) => {
-      const plot = plotRef.current;
       const seriesIndex = item.data;
-      if (!plot || seriesIndex == null) {
+      if (seriesIndex == null) {
         return;
       }
       const append = event.ctrlKey || event.metaKey || event.shiftKey;
-      toggleCompactLegendSeries(plot, plan, seriesIndex, append);
+      toggleCompactLegendSeries(getCompactRenderController(plan.source), plan, seriesIndex, append);
       setVisibilityRevision((revision) => revision + 1);
     },
     [plan]
@@ -71,7 +59,7 @@ export function CompactPlotLegend({
 }
 
 export function toggleCompactLegendSeries(
-  plot: import('uplot'),
+  controller: Pick<ReturnType<typeof getCompactRenderController>, 'setSeriesVisibility'>,
   plan: CompactNativeRenderPlan,
   seriesIndex: number,
   append: boolean
@@ -81,7 +69,7 @@ export function toggleCompactLegendSeries(
     const show = plan.source.columns.visibility[seriesIndex] === 0;
     for (let index = 0; index < plan.seriesCount; index++) {
       if (plan.getDisplayName(index) === label) {
-        plot.setSeries(index + 1, { show });
+        controller.setSeriesVisibility(index, show);
       }
     }
     return;
@@ -95,11 +83,11 @@ export function toggleCompactLegendSeries(
       break;
     }
   }
-  plot.setSeries(null, { show: isolated });
+  controller.setSeriesVisibility(null, isolated);
   if (!isolated) {
     for (let index = 0; index < plan.seriesCount; index++) {
       if (plan.getDisplayName(index) === label) {
-        plot.setSeries(index + 1, { show: true });
+        controller.setSeriesVisibility(index, true);
       }
     }
   }

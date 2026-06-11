@@ -40,6 +40,7 @@ const options = {
   cpuProfile: process.env.CPU_PROFILE === '1',
   hoverStageProfile: process.env.HOVER_STAGE_PROFILE === '1',
   verifyInteractions: process.env.VERIFY_INTERACTIONS === '1',
+  verifyLegendInteractions: process.env.VERIFY_LEGEND_INTERACTIONS === '1',
   verifyTooltipDigest: process.env.VERIFY_TOOLTIP_DIGEST === '1',
   verifyTimeRange: process.env.VERIFY_TIME_RANGE === '1',
   hoverSteps: readPositiveInteger('HOVER_STEPS', 12),
@@ -80,6 +81,8 @@ Environment:
   CPU_PROFILE             Set to 1 to capture per-render Chrome CPU profiles
   HOVER_STAGE_PROFILE     Set to 1 to collect compact cursor, tooltip, and redraw stage timings
   VERIFY_INTERACTIONS     Set to 1 to verify tooltip and legend interactions
+  VERIFY_LEGEND_INTERACTIONS
+                          Set to 1 to verify sorted legend isolation without tooltip interactions
   VERIFY_TOOLTIP_DIGEST   Set to 1 to hash every ordered tooltip row, including virtualized rows
   VERIFY_TIME_RANGE       Set to 1 to exercise zoom-out and move-back dashboard controls
   HOVER_STEPS             Cursor moves sampled during interaction verification (default: 12)
@@ -90,6 +93,7 @@ Environment:
   HEADLESS                Set to 1 for headless Chromium
   EDIT_PANEL              Set to 1 to open the selected panel in edit mode
   VERIFY_PANEL_EDITOR     Set to 1 to require the time-series panel editor and hover control
+                          toggle, including compact highlight removal/restoration
   HIGHLIGHT_SERIES_ON_HOVER
                           Override the selected panel's hover highlighting with true or false
   CHROMIUM_PATH           Optional Chromium executable
@@ -299,7 +303,7 @@ try {
     if (!options.editPanel) {
       throw new Error('VERIFY_PANEL_EDITOR requires EDIT_PANEL=1');
     }
-    report.panelEditor = await verifyPanelEditor(page);
+    report.panelEditor = await verifyPanelEditor(page, queryRequests[0].responseFormat, queryRequests[0].seriesCount);
   }
   await captureChart(page, path.join(options.outputDir, 'chart.png'));
   if (options.cpuProfile) {
@@ -312,6 +316,9 @@ try {
       queryRequests[0].seriesCount
     );
     report.hoverMemory = await collectBrowserSample(cdp, page, 'after-hover');
+  }
+  if (options.verifyLegendInteractions) {
+    report.legendInteractions = await verifyLegendInteractions(page);
   }
 
   for (let refreshIndex = 0; refreshIndex < options.refreshes; refreshIndex++) {
@@ -448,12 +455,59 @@ async function recordRender(page, cdp, report, requestNumber, label) {
   report.samples.push(sample);
 }
 
-async function verifyPanelEditor(page) {
+async function verifyPanelEditor(page, responseFormat, seriesCount) {
   const highlightControl = page.getByText('Highlight hovered series', { exact: true });
   await highlightControl.waitFor({ state: 'visible', timeout: 30_000 });
+  const highlightSwitch = highlightControl
+    .locator('xpath=ancestor::*[.//input[@role="switch"]][1]')
+    .getByRole('switch');
+  await highlightSwitch.waitFor({ state: 'visible', timeout: 30_000 });
+  const highlightSwitchId = await highlightSwitch.getAttribute('id');
+  if (!highlightSwitchId) {
+    throw new Error('Highlight hovered series switch has no input ID');
+  }
+  const highlightSwitchLabel = highlightSwitch.locator('xpath=following-sibling::label[1]');
+  if (!(await highlightSwitch.isChecked())) {
+    throw new Error('Highlight hovered series is not enabled by default');
+  }
+
+  const requestCount = queryRequests.length;
+  const plotOverlay = page.locator('.uplot .u-over').first();
+  const bounds = await plotOverlay.boundingBox();
+  if (!bounds) {
+    throw new Error('Panel editor chart plot area has no visible bounds');
+  }
+  const expectHighlight = responseFormat === 'compact-v1' && seriesCount > 1;
+  const enabledOverlayCount = await verifyFocusOverlay(page, bounds, responseFormat, expectHighlight);
+
+  await highlightSwitchLabel.click();
+  await page.waitForFunction(
+    (id) => document.getElementById(id) instanceof HTMLInputElement && !document.getElementById(id).checked,
+    highlightSwitchId
+  );
+  await page.locator('.u-compact-focus-overlay').waitFor({ state: 'detached', timeout: 10_000 });
+  await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + bounds.height * 0.5);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const disabledOverlayCount = await verifyFocusOverlay(page, bounds, responseFormat, false);
+
+  await highlightSwitchLabel.click();
+  await page.waitForFunction(
+    (id) => document.getElementById(id) instanceof HTMLInputElement && document.getElementById(id).checked,
+    highlightSwitchId
+  );
+  const restoredOverlayCount = await verifyFocusOverlay(page, bounds, responseFormat, expectHighlight);
+  if (queryRequests.length !== requestCount) {
+    throw new Error('Changing hover highlighting unexpectedly issued a datasource query');
+  }
+
   return {
     url: page.url(),
     highlightControlVisible: true,
+    initialChecked: true,
+    enabledOverlayCount,
+    disabledOverlayCount,
+    restoredOverlayCount,
+    datasourceQueriesIssued: 0,
   };
 }
 
@@ -871,14 +925,21 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     pinning,
   };
 
+  const legendInteractions = await verifyLegendInteractions(page);
+  return { ...interactionResult, ...legendInteractions };
+}
+
+async function verifyLegendInteractions(page) {
+  const nameHeader = page.getByRole('columnheader', { name: /^Name/ });
+  if ((await nameHeader.count()) > 0 && (await nameHeader.first().isVisible())) {
+    await nameHeader.first().click();
+    await page.waitForTimeout(0);
+  }
   const legendButtons = page.locator(
     '[data-testid^="data-testid VizLegend series "] > button, table tbody tr button[title]'
   );
   if ((await legendButtons.count()) < 2) {
-    return {
-      ...interactionResult,
-      legendToggleChangedState: null,
-    };
+    return { legendToggleChangedState: null };
   }
   const firstLegendButton = legendButtons.nth(0);
   await firstLegendButton.waitFor({ state: 'visible', timeout: 10_000 });
@@ -892,10 +953,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     }
   }
   if (!secondLegendButton) {
-    return {
-      ...interactionResult,
-      legendToggleChangedState: null,
-    };
+    return { legendToggleChangedState: null };
   }
   await secondLegendButton.waitFor({ state: 'visible', timeout: 10_000 });
   const initialClass = await legendButtonState(secondLegendButton);
@@ -911,10 +969,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     throw new Error('Legend isolation did not restore the original series visibility state');
   }
 
-  return {
-    ...interactionResult,
-    legendToggleChangedState: initialClass !== isolatedClass,
-  };
+  return { legendToggleChangedState: initialClass !== isolatedClass };
 }
 
 async function collectTooltipRowDigests(page, responseFormat, listTotalRows, focusedRows) {

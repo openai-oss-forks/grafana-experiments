@@ -298,7 +298,7 @@ function mockCompactSource(values: number[]): CompactRenderSource {
       visibility: new Uint8Array([1]),
       stackGroupIds: new Uint8Array([0]),
     },
-    styles: [{ stroke: '#f00' }],
+    styles: [{ stroke: '#f00', cursorStroke: '#ff000080' }],
     scales: [{ key: 'y' }],
     stackGroupCount: 0,
     cursorMode: 'single',

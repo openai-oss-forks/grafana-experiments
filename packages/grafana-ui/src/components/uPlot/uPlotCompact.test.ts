@@ -50,6 +50,150 @@ describe('uPlot compact X host', () => {
     plot.destroy();
   });
 
+  test('clears the compact point marker when a programmatic cursor update has no local point', async () => {
+    const target = document.createElement('div');
+    const controller = createController();
+    let pointVisible = true;
+    controller.updateCursor.mockImplementation((_plot, index) =>
+      index != null && pointVisible
+        ? {
+            hasPoint: true,
+            seriesIndex: 0,
+            dataIndex: index === 2 ? 1 : index + 1,
+            distance: 0,
+            left: 10,
+            top: 20,
+            size: 6,
+            fill: '#f00',
+            stroke: '#000',
+          }
+        : {
+            hasPoint: false,
+            seriesIndex: -1,
+            dataIndex: -1,
+            distance: Number.POSITIVE_INFINITY,
+            left: -10,
+            top: -10,
+            size: 0,
+            fill: '',
+            stroke: '',
+          }
+    );
+    const plot = uPlot.compact(
+      {
+        ...createOptions(true),
+        cursor: { show: true, points: { one: true }, focus: { prox: 30 } },
+      },
+      createSource([1, 2, 3]),
+      controller,
+      target
+    );
+    await flushCommit();
+
+    Reflect.set(plot.cursor, 'event', new MouseEvent('mousemove'));
+    plot.setCursor({ left: 100, top: 50 }, true);
+    const marker = target.querySelector<HTMLElement>('.u-cursor-pt');
+    expect(controller.updateCursor).toHaveBeenLastCalledWith(plot, expect.any(Number), 50, 'programmatic');
+    expect(plot.cursor.idx).toBe(1);
+    expect(plot.compactCursor?.dataIndex).toBe(2);
+    expect(marker?.style.transform).not.toContain('-10px');
+
+    pointVisible = false;
+    plot.setCursor({ left: 120, top: 50 }, true);
+    expect(plot.cursor.idx).toBe(1);
+    expect(plot.compactCursor).toMatchObject({ hasPoint: false, seriesIndex: -1 });
+    expect(marker?.style.transform).toContain('-10px');
+    plot.destroy();
+  });
+
+  test('renders receiver-local compact marker state for native synchronization', async () => {
+    const sourceController = createController();
+    const receiverController = createController();
+    receiverController.updateCursor.mockImplementation((_plot, index, _mouseY, origin) =>
+      index != null && origin === 'native-sync'
+        ? {
+            hasPoint: true,
+            seriesIndex: 0,
+            dataIndex: index,
+            distance: 100,
+            left: 140,
+            top: 60,
+            size: 10,
+            fill: 'rgb(12, 34, 56)',
+            stroke: 'rgba(12, 34, 56, 0.5)',
+          }
+        : null
+    );
+    const syncKey = `compact-test-${Math.random()}`;
+    const options = {
+      ...createOptions(true),
+      cursor: {
+        show: true,
+        points: {
+          one: true,
+          size: (plot, seriesIndex) => plot.series[seriesIndex].points.size * 2,
+          width: (_plot, _seriesIndex, size) => size / 4,
+        },
+        focus: { prox: 30 },
+        sync: { key: syncKey, scales: ['x', null] as [string, null] },
+      },
+    };
+    const sourceTarget = document.createElement('div');
+    const receiverTarget = document.createElement('div');
+    const sourcePlot = uPlot.compact(options, createSource([1, 2, 3]), sourceController, sourceTarget);
+    const receiverPlot = uPlot.compact(options, createSource([1, 2, 3]), receiverController, receiverTarget);
+    await flushCommit();
+
+    sourcePlot.setCursor({ left: 100, top: 50 }, true, true);
+    expect(sourceController.updateCursor).toHaveBeenLastCalledWith(sourcePlot, expect.any(Number), 50, 'programmatic');
+    expect(receiverController.updateCursor).toHaveBeenLastCalledWith(
+      receiverPlot,
+      expect.any(Number),
+      expect.any(Number),
+      'native-sync'
+    );
+    expect(sourcePlot.compactCursorOrigin).toBe('programmatic');
+    expect(receiverPlot.compactCursorOrigin).toBe('native-sync');
+    const marker = receiverTarget.querySelector<HTMLElement>('.u-cursor-pt');
+    expect(marker).not.toBeNull();
+    expect(marker?.classList.contains('u-off')).toBe(false);
+    expect(marker?.style.transform).toBe('translate(140px,60px)');
+    expect(marker?.style.width).toBe('10px');
+    expect(marker?.style.height).toBe('10px');
+    expect(marker?.style.marginLeft).toBe('-5px');
+    expect(marker?.style.marginTop).toBe('-5px');
+    expect(marker?.style.background).toBe('rgb(12, 34, 56)');
+    expect(marker?.style.borderColor).toBe('rgba(12, 34, 56, 0.5)');
+    expect(marker?.style.borderWidth).toBe('2.5px');
+
+    Reflect.set(receiverPlot.cursor, 'event', new MouseEvent('mousemove'));
+    receiverPlot.setCursor({ left: 120, top: 40 }, true, false, 'native-sync');
+    expect(receiverController.updateCursor).toHaveBeenLastCalledWith(
+      receiverPlot,
+      expect.any(Number),
+      40,
+      'native-sync'
+    );
+
+    receiverController.updateCursor.mockReturnValue(null);
+    sourcePlot.setCursor({ left: 120, top: 50 }, true, true);
+    expect(marker?.classList.contains('u-off')).toBe(true);
+    expect(marker?.style.transform).toBe('translate(-10px,-10px)');
+
+    receiverController.updateCursor.mockClear();
+    receiverPlot.setCompactData?.(createSource([2, 3, 4]));
+    await flushCommit();
+    expect(receiverController.updateCursor).toHaveBeenLastCalledWith(
+      receiverPlot,
+      expect.any(Number),
+      expect.any(Number),
+      'native-sync'
+    );
+
+    sourcePlot.destroy();
+    receiverPlot.destroy();
+  });
+
   test('fires compact draw hooks only after a progressive draw completes', async () => {
     let finishDraw: (completed: boolean) => void = () => {};
     const controller = createController();
@@ -169,7 +313,9 @@ function createController(): jest.Mocked<uPlot.CompactRenderController> {
     extent: jest.fn<[number | null, number | null], [uPlot, string, number, number]>(() => [0, 10]),
     draw: jest.fn(),
     setSeries: jest.fn<boolean, [number | null, { show?: boolean; focus?: boolean }]>(() => true),
-    updateCursor: jest.fn<uPlot.CompactCursorState | null, [uPlot, number | null, number]>(() => null),
+    updateCursor: jest.fn<uPlot.CompactCursorState | null, [uPlot, number | null, number, uPlot.CompactCursorOrigin]>(
+      () => null
+    ),
   };
 }
 

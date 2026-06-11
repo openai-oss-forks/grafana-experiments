@@ -43,7 +43,7 @@ const baseOptions: CompactFieldConfigOptions = {
 };
 
 describe('CompactNativeRenderPlan', () => {
-  test('omits the focus overlay without disabling compact cursor selection', () => {
+  test('disables hover highlighting without disabling compact cursor selection', () => {
     const { source } = columnarSource([series('A', 'requests', [1, 2]), series('A', 'errors', [2, 1])]);
 
     const plan = createCompactNativeRenderPlan(source, {
@@ -517,6 +517,7 @@ describe('CompactNativeRenderPlan', () => {
 
     const style = plan.source.styles[0];
     expect(style.areaFill).toBe(colorManipulator.alpha(style.stroke, 0.35));
+    expect(style.cursorStroke).toBe(colorManipulator.alpha(style.stroke, 0.5));
     expect(style.fill).toBe(style.stroke);
     expect(style.lineWidth).toBe(0);
   });

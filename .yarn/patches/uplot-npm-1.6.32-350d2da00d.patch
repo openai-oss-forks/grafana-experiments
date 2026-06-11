@@ -329,11 +329,25 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  	self.posToIdx = closestIdxFromXpos;
  	self.posToVal = posToVal;
  	self.valToPos = (val, scale, can) => (
-@@ -5330,6 +5465,7 @@ function uPlot(opts, data, then) {
+@@ -5221 +5356 @@ function uPlot(opts, data, then) {
+-	self.setCursor = (opts, _fire, _pub) => {
++	self.setCursor = (opts, _fire, _pub, compactOrigin) => {
+@@ -5225 +5360 @@ function uPlot(opts, data, then) {
+-		updateCursor(null, _fire, _pub);
++		updateCursor(null, _fire, _pub, compactOrigin ?? 'programmatic');
+@@ -5301 +5436 @@ function uPlot(opts, data, then) {
+-	function updateCursor(src, _fire, _pub) {
++	function updateCursor(src, _fire, _pub, programmaticOrigin = null) {
+@@ -5307,0 +5442,4 @@ function uPlot(opts, data, then) {
++		let compactCursorOrigin = src != null ? 'native-sync' : programmaticOrigin ?? self.compactCursorOrigin ?? 'local';
++		if (compactController != null)
++			self.compactCursorOrigin = compactCursorOrigin;
++
+@@ -5330,6 +5469,7 @@ function uPlot(opts, data, then) {
  		// if cursor hidden, hide points & clear legend vals
  		if (mouseLeft1 < 0 || dataLen == 0 || noDataInRange) {
  			idx = cursor.idx = null;
-+			self.compactCursor = compactController?.updateCursor(self, null, 0) || null;
++			self.compactCursor = compactController?.updateCursor(self, null, 0, compactCursorOrigin) || null;
  
  			for (let i = 0; i < series.length; i++) {
  				let pt = cursorPts[i];
@@ -348,14 +362,15 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  			}
  
  			// closest pt values
-@@ -5478,6 +5614,21 @@ function uPlot(opts, data, then) {
+@@ -5478,6 +5618,22 @@ function uPlot(opts, data, then) {
  				}
  			}
  
 +			if (compactController != null) {
-+				let compactCursor = compactController.updateCursor(self, idx, scaleX.ori == 1 ? mouseLeft1 : mouseTop1);
++				let compactCursor = compactController.updateCursor(self, idx, scaleX.ori == 1 ? mouseLeft1 : mouseTop1, compactCursorOrigin);
 +				self.compactCursor = compactCursor;
-+				if (compactCursor != null) {
++				shouldSetLegend = true;
++				if (compactCursor?.hasPoint) {
 +					closestDist = compactCursor.distance;
 +					closestSeries = compactCursor.seriesIndex + 1;
 +					_ptLft = compactCursor.left;
@@ -370,6 +385,21 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  			// if only using single hover point (at cursorPts[0])
  			// we have trigger styling at last visible series (once closestSeries is settled)
  			if (cursorOnePt) {
+@@ -5650 +5806 @@ function uPlot(opts, data, then) {
+-		if (src == null) {
++		if (src == null && (compactController == null || compactCursorOrigin != 'native-sync')) {
+@@ -5722 +5878 @@ function uPlot(opts, data, then) {
+-			updateCursor(null, true, true);
++			updateCursor(null, true, true, 'local');
+@@ -5893 +6049 @@ function uPlot(opts, data, then) {
+-			updateCursor(src, true, e != null);
++			updateCursor(src, true, e != null, e != null ? 'local' : undefined);
+@@ -5939 +6095 @@ function uPlot(opts, data, then) {
+-			updateCursor(null, true, true);
++			updateCursor(null, true, true, 'local');
+@@ -5950 +6106 @@ function uPlot(opts, data, then) {
+-		updateCursor(null, true, true);
++		updateCursor(null, true, true, 'local');
 @@ -6061,12 +6212,17 @@ function uPlot(opts, data, then) {
  	self.pub = pub;
  
@@ -436,7 +466,11 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
  	/** chart container */
  	readonly root: HTMLElement;
  
-@@ -55,6 +63,10 @@ declare class uPlot {
+@@ -34,0 +43,3 @@ declare class uPlot {
++	/** active cursor focus configuration */
++	readonly focus: uPlot.Cursor.Focus;
++
+@@ -55,6 +66,10 @@ declare class uPlot {
  	/** current data */
  	readonly data: uPlot.AlignedData;
  
@@ -447,7 +481,7 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
  	/** .u-over dom element */
  	readonly over: HTMLDivElement;
  
-@@ -73,6 +85,19 @@ declare class uPlot {
+@@ -73,6 +88,20 @@ declare class uPlot {
  	/** sets the chart data & redraws. (default resetScales = true) */
  	setData(data: uPlot.AlignedData, resetScales?: boolean): void;
  
@@ -463,17 +497,22 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 +	compactSource?: uPlot.CompactPlotSource | null;
 +	compactController?: uPlot.CompactRenderController | null;
 +	compactCursor?: uPlot.CompactCursorState | null;
++	compactCursorOrigin?: uPlot.CompactCursorOrigin;
 +
  	/** sets the limits of a scale & redraws (used for zooming) */
  	setScale(scaleKey: string, limits: { min: number; max: number }): void;
- 
-@@ -167,6 +192,56 @@ declare class uPlot {
+
+@@ -105 +134 @@ declare class uPlot {
+-	setCursor(opts: {left: number, top: number}, fireHook?: boolean): void;
++	setCursor(opts: {left: number, top: number}, fireHook?: boolean, publish?: boolean, compactOrigin?: uPlot.CompactCursorOrigin): void;
+@@ -167,6 +196,58 @@ declare class uPlot {
  export = uPlot;
  
  declare namespace uPlot {
 +	type CompactPlotValue = number | null | undefined;
 +	type CompactPointVisitor = (index: number, value: CompactPlotValue) => void;
 +	type CompactScaleMode = 'all' | 'positive';
++	type CompactCursorOrigin = 'local' | 'native-sync' | 'programmatic';
 +
 +	interface CompactBufferScan {
 +		axisStart: number;
@@ -502,6 +541,7 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 +	}
 +
 +	interface CompactCursorState {
++		hasPoint: boolean;
 +		seriesIndex: number;
 +		dataIndex: number;
 +		distance: number;
@@ -518,7 +558,7 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 +		extent(plot: uPlot, scaleKey: string, from: number, to: number): [number | null, number | null];
 +		draw(plot: uPlot, from: number, to: number): void | Promise<boolean>;
 +		setSeries(seriesIndex: number | null, options: {show?: boolean; focus?: boolean}): boolean;
-+		updateCursor(plot: uPlot, index: number | null, mouseY: number): CompactCursorState | null;
++		updateCursor(plot: uPlot, index: number | null, mouseY: number, origin: CompactCursorOrigin): CompactCursorState | null;
 +	}
 +
  	type OrientCallback = (
@@ -855,11 +895,25 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  	self.posToIdx = closestIdxFromXpos;
  	self.posToVal = posToVal;
  	self.valToPos = (val, scale, can) => (
-@@ -5328,6 +5463,7 @@ function uPlot(opts, data, then) {
+@@ -5219 +5354 @@ function uPlot(opts, data, then) {
+-	self.setCursor = (opts, _fire, _pub) => {
++	self.setCursor = (opts, _fire, _pub, compactOrigin) => {
+@@ -5223 +5358 @@ function uPlot(opts, data, then) {
+-		updateCursor(null, _fire, _pub);
++		updateCursor(null, _fire, _pub, compactOrigin ?? 'programmatic');
+@@ -5299 +5434 @@ function uPlot(opts, data, then) {
+-	function updateCursor(src, _fire, _pub) {
++	function updateCursor(src, _fire, _pub, programmaticOrigin = null) {
+@@ -5305,0 +5440,4 @@ function uPlot(opts, data, then) {
++		let compactCursorOrigin = src != null ? 'native-sync' : programmaticOrigin ?? self.compactCursorOrigin ?? 'local';
++		if (compactController != null)
++			self.compactCursorOrigin = compactCursorOrigin;
++
+@@ -5328,6 +5467,7 @@ function uPlot(opts, data, then) {
  		// if cursor hidden, hide points & clear legend vals
  		if (mouseLeft1 < 0 || dataLen == 0 || noDataInRange) {
  			idx = cursor.idx = null;
-+			self.compactCursor = compactController?.updateCursor(self, null, 0) || null;
++			self.compactCursor = compactController?.updateCursor(self, null, 0, compactCursorOrigin) || null;
  
  			for (let i = 0; i < series.length; i++) {
  				let pt = cursorPts[i];
@@ -874,14 +928,15 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  			}
  
  			// closest pt values
-@@ -5476,6 +5612,21 @@ function uPlot(opts, data, then) {
+@@ -5476,6 +5616,22 @@ function uPlot(opts, data, then) {
  				}
  			}
  
 +			if (compactController != null) {
-+				let compactCursor = compactController.updateCursor(self, idx, scaleX.ori == 1 ? mouseLeft1 : mouseTop1);
++				let compactCursor = compactController.updateCursor(self, idx, scaleX.ori == 1 ? mouseLeft1 : mouseTop1, compactCursorOrigin);
 +				self.compactCursor = compactCursor;
-+				if (compactCursor != null) {
++				shouldSetLegend = true;
++				if (compactCursor?.hasPoint) {
 +					closestDist = compactCursor.distance;
 +					closestSeries = compactCursor.seriesIndex + 1;
 +					_ptLft = compactCursor.left;
@@ -896,6 +951,21 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  			// if only using single hover point (at cursorPts[0])
  			// we have trigger styling at last visible series (once closestSeries is settled)
  			if (cursorOnePt) {
+@@ -5648 +5804 @@ function uPlot(opts, data, then) {
+-		if (src == null) {
++		if (src == null && (compactController == null || compactCursorOrigin != 'native-sync')) {
+@@ -5720 +5876 @@ function uPlot(opts, data, then) {
+-			updateCursor(null, true, true);
++			updateCursor(null, true, true, 'local');
+@@ -5891 +6047 @@ function uPlot(opts, data, then) {
+-			updateCursor(src, true, e != null);
++			updateCursor(src, true, e != null, e != null ? 'local' : undefined);
+@@ -5937 +6093 @@ function uPlot(opts, data, then) {
+-			updateCursor(null, true, true);
++			updateCursor(null, true, true, 'local');
+@@ -5948 +6104 @@ function uPlot(opts, data, then) {
+-		updateCursor(null, true, true);
++		updateCursor(null, true, true, 'local');
 @@ -6059,12 +6210,17 @@ function uPlot(opts, data, then) {
  	self.pub = pub;
  

@@ -333,14 +333,16 @@ export function CompactTooltipPlugin({
       if (pinnedRef.current) {
         return;
       }
-      const cursor = plot.compactCursor;
+      const point = plot.compactCursor;
       const index = plot.cursor.idx;
-      const viaSync = plot.cursor.event == null;
+      const viaSync = plot.compactCursorOrigin === 'native-sync';
+      const requiresPoint = !viaSync && modeRef.current === TooltipDisplayMode.Single;
+      const hasFocusedPoint = !viaSync && point?.hasPoint === true;
       if (
-        !cursor ||
         index == null ||
         plot.cursor.left == null ||
         plot.cursor.left < 0 ||
+        (requiresPoint && !point?.hasPoint) ||
         (viaSync && syncModeRef.current !== DashboardCursorSync.Tooltip)
       ) {
         if (hoverRef.current != null) {
@@ -376,8 +378,8 @@ export function CompactTooltipPlugin({
         source: sourceRef.current,
         cursorIndex: index,
         cursorRevision: !viaSync && modeRef.current === TooltipDisplayMode.Single ? 0 : snapshot!.revision,
-        focusedIndex: cursor.dataIndex,
-        focusedSeries: cursor.seriesIndex,
+        focusedIndex: hasFocusedPoint ? point.dataIndex : index,
+        focusedSeries: hasFocusedPoint ? point.seriesIndex : -1,
         viaSync,
       };
       const previousHover = hoverRef.current;
