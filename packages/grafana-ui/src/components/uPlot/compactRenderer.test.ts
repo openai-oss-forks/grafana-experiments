@@ -65,6 +65,21 @@ describe('CompactRenderController', () => {
     expect(controller.extent(plot, 'y', 0, 2)).toEqual([0, 3]);
   });
 
+  test('routes visibility through the current plot and preserves changes before attachment', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Linear | CompactSeriesFlag.DrawLine]);
+    const controller = new CompactRenderController(source);
+
+    controller.setSeriesVisibility(0, false);
+    expect(source.columns.visibility[0]).toBe(0);
+
+    const { plot } = createPlot();
+    plot.setSeries = jest.fn();
+    controller.draw(plot, 0, 1);
+    controller.setSeriesVisibility(0, true);
+
+    expect(plot.setSeries).toHaveBeenCalledWith(1, { show: true });
+  });
+
   test('matches legacy stack presence semantics across gaps', () => {
     const source = createSource(
       [

@@ -40,6 +40,7 @@ const options = {
   cpuProfile: process.env.CPU_PROFILE === '1',
   hoverStageProfile: process.env.HOVER_STAGE_PROFILE === '1',
   verifyInteractions: process.env.VERIFY_INTERACTIONS === '1',
+  verifyLegendInteractions: process.env.VERIFY_LEGEND_INTERACTIONS === '1',
   verifyTooltipDigest: process.env.VERIFY_TOOLTIP_DIGEST === '1',
   verifyTimeRange: process.env.VERIFY_TIME_RANGE === '1',
   hoverSteps: readPositiveInteger('HOVER_STEPS', 12),
@@ -80,6 +81,8 @@ Environment:
   CPU_PROFILE             Set to 1 to capture per-render Chrome CPU profiles
   HOVER_STAGE_PROFILE     Set to 1 to collect compact cursor, tooltip, and redraw stage timings
   VERIFY_INTERACTIONS     Set to 1 to verify tooltip and legend interactions
+  VERIFY_LEGEND_INTERACTIONS
+                          Set to 1 to verify sorted legend isolation without tooltip interactions
   VERIFY_TOOLTIP_DIGEST   Set to 1 to hash every ordered tooltip row, including virtualized rows
   VERIFY_TIME_RANGE       Set to 1 to exercise zoom-out and move-back dashboard controls
   HOVER_STEPS             Cursor moves sampled during interaction verification (default: 12)
@@ -312,6 +315,9 @@ try {
       queryRequests[0].seriesCount
     );
     report.hoverMemory = await collectBrowserSample(cdp, page, 'after-hover');
+  }
+  if (options.verifyLegendInteractions) {
+    report.legendInteractions = await verifyLegendInteractions(page);
   }
 
   for (let refreshIndex = 0; refreshIndex < options.refreshes; refreshIndex++) {
@@ -871,14 +877,21 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     pinning,
   };
 
+  const legendInteractions = await verifyLegendInteractions(page);
+  return { ...interactionResult, ...legendInteractions };
+}
+
+async function verifyLegendInteractions(page) {
+  const nameHeader = page.getByRole('columnheader', { name: /^Name/ });
+  if ((await nameHeader.count()) > 0 && (await nameHeader.first().isVisible())) {
+    await nameHeader.first().click();
+    await page.waitForTimeout(0);
+  }
   const legendButtons = page.locator(
     '[data-testid^="data-testid VizLegend series "] > button, table tbody tr button[title]'
   );
   if ((await legendButtons.count()) < 2) {
-    return {
-      ...interactionResult,
-      legendToggleChangedState: null,
-    };
+    return { legendToggleChangedState: null };
   }
   const firstLegendButton = legendButtons.nth(0);
   await firstLegendButton.waitFor({ state: 'visible', timeout: 10_000 });
@@ -892,10 +905,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     }
   }
   if (!secondLegendButton) {
-    return {
-      ...interactionResult,
-      legendToggleChangedState: null,
-    };
+    return { legendToggleChangedState: null };
   }
   await secondLegendButton.waitFor({ state: 'visible', timeout: 10_000 });
   const initialClass = await legendButtonState(secondLegendButton);
@@ -911,10 +921,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     throw new Error('Legend isolation did not restore the original series visibility state');
   }
 
-  return {
-    ...interactionResult,
-    legendToggleChangedState: initialClass !== isolatedClass,
-  };
+  return { legendToggleChangedState: initialClass !== isolatedClass };
 }
 
 async function collectTooltipRowDigests(page, responseFormat, listTotalRows, focusedRows) {

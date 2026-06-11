@@ -714,6 +714,15 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     return redraw;
   }
 
+  setSeriesVisibility(seriesIndex: number | null, show: boolean): void {
+    if (this.renderedPlot) {
+      this.renderedPlot.setSeries(seriesIndex == null ? null : seriesIndex + 1, { show });
+      return;
+    }
+
+    this.setSeries(seriesIndex, { show });
+  }
+
   private updateVisibilityOverride(seriesIndex: number, visibility: number): void {
     if (!this.source.seriesIdentityAt || !this.source.seriesIdentityHashAt) {
       return;
