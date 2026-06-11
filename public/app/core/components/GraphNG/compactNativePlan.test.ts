@@ -53,7 +53,7 @@ describe('CompactNativeRenderPlan', () => {
     });
 
     expect(plan.source.cursorMode).toBe('single');
-    expect(plan.source.highlightSeriesOnHover).toBe(false);
+    expect(plan.source.focusOverlayColor).toBeUndefined();
   });
 
   test('uses typed columns, interns shared records, reuses one scratch target, and retains the response buffer', () => {

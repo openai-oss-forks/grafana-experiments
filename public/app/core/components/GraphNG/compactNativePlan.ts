@@ -783,7 +783,10 @@ function createRenderSource(
     scales,
     stackGroupCount,
     cursorMode: options.cursorMode ?? 'single',
-    highlightSeriesOnHover: options.highlightSeriesOnHover !== false,
+    focusOverlayColor:
+      options.highlightSeriesOnHover === false
+        ? undefined
+        : colorManipulator.alpha(options.theme.colors.background.canvas, 0.5),
     seriesIdentityAt: getSeriesIdentity,
     seriesIdentityHashAt: getSeriesIdentityHash,
     visibilityState,

@@ -71,7 +71,7 @@ export interface CompactRenderSource extends CompactPlotSource {
   readonly scales: readonly CompactScaleRecord[];
   readonly stackGroupCount: number;
   readonly cursorMode: 'single' | 'multi' | 'none';
-  readonly highlightSeriesOnHover?: boolean;
+  readonly focusOverlayColor?: string;
   seriesIdentityAt?(seriesIndex: number): string;
   seriesIdentityHashAt?(seriesIndex: number): number;
   formatValueAt?(seriesIndex: number, index: number, value: number): string;
@@ -939,7 +939,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       !plot ||
       this.focusedSeries < 0 ||
       this.visibleSeriesCount < 2 ||
-      this.source.highlightSeriesOnHover !== true ||
+      this.source.focusOverlayColor == null ||
       !this.isVisible(this.focusedSeries) ||
       this.source.pointCount === 0
     ) {
@@ -966,6 +966,11 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
 
     context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+    const { left, top, width, height } = plot.bbox;
+    context.save();
+    context.fillStyle = this.source.focusOverlayColor;
+    context.fillRect(left, top, width, height);
+    context.restore();
     this.drawSeriesRange(
       plot,
       this.focusedSeries,

@@ -596,7 +596,7 @@ describe('CompactRenderController', () => {
       'series',
       'single',
       undefined,
-      true
+      'rgba(0, 0, 0, 0.5)'
     );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
@@ -606,10 +606,13 @@ describe('CompactRenderController', () => {
     parent.append(mainCanvas, over);
     Object.defineProperty(context, 'canvas', { value: mainCanvas });
     Reflect.set(plot, 'over', over);
+    let backdropFillStyle: string | CanvasGradient | CanvasPattern | undefined;
     const overlayContext = {
       ...context,
       clearRect: jest.fn(),
-      fillRect: jest.fn(),
+      fillRect: jest.fn(() => {
+        backdropFillStyle = overlayContext.fillStyle;
+      }),
       stroke: jest.fn(),
     } as unknown as jest.Mocked<CanvasRenderingContext2D>;
     const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
@@ -625,7 +628,8 @@ describe('CompactRenderController', () => {
 
       expect(controller.setSeries(0, { focus: true })).toBe(false);
       expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
-      expect(overlayContext.fillRect).not.toHaveBeenCalled();
+      expect(backdropFillStyle).toBe('rgba(0, 0, 0, 0.5)');
+      expect(overlayContext.fillRect).toHaveBeenCalledWith(0, 0, 100, 100);
       expect(overlayContext.strokeStyle).toBe('#f00');
 
       expect(controller.setSeries(1, { show: false })).toBe(true);
@@ -650,7 +654,7 @@ describe('CompactRenderController', () => {
       'series',
       'single',
       undefined,
-      true
+      'rgba(0, 0, 0, 0.5)'
     );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
@@ -677,7 +681,7 @@ describe('CompactRenderController', () => {
       'series',
       'single',
       undefined,
-      true
+      'rgba(0, 0, 0, 0.5)'
     );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
@@ -1115,7 +1119,7 @@ function createSource(
     lineWidth: 1,
     pointSize: 4,
   },
-  highlightSeriesOnHover = false
+  focusOverlayColor?: string
 ): TestSource {
   const pointCount = values[0].length;
   const samples = new Float64Array(values.length * pointCount);
@@ -1158,7 +1162,7 @@ function createSource(
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount,
     cursorMode,
-    highlightSeriesOnHover,
+    focusOverlayColor,
     seriesIdentityAt: (seriesIndex) => `${identity}:${seriesIndex}`,
     seriesIdentityHashAt: (seriesIndex) => seriesIndex,
     visibilityState: { overrides: new Map() },
