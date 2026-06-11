@@ -843,8 +843,6 @@ export enum DashboardCursorSync {
 
 export const defaultDashboardCursorSync: DashboardCursorSync = DashboardCursorSync.Off;
 
-export type QueryStepSize = "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h";
-
 /**
  * Dashboard panels are the basic visualization building blocks.
  */
@@ -890,10 +888,6 @@ export interface Panel {
    */
   interval?: string;
   /**
-   * The query step size setting requests one datapoint per selected interval.
-   */
-  stepSize?: QueryStepSize;
-  /**
    * Dynamically load the panel
    */
   libraryPanel?: LibraryPanelRef;
@@ -931,6 +925,10 @@ export interface Panel {
    * `h` for horizontal, `v` for vertical.
    */
   repeatDirection?: ('h' | 'v');
+  /**
+   * The query step size setting requests one datapoint per selected interval.
+   */
+  stepSize?: ('1m' | '5m' | '10m' | '20m' | '30m' | '1h' | '2h' | '5h');
   /**
    * Depends on the panel plugin. See the plugin documentation for details.
    */

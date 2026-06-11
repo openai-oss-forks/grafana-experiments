@@ -69,6 +69,150 @@ func TestParse(t *testing.T) {
 		require.Equal(t, 5*time.Minute, res.Step)
 	})
 
+	t.Run("parsing query model with explicit step size ignores t-shirt interval", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "1m",
+			"intervalMs": 60000,
+			"stepSize": "1m",
+			"refId": "A"
+		}`, timeRange, time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, time.Minute, res.Step)
+	})
+
+	t.Run("parsing query model allows curated explicit step sizes", func(t *testing.T) {
+		for _, tt := range []struct {
+			stepSize string
+			duration time.Duration
+		}{
+			{"1m", time.Minute},
+			{"5m", 5 * time.Minute},
+			{"10m", 10 * time.Minute},
+			{"20m", 20 * time.Minute},
+			{"30m", 30 * time.Minute},
+			{"1h", time.Hour},
+			{"2h", 2 * time.Hour},
+			{"5h", 5 * time.Hour},
+		} {
+			t.Run(tt.stepSize, func(t *testing.T) {
+				timeRange := backend.TimeRange{
+					From: now,
+					To:   now.Add(12 * time.Hour),
+				}
+
+				q := queryContext(fmt.Sprintf(`{
+					"expr": "go_goroutines",
+					"format": "time_series",
+					"interval": %[1]q,
+					"stepSize": %[1]q,
+					"refId": "A"
+				}`, tt.stepSize), timeRange, tt.duration)
+				q.MaxDataPoints = 1500
+
+				res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+				require.NoError(t, err)
+				require.Equal(t, tt.duration, res.Step)
+			})
+		}
+	})
+
+	t.Run("parsing query model rejects unsupported explicit step size", func(t *testing.T) {
+		for _, stepSize := range []string{"2m", "3m"} {
+			t.Run(stepSize, func(t *testing.T) {
+				timeRange := backend.TimeRange{
+					From: now,
+					To:   now.Add(12 * time.Hour),
+				}
+
+				q := queryContext(fmt.Sprintf(`{
+					"expr": "go_goroutines",
+					"format": "time_series",
+					"interval": %[1]q,
+					"stepSize": %[1]q,
+					"refId": "A"
+				}`, stepSize), timeRange, 3*time.Minute)
+				q.MaxDataPoints = 1500
+
+				_, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+				require.ErrorContains(t, err, fmt.Sprintf("invalid stepSize: %s", stepSize))
+			})
+		}
+	})
+
+	t.Run("parsing query model with explicit step size uses provided interval above query min step", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "5m",
+			"intervalMs": 1800000,
+			"stepSize": "30m",
+			"refId": "A"
+		}`, timeRange, 30*time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, 30*time.Minute, res.Step)
+	})
+
+	t.Run("parsing query model with explicit step size ignores interval factor", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "1m",
+			"intervalMs": 60000,
+			"intervalFactor": 10,
+			"stepSize": "1m",
+			"refId": "A"
+		}`, timeRange, time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "15s", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, time.Minute, res.Step)
+	})
+
+	t.Run("parsing query model with explicit step size respects datasource scrape interval", func(t *testing.T) {
+		timeRange := backend.TimeRange{
+			From: now,
+			To:   now.Add(12 * time.Hour),
+		}
+
+		q := queryContext(`{
+			"expr": "go_goroutines",
+			"format": "time_series",
+			"interval": "1m",
+			"intervalMs": 60000,
+			"stepSize": "1m",
+			"refId": "A"
+		}`, timeRange, time.Minute)
+		q.MaxDataPoints = 1500
+
+		res, err := models.Parse(context.Background(), log.New(), span, q, "2m", intervalCalculator, false)
+		require.NoError(t, err)
+		require.Equal(t, 2*time.Minute, res.Step)
+	})
+
 	t.Run("parsing query model without step parameter", func(t *testing.T) {
 		timeRange := backend.TimeRange{
 			From: now,

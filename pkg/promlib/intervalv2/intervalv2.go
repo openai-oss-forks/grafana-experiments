@@ -25,6 +25,7 @@ type intervalCalculator struct {
 
 type Calculator interface {
 	Calculate(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval
+	CalculateResolutionBased(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval
 	CalculateSafeInterval(timerange backend.TimeRange, resolution int64) Interval
 	TshirtSizeStepSizeEnabled() bool
 }
@@ -68,6 +69,10 @@ func (ic *intervalCalculator) Calculate(timerange backend.TimeRange, minInterval
 	}
 
 	return Interval{Text: gtime.FormatInterval(calculatedInterval), Value: calculatedInterval}
+}
+
+func (ic *intervalCalculator) CalculateResolutionBased(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval {
+	return calculateResolutionBasedInterval(timerange, minInterval, maxDataPoints)
 }
 
 func calculateResolutionBasedInterval(timerange backend.TimeRange, minInterval time.Duration, maxDataPoints int64) Interval {

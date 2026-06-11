@@ -176,7 +176,7 @@ type Panel struct {
 	// See: https://grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/#query-options
 	Interval *string `json:"interval,omitempty"`
 	// The query step size setting requests one datapoint per selected interval.
-	StepSize *string `json:"stepSize,omitempty"`
+	StepSize *PanelStepSize `json:"stepSize,omitempty"`
 	// Overrides the relative time range for individual panels,
 	// which causes them to be different than what is selected in
 	// the dashboard time picker in the top-right corner of the dashboard. You can use this to show metrics from different
@@ -1188,6 +1188,19 @@ type PanelRepeatDirection string
 const (
 	PanelRepeatDirectionH PanelRepeatDirection = "h"
 	PanelRepeatDirectionV PanelRepeatDirection = "v"
+)
+
+type PanelStepSize string
+
+const (
+	PanelStepSize1M  PanelStepSize = "1m"
+	PanelStepSize5M  PanelStepSize = "5m"
+	PanelStepSize10M PanelStepSize = "10m"
+	PanelStepSize20M PanelStepSize = "20m"
+	PanelStepSize30M PanelStepSize = "30m"
+	PanelStepSize1H  PanelStepSize = "1h"
+	PanelStepSize2H  PanelStepSize = "2h"
+	PanelStepSize5H  PanelStepSize = "5h"
 )
 
 type DataTransformerConfigTopic string

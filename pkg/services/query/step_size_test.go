@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,7 +23,12 @@ func TestValidateStepSize(t *testing.T) {
 		},
 		{
 			name:    "rejects unknown step size",
-			query:   `{"refId":"A","__grafanaQueryOptions":{"stepSize":"605s"}}`,
+			query:   `{"refId":"A","__grafanaQueryOptions":{"stepSize":"3m"}}`,
+			wantErr: ErrInvalidStepSize,
+		},
+		{
+			name:    "rejects two minute step size",
+			query:   `{"refId":"A","__grafanaQueryOptions":{"stepSize":"2m"}}`,
 			wantErr: ErrInvalidStepSize,
 		},
 		{
@@ -62,6 +68,17 @@ func TestValidateStepSize(t *testing.T) {
 
 			require.Error(t, err)
 			require.True(t, errors.Is(err, tt.wantErr))
+		})
+	}
+}
+
+func TestValidateStepSizeAllowsCuratedStepSizes(t *testing.T) {
+	for _, stepSize := range []string{"1m", "5m", "10m", "20m", "30m", "1h", "2h", "5h"} {
+		t.Run(stepSize, func(t *testing.T) {
+			query, err := simplejson.NewJson([]byte(fmt.Sprintf(`{"refId":"A","__grafanaQueryOptions":{"stepSize":%q}}`, stepSize)))
+			require.NoError(t, err)
+
+			require.NoError(t, validateStepSize(query))
 		})
 	}
 }
