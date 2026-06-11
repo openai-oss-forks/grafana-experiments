@@ -820,7 +820,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       found: state.seriesIndex >= 0,
     });
     const focus = plot.focus;
-    state.hasPoint = state.seriesIndex >= 0 && focus.prox >= 0 && state.distance <= focus.prox;
+    state.hasPoint =
+      state.seriesIndex >= 0 && focus.prox >= 0 && (origin === 'native-sync' || state.distance <= focus.prox);
     if (!state.hasPoint) {
       state.seriesIndex = -1;
       state.dataIndex = -1;
@@ -909,7 +910,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.cursorState.distance = distance;
     this.cursorState.left = plot.valToPos(this.source.xAt(dataIndex), 'x');
     this.cursorState.top = top;
-    this.cursorState.size = style.pointSize ?? Math.max(5, (style.lineWidth ?? 1) * 3);
+    this.cursorState.size = (style.pointSize ?? Math.max(5, (style.lineWidth ?? 1) * 3)) * 2;
     this.cursorState.fill = style.fill ?? style.stroke;
     this.cursorState.stroke = style.stroke;
   }

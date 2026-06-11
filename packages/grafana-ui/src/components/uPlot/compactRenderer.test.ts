@@ -526,7 +526,12 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
-    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 1, top: 2 });
+    expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({
+      seriesIndex: 0,
+      dataIndex: 1,
+      top: 2,
+      size: 8,
+    });
   });
 
   test('clears candidate coordinates when focus proximity rejects the nearest point', () => {
@@ -542,6 +547,21 @@ describe('CompactRenderController', () => {
       left: -10,
       top: -10,
       size: 0,
+    });
+  });
+
+  test('keeps synchronized markers on the nearest receiver-local series across different scales', () => {
+    const source = createSource([[10]], [CompactSeriesFlag.Linear]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 0, 0, 'native-sync')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      dataIndex: 0,
+      top: 10,
+      size: 8,
     });
   });
 
