@@ -782,10 +782,7 @@ function createRenderSource(
     scales,
     stackGroupCount,
     cursorMode: options.cursorMode ?? 'single',
-    focusOverlayColor:
-      options.highlightSeriesOnHover === false
-        ? undefined
-        : colorManipulator.alpha(options.theme.colors.background.canvas, 0.72),
+    highlightSeriesOnHover: options.highlightSeriesOnHover !== false,
     seriesIdentityAt: getSeriesIdentity,
     seriesIdentityHashAt: getSeriesIdentityHash,
     visibilityState,
@@ -1363,14 +1360,7 @@ function matchesValue(
   const { reducer, operation, value } = matcher;
   const left =
     reducer === ReducerID.median
-      ? reduceCompactMedianMatcher(
-          dataView,
-          access,
-          seriesIndex,
-          config,
-          medianWorkspace,
-          medianMatcherMemo
-        )
+      ? reduceCompactMedianMatcher(dataView, access, seriesIndex, config, medianWorkspace, medianMatcherMemo)
       : reduceCompactSourceSeries(dataView, access, seriesIndex, config, reducer, medianWorkspace);
   if (reducer === ReducerID.allIsNull || reducer === ReducerID.allIsZero) {
     return Boolean(left);
@@ -1664,9 +1654,7 @@ class CompactMedianWorkspace {
     const upper = selectCompactMedianValue(this.values, length, middle);
     if (length % 2 === 0) {
       const lower =
-        middle - 1 >= upper.equalStart
-          ? upper.value
-          : findMaximumCompactMedianValue(this.values, upper.equalStart);
+        middle - 1 >= upper.equalStart ? upper.value : findMaximumCompactMedianValue(this.values, upper.equalStart);
       return (lower + upper.value) / 2;
     }
 

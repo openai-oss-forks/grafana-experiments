@@ -532,7 +532,7 @@ describe('CompactRenderController', () => {
       'series',
       'single',
       undefined,
-      'rgba(0, 0, 0, 0.5)'
+      true
     );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
@@ -561,7 +561,8 @@ describe('CompactRenderController', () => {
 
       expect(controller.setSeries(0, { focus: true })).toBe(false);
       expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
-      expect(overlayContext.fillRect).toHaveBeenCalledWith(0, 0, 100, 100);
+      expect(overlayContext.fillRect).not.toHaveBeenCalled();
+      expect(overlayContext.strokeStyle).toBe('#f00');
 
       expect(controller.setSeries(1, { show: false })).toBe(true);
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
@@ -585,7 +586,7 @@ describe('CompactRenderController', () => {
       'series',
       'single',
       undefined,
-      'rgba(0, 0, 0, 0.5)'
+      true
     );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
@@ -612,7 +613,7 @@ describe('CompactRenderController', () => {
       'series',
       'single',
       undefined,
-      'rgba(0, 0, 0, 0.5)'
+      true
     );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
@@ -1044,7 +1045,7 @@ function createSource(
   identity = 'series',
   cursorMode: CompactRenderSource['cursorMode'] = 'single',
   style: CompactStyleRecord = { stroke: '#f00', fill: '#fcc', lineWidth: 1, pointSize: 4 },
-  focusOverlayColor?: string
+  highlightSeriesOnHover = false
 ): TestSource {
   const pointCount = values[0].length;
   const samples = new Float64Array(values.length * pointCount);
@@ -1087,7 +1088,7 @@ function createSource(
     scales: [{ key: 'y', distribution: ScaleDistribution.Linear }],
     stackGroupCount,
     cursorMode,
-    focusOverlayColor,
+    highlightSeriesOnHover,
     seriesIdentityAt: (seriesIndex) => `${identity}:${seriesIndex}`,
     seriesIdentityHashAt: (seriesIndex) => seriesIndex,
     visibilityState: { overrides: new Map() },
