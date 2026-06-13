@@ -3,6 +3,7 @@ import { dateTime, DataQueryRequest, DataQueryResponse, LoadingState } from '@gr
 import {
   MULTIBATCH_ACCEPT_HEADER,
   MULTIBATCH_CONTENT_TYPE,
+  MULTIBATCH_PREFERRED_CONTENT_TYPE,
   decodeMultiBatchFrames,
   isMultiBatchContentType,
   queryPrometheusMultiBatch,
@@ -18,7 +19,13 @@ jest.mock('@grafana/runtime', () => ({
 jest.mock('zstddec', () => ({
   ZSTDDecoder: class {
     init = jest.fn(async () => {});
-    decode = jest.fn((payload: Uint8Array) => payload);
+    decode = jest.fn((payload: Uint8Array, uncompressedSize?: number) => {
+      const text = new TextDecoder().decode(payload);
+      if (text.includes('needs-explicit-zstd-size') && !uncompressedSize) {
+        throw new Error('memory access out of bounds');
+      }
+      return payload;
+    });
   },
 }));
 
@@ -33,6 +40,7 @@ describe('Prometheus multi-batch streaming', () => {
 
   it('detects the neutral content type', () => {
     expect(isMultiBatchContentType('application/prometheus.multibatch; version=1')).toBe(true);
+    expect(isMultiBatchContentType('application/com.openai.prometheus.multibatch; version=1')).toBe(true);
     expect(isMultiBatchContentType('application/json')).toBe(false);
   });
 
@@ -55,6 +63,17 @@ describe('Prometheus multi-batch streaming', () => {
       { payload: '{"type":"status","status":"streaming"}\n', isFinal: false },
       { payload: '{"type":"status","status":"done"}\n', isFinal: true },
     ]);
+  });
+
+  it('falls back to explicit zstd output sizes when the compressed frame does not advertise content size', async () => {
+    const payload = '{"type":"status","status":"needs-explicit-zstd-size"}\n';
+    const batches: Array<{ payload: string; isFinal: boolean }> = [];
+
+    await decodeMultiBatchFrames([responseHeaderFrame(), frame(payload, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)], (batch, isFinal) => {
+      batches.push({ payload: batch, isFinal });
+    });
+
+    expect(batches).toEqual([{ payload, isFinal: true }]);
   });
 
   it('rejects truncated frames', async () => {
@@ -142,31 +161,105 @@ describe('Prometheus multi-batch streaming', () => {
       scopedVars: {},
       targets: [target],
     } as DataQueryRequest<PromQuery>;
-    const batches = [
-      responseHeaderFrame(),
-      frame(
-        `${JSON.stringify({
-          status: 'success',
-          data: {
-            resultType: 'matrix',
-            result: [{ metric: { model: 'first' }, values: [[1, '10']] }],
-          },
-        })}\n`,
-        0
-      ),
-      frame(
-        `${JSON.stringify({
-          status: 'success',
-          data: {
-            resultType: 'matrix',
-            result: [{ metric: { model: 'first' }, values: [[2, '20']] }],
-          },
-        })}\n`,
-        FINAL_BATCH_FLAG
-      ),
-    ];
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+    const partialFrame = frame(
+      `${JSON.stringify({
+        status: 'success',
+        data: {
+          resultType: 'matrix',
+          result: [{ metric: { model: 'first' }, values: [[1, '10']] }],
+        },
+      })}\n`,
+      0
+    );
+    const finalFrame = frame(
+      `${JSON.stringify({
+        status: 'success',
+        data: {
+          resultType: 'matrix',
+          result: [{ metric: { model: 'first' }, values: [[2, '20']] }],
+        },
+      })}\n`,
+      FINAL_BATCH_FLAG
+    );
+    const batches = [concatBytes(responseHeaderFrame(), partialFrame, finalFrame)];
     global.fetch = jest.fn().mockResolvedValue({
       body: readableBody(batches),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/datasources/proxy/uid/prometheus/api/v1/query_range',
+      expect.objectContaining({
+        body: 'query=sum%28rate%28http_requests_total%5B%24__interval%5D%29%29&start=0&end=10&step=60',
+        headers: expect.objectContaining({
+          Accept: MULTIBATCH_ACCEPT_HEADER,
+        }),
+        method: 'POST',
+      })
+    );
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
+    expect(responses[0].data[0].fields[0].values).toEqual([1000]);
+    expect(responses[0].data[0].fields[1].values).toEqual([10]);
+    expect(responses[1].data[0].fields[0].values).toEqual([1000, 2000]);
+    expect(responses[1].data[0].fields[1].values).toEqual([10, 20]);
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 0);
+  });
+
+  it('decodes OQP schema and data events keyed by frame id', async () => {
+    const target: PromQuery = {
+      expr: 'sum by ("turn_analytics.result") (sum_per_second({"client_turn_analytics.exchange_complete"}[1m]))',
+      legendFormat: 'Result - {{turn_analytics.result}}',
+      refId: 'A',
+    };
+    const request = {
+      interval: '1m',
+      intervalMs: 60000,
+      range: {
+        from: dateTime(0),
+        to: dateTime(120_000),
+      },
+      scopedVars: {},
+      targets: [target],
+    } as DataQueryRequest<PromQuery>;
+
+    const payload = [
+      {
+        type: 'schema',
+        frame: 'result:0:series:canceled',
+        columns: [
+          { name: 'time', type: 'time', labels: {} },
+          { name: 'value', type: 'number', labels: { 'turn_analytics.result': 'canceled' } },
+        ],
+      },
+      { type: 'data', frame: 'result:0:series:canceled', data: ['1970-01-01T00:00:01Z', '10'] },
+      {
+        type: 'schema',
+        frame: 'result:0:series:error',
+        columns: [
+          { name: 'time', type: 'time', labels: {} },
+          { name: 'value', type: 'number', labels: { 'turn_analytics.result': 'error' } },
+        ],
+      },
+      { type: 'data', frame: 'result:0:series:error', data: ['1970-01-01T00:00:02Z', '20'] },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([responseHeaderFrame(), frame(`${payload}\n`, FINAL_BATCH_FLAG)]),
       headers: {
         get: (name: string) => (name.toLowerCase() === 'content-type' ? `${MULTIBATCH_CONTENT_TYPE}; version=1` : null),
       },
@@ -181,21 +274,118 @@ describe('Prometheus multi-batch streaming', () => {
       })
     );
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      '/api/datasources/uid/prometheus/resources/api/v1/query_range',
-      expect.objectContaining({
-        body: 'query=sum%28rate%28http_requests_total%5B%24__interval%5D%29%29&start=0&end=10&step=60',
-        headers: expect.objectContaining({
-          Accept: MULTIBATCH_ACCEPT_HEADER,
-        }),
-        method: 'POST',
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
+    expect(responses[0].data).toHaveLength(2);
+    expect(responses[0].data[0].refId).toBe('A');
+    expect(responses[0].data[0].name).toBeUndefined();
+    expect(responses[0].data[0].fields[0].values).toEqual([1000]);
+    expect(responses[0].data[0].fields[1].config.displayNameFromDS).toBe('Result - canceled');
+    expect(responses[0].data[0].fields[1].labels).toEqual({ 'turn_analytics.result': 'canceled' });
+    expect(responses[0].data[0].fields[1].values).toEqual([10]);
+    expect(responses[0].data[1].refId).toBe('A');
+    expect(responses[0].data[1].name).toBeUndefined();
+    expect(responses[0].data[1].fields[0].values).toEqual([2000]);
+    expect(responses[0].data[1].fields[1].config.displayNameFromDS).toBe('Result - error');
+    expect(responses[0].data[1].fields[1].labels).toEqual({ 'turn_analytics.result': 'error' });
+    expect(responses[0].data[1].fields[1].values).toEqual([20]);
+  });
+
+  it('does not emit completed OQP schema-only frames as data', async () => {
+    const target: PromQuery = {
+      expr: 'sum(rate(empty_metric[$__interval]))',
+      legendFormat: '{{result}}',
+      refId: 'A',
+    };
+    const request = {
+      interval: '1m',
+      intervalMs: 60000,
+      range: {
+        from: dateTime(0),
+        to: dateTime(120_000),
+      },
+      scopedVars: {},
+      targets: [target],
+    } as DataQueryRequest<PromQuery>;
+
+    const payload = JSON.stringify({
+      type: 'schema',
+      frame: 'result:0:series:empty',
+      columns: [
+        { name: 'time', type: 'time', labels: {} },
+        { name: 'value', type: 'number', labels: { result: 'empty' } },
+      ],
+    });
+
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([responseHeaderFrame(), frame(`${payload}\n`, FINAL_BATCH_FLAG)]),
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? `${MULTIBATCH_CONTENT_TYPE}; version=1` : null),
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
       })
     );
-    expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
-    expect(responses[0].data[0].fields[0].values).toEqual([1000]);
+
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
+    expect(responses[0].data).toEqual([]);
+  });
+
+  it('uses the single label value for OQP auto legend frames', async () => {
+    const target: PromQuery = {
+      expr: 'sum by (turn_analytics_tools_used) (sum_over_time({"client_turn_analytics.tool_used"}[5m]))',
+      legendFormat: '__auto',
+      refId: 'A',
+    };
+    const request = {
+      interval: '1m',
+      intervalMs: 60000,
+      range: {
+        from: dateTime(0),
+        to: dateTime(120_000),
+      },
+      scopedVars: {},
+      targets: [target],
+    } as DataQueryRequest<PromQuery>;
+
+    const payload = [
+      {
+        type: 'schema',
+        frame: 'result:0:series:web-run',
+        columns: [
+          { name: 'time', type: 'time', labels: {} },
+          { name: 'value', type: 'number', labels: { turn_analytics_tools_used: 'web.run' } },
+        ],
+      },
+      { type: 'data', frame: 'result:0:series:web-run', data: ['1970-01-01T00:00:01Z', '10'] },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([responseHeaderFrame(), frame(`${payload}\n`, FINAL_BATCH_FLAG)]),
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? `${MULTIBATCH_CONTENT_TYPE}; version=1` : null),
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses[0].data).toHaveLength(1);
+    expect(responses[0].data[0].fields[1].config.displayNameFromDS).toBe('web.run');
     expect(responses[0].data[0].fields[1].values).toEqual([10]);
-    expect(responses[1].data[0].fields[0].values).toEqual([1000, 2000]);
-    expect(responses[1].data[0].fields[1].values).toEqual([10, 20]);
   });
 });
 
