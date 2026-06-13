@@ -192,6 +192,8 @@ COPY --from=js-src /tmp/grafana/public ./public
 COPY --from=js-src /tmp/grafana/LICENSE ./
 COPY --from=go-src /tmp/grafana/data/plugins-bundled ./data/plugins-bundled
 
+RUN chmod -R a+rX "$GF_PATHS_HOME/conf" "$GF_PATHS_HOME/bin" "$GF_PATHS_HOME/public" "$GF_PATHS_HOME/data" /etc/grafana
+
 RUN grafana server -v | sed -e 's/Version //' > /.grafana-version
 RUN chmod 644 /.grafana-version
 
@@ -255,6 +257,8 @@ COPY --from=go-src /tmp/grafana/bin/grafana* /tmp/grafana/bin/*/grafana* ./bin/
 COPY --from=js-src /tmp/grafana/public ./public
 COPY --from=js-src /tmp/grafana/LICENSE ./
 COPY --from=go-src /tmp/grafana/data/plugins-bundled ./data/plugins-bundled
+
+RUN chmod -R a+rX "$GF_PATHS_HOME/conf" "$GF_PATHS_HOME/bin" "$GF_PATHS_HOME/public" "$GF_PATHS_HOME/data" /etc/grafana
 
 RUN grafana server -v | sed -e 's/Version //' > /.grafana-version
 RUN chmod 644 /.grafana-version
