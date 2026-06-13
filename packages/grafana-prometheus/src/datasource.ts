@@ -9,6 +9,7 @@ import {
   AdHocVariableFilter,
   CoreApp,
   CustomVariableModel,
+  DataFrame,
   DataQueryRequest,
   DataQueryResponse,
   DataSourceGetTagKeysOptions,
@@ -19,6 +20,7 @@ import {
   dateTime,
   getDefaultTimeRange,
   LegacyMetricFindQueryOptions,
+  LoadingState,
   MetricFindValue,
   QueryFixAction,
   QueryVariableModel,
@@ -468,24 +470,12 @@ export class PrometheusDatasource
       return this.directAccessError();
     }
 
-    const multiBatchTarget = this.getPrometheusMultiBatchTarget(request);
-    if (multiBatchTarget) {
-      const preparedTarget = this.preparePrometheusMultiBatchTarget(multiBatchTarget, request);
+    const multiBatchTargets = this.getPrometheusMultiBatchTargets(request);
+    if (multiBatchTargets.length > 0) {
+      const preparedTargets = multiBatchTargets.map((target) => this.preparePrometheusMultiBatchTarget(target, request));
       const startTime = new Date();
 
-      return queryPrometheusMultiBatch(this.uid, request, preparedTarget, {
-        httpMethod: this.httpMethod,
-        customQueryParameters: this.customQueryParameters,
-      }).pipe(
-        map((response) =>
-          transformV2(response, request, {
-            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
-          })
-        ),
-        tap((response: DataQueryResponse) => {
-          trackQuery(response, request, startTime);
-        })
-      );
+      return this.queryPrometheusMultiBatchTargets(request, preparedTargets, startTime);
     }
 
     // Compact responses must retain their binary ownership through rendering. The incremental
@@ -526,27 +516,91 @@ export class PrometheusDatasource
     );
   }
 
-  private getPrometheusMultiBatchTarget(request: DataQueryRequest<PromQuery>): PromQuery | undefined {
+  private queryPrometheusMultiBatchTargets(
+    request: DataQueryRequest<PromQuery>,
+    targets: PromQuery[],
+    startTime: Date
+  ): Observable<DataQueryResponse> {
+    return new Observable<DataQueryResponse>((subscriber) => {
+      const latestDataByTarget = new Map<string, DataFrame[]>();
+      const completedTargets = new Set<string>();
+      const targetKeys = targets.map((target, index) => target.refId ?? String(index));
+
+      const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
+        latestDataByTarget.set(targetKey, response.data);
+        if (response.state === LoadingState.Done) {
+          completedTargets.add(targetKey);
+        }
+
+        const allTargetsDone = completedTargets.size === targets.length;
+        const combinedResponse = transformV2(
+          {
+            ...response,
+            data: targetKeys.flatMap((key) => latestDataByTarget.get(key) ?? []),
+            state: allTargetsDone ? LoadingState.Done : LoadingState.Streaming,
+          },
+          request,
+          {
+            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
+          }
+        );
+
+        trackQuery(combinedResponse, request, startTime);
+        subscriber.next(combinedResponse);
+      };
+
+      const subscriptions = targets.map((target, index) =>
+        queryPrometheusMultiBatch(this.uid, request, target, {
+          httpMethod: this.httpMethod,
+          customQueryParameters: this.customQueryParameters,
+        }).subscribe({
+          complete: () => {
+            completedTargets.add(targetKeys[index]);
+            if (completedTargets.size === targets.length) {
+              subscriber.complete();
+            }
+          },
+          error: (error) => subscriber.error(error),
+          next: (response) => emitCombinedResponse(targetKeys[index], response),
+        })
+      );
+
+      return () => {
+        for (const subscription of subscriptions) {
+          subscription.unsubscribe();
+        }
+      };
+    });
+  }
+
+  private getPrometheusMultiBatchTargets(request: DataQueryRequest<PromQuery>): PromQuery[] {
     if (!config.featureToggles.prometheusMultiBatchStreaming || config.publicDashboardAccessToken) {
-      return undefined;
+      return [];
     }
 
     const visibleTargets = request.targets.filter((target) => this.filterQuery(target));
-    if (visibleTargets.length !== 1) {
-      return undefined;
+    if (visibleTargets.length === 0) {
+      return [];
     }
 
-    const target = visibleTargets[0];
-    if (target.instant || target.range === false || target.exemplar) {
-      return undefined;
+    if (visibleTargets.some((target) => !this.isPrometheusMultiBatchTarget(target))) {
+      return [];
+    }
+
+    return visibleTargets;
+  }
+
+  private isPrometheusMultiBatchTarget(target: PromQuery): boolean {
+    if (target.instant || target.range === false || target.exemplar || target.format === 'heatmap') {
+      return false;
     }
 
     const datasourceUid = typeof target.datasource === 'string' ? target.datasource : target.datasource?.uid;
     if (datasourceUid && datasourceUid !== this.uid) {
-      return undefined;
+      return false;
     }
 
-    return target;
+    return true;
   }
 
   private preparePrometheusMultiBatchTarget(target: PromQuery, request: DataQueryRequest<PromQuery>): PromQuery {

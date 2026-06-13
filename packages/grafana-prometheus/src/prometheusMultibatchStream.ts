@@ -18,7 +18,8 @@ import { parseSampleValue } from './result_transformer';
 import { PromQuery } from './types';
 
 export const MULTIBATCH_CONTENT_TYPE = 'application/prometheus.multibatch';
-export const MULTIBATCH_ACCEPT_HEADER = `${MULTIBATCH_CONTENT_TYPE}; version=1, application/jsonl`;
+export const MULTIBATCH_PREFERRED_CONTENT_TYPE = 'application/com.openai.prometheus.multibatch';
+export const MULTIBATCH_ACCEPT_HEADER = `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1, ${MULTIBATCH_CONTENT_TYPE}; version=1, application/jsonl`;
 
 const FRAME_HEADER_SIZE = 12;
 const FINAL_BATCH_FLAG = 1;
@@ -28,6 +29,7 @@ const PAYLOAD_ENCODING_IDENTITY = 0;
 const PAYLOAD_ENCODING_ZSTD = 1;
 const RESPONSE_HEADER_MAGIC = 'MBRH';
 const BATCH_FRAME_MAGIC = 'MBBF';
+const ZSTD_DECODE_BUFFER_SIZE = 64 * 1024 * 1024;
 
 type BatchHandler = (payload: string, isFinal: boolean) => Promise<void> | void;
 
@@ -48,6 +50,7 @@ interface MultiBatchColumn {
 
 interface MultiBatchSchemaEvent {
   type: 'schema';
+  frame?: string;
   refId?: string;
   name?: string;
   columns?: MultiBatchColumn[];
@@ -56,7 +59,9 @@ interface MultiBatchSchemaEvent {
 
 interface MultiBatchDataEvent {
   type: 'data';
+  frame?: string;
   refId?: string;
+  data?: unknown[];
   row?: unknown[];
   rows?: unknown[][];
   values?: Record<string, unknown>;
@@ -64,6 +69,7 @@ interface MultiBatchDataEvent {
 
 interface MultiBatchStatusEvent {
   type: 'status';
+  frame?: string;
   status?: string;
   isIncomplete?: boolean;
   incomplete?: boolean;
@@ -135,7 +141,8 @@ class ZstdPayloadDecoder {
       await this.decoder.init();
     }
 
-    return this.decoder.decode(payload);
+    // zstddec cannot infer sizes for OQP frames that omit the zstd content-size field.
+    return this.decoder.decode(payload, ZSTD_DECODE_BUFFER_SIZE);
   }
 }
 
@@ -240,7 +247,8 @@ export function isMultiBatchContentType(contentType: string | null | undefined):
     return false;
   }
 
-  return contentType.split(';')[0].trim().toLowerCase() === MULTIBATCH_CONTENT_TYPE;
+  const mediaType = contentType.split(';')[0].trim().toLowerCase();
+  return mediaType === MULTIBATCH_CONTENT_TYPE || mediaType === MULTIBATCH_PREFERRED_CONTENT_TYPE;
 }
 
 export async function decodeMultiBatchFrames(chunks: Uint8Array[], onBatch: BatchHandler): Promise<void> {
@@ -346,6 +354,10 @@ async function streamQueryRange(
           data: accumulator.snapshotFrames(!isFinal),
           state: isFinal ? LoadingState.Done : LoadingState.Streaming,
         });
+
+        if (!isFinal) {
+          await yieldToBrowser();
+        }
       }
     }
   } finally {
@@ -353,6 +365,10 @@ async function streamQueryRange(
   }
 
   frameDecoder.finish();
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function buildResourceUrl(
@@ -364,9 +380,9 @@ function buildResourceUrl(
     customQueryParameters: URLSearchParams;
   }
 ): string {
-  const path = `${config.appSubUrl ?? ''}/api/datasources/uid/${encodeURIComponent(
+  const path = `${config.appSubUrl ?? ''}/api/datasources/proxy/uid/${encodeURIComponent(
     datasourceUid
-  )}/resources/api/v1/query_range`;
+  )}/api/v1/query_range`;
 
   if (options.httpMethod.toUpperCase() === 'POST') {
     return path;
@@ -397,7 +413,7 @@ function getPrometheusStepSeconds(request: DataQueryRequest<PromQuery>, target: 
 }
 
 class MultiBatchResponseAccumulator {
-  private framesByRefId = new Map<string, DataFrame>();
+  private framesByKey = new Map<string, DataFrame>();
   private lineBuffer = new TextLineBuffer();
   private seriesByKey = new Map<string, SeriesAccumulator>();
   private resultType = 'matrix';
@@ -416,7 +432,9 @@ class MultiBatchResponseAccumulator {
       this.processLine(line);
     }
 
-    const eventFrames = Array.from(this.framesByRefId.values()).map((frame) => cloneFrame(frame, isIncomplete));
+    const eventFrames = Array.from(this.framesByKey.values())
+      .filter((frame) => isIncomplete || frame.length > 0)
+      .map((frame) => cloneFrame(frame, isIncomplete));
     const prometheusFrames = this.prometheusFrames(isIncomplete);
     return eventFrames.length > 0 ? eventFrames : prometheusFrames;
   }
@@ -448,14 +466,21 @@ class MultiBatchResponseAccumulator {
 
   private processSchema(event: MultiBatchSchemaEvent) {
     const columns = event.columns ?? event.fields ?? [];
+    const frameKey = this.getFrameKey(event);
     const frame: DataFrame = {
-      fields: columns.map((column) => ({
-        config: {},
-        labels: column.labels,
-        name: column.name,
-        type: toFieldType(column.type),
-        values: [],
-      })),
+      fields: columns.map((column) => {
+        const labels = column.labels;
+        const displayNameFromDS =
+          column.type === 'number' ? getDisplayName(this.target.legendFormat, labels ?? {}) : undefined;
+
+        return {
+          config: displayNameFromDS ? { displayNameFromDS } : {},
+          labels,
+          name: column.name,
+          type: toFieldType(column.type),
+          values: [],
+        };
+      }),
       length: 0,
       meta: {
         custom: {
@@ -468,17 +493,17 @@ class MultiBatchResponseAccumulator {
       refId: event.refId ?? this.target.refId,
     };
 
-    this.framesByRefId.set(frame.refId ?? this.target.refId, frame);
+    this.framesByKey.set(frameKey, frame);
   }
 
   private processData(event: MultiBatchDataEvent) {
-    const refId = event.refId ?? this.target.refId;
-    const frame = this.framesByRefId.get(refId);
+    const frameKey = this.getFrameKey(event);
+    const frame = this.framesByKey.get(frameKey);
     if (!frame) {
-      throw new Error(`Prometheus multi-batch data event referenced unknown frame: ${refId}`);
+      throw new Error(`Prometheus multi-batch data event referenced unknown frame: ${frameKey}`);
     }
 
-    const rows = event.rows ?? (event.row ? [event.row] : event.values ? [event.values] : []);
+    const rows = event.rows ?? (event.row ? [event.row] : event.data ? [event.data] : event.values ? [event.values] : []);
     for (const row of rows) {
       frame.fields.forEach((field, index) => {
         const raw = getRowValue(row, field.name, index);
@@ -496,17 +521,32 @@ class MultiBatchResponseAccumulator {
       return;
     }
 
-    const refId = event.refId ?? this.target.refId;
-    const frame = this.framesByRefId.get(refId);
-    if (frame) {
-      frame.meta = {
-        ...frame.meta,
-        custom: {
-          ...frame.meta?.custom,
-          isIncomplete,
-        },
-      };
+    const frameKey = event.frame ?? event.refId;
+    if (frameKey) {
+      const frame = this.framesByKey.get(frameKey);
+      if (frame) {
+        this.setFrameIncomplete(frame, isIncomplete);
+      }
+      return;
     }
+
+    for (const frame of this.framesByKey.values()) {
+      this.setFrameIncomplete(frame, isIncomplete);
+    }
+  }
+
+  private getFrameKey(event: { frame?: string; refId?: string }): string {
+    return event.frame ?? event.refId ?? this.target.refId;
+  }
+
+  private setFrameIncomplete(frame: DataFrame, isIncomplete: boolean) {
+    frame.meta = {
+      ...frame.meta,
+      custom: {
+        ...frame.meta?.custom,
+        isIncomplete,
+      },
+    };
   }
 
   private processPrometheusResponse(response: PrometheusApiResponse) {
@@ -646,11 +686,24 @@ function toTimestampMs(timestamp: unknown): number {
 }
 
 function getDisplayName(legendFormat: string | undefined, labels: Record<string, string>): string | undefined {
-  if (!legendFormat || legendFormat === '__auto') {
+  if (!legendFormat) {
     return undefined;
   }
 
+  if (legendFormat === '__auto') {
+    return getSingleLabelDisplayName(labels);
+  }
+
   return legendFormat.replace(/\{\{\s*([^}\s]+)\s*\}\}/g, (_, label: string) => labels[label] ?? '');
+}
+
+function getSingleLabelDisplayName(labels: Record<string, string>): string | undefined {
+  const labelEntries = Object.entries(labels).filter(([label]) => label !== '__name__');
+  if (labelEntries.length !== 1 || labels.__name__) {
+    return undefined;
+  }
+
+  return labelEntries[0][1];
 }
 
 function metricKey(metric: Record<string, string>): string {
