@@ -200,6 +200,7 @@ EXPOSE 3000
 ARG RUN_SH=./packaging/docker/run.sh
 
 COPY ${RUN_SH} /run.sh
+RUN chmod 755 /run.sh
 
 USER "$GF_UID"
 ENTRYPOINT [ "/run.sh" ]
@@ -263,6 +264,7 @@ EXPOSE 3000
 ARG RUN_SH=./packaging/docker/run.sh
 
 COPY ${RUN_SH} /run.sh
+RUN chmod 755 /run.sh
 
 USER "$GF_UID"
 ENTRYPOINT [ "/run.sh" ]
