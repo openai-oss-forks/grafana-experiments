@@ -1,4 +1,4 @@
-import { dateTime, DataQueryRequest, DataQueryResponse, LoadingState } from '@grafana/data';
+import { dateTime, DataQueryRequest, DataQueryResponse, FieldType, LoadingState } from '@grafana/data';
 
 import {
   MULTIBATCH_ACCEPT_HEADER,
@@ -69,9 +69,12 @@ describe('Prometheus multi-batch streaming', () => {
     const payload = '{"type":"status","status":"needs-explicit-zstd-size"}\n';
     const batches: Array<{ payload: string; isFinal: boolean }> = [];
 
-    await decodeMultiBatchFrames([responseHeaderFrame(), frame(payload, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)], (batch, isFinal) => {
-      batches.push({ payload: batch, isFinal });
-    });
+    await decodeMultiBatchFrames(
+      [responseHeaderFrame(), frame(payload, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)],
+      (batch, isFinal) => {
+        batches.push({ payload: batch, isFinal });
+      }
+    );
 
     expect(batches).toEqual([{ payload, isFinal: true }]);
   });
@@ -203,7 +206,7 @@ describe('Prometheus multi-batch streaming', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/datasources/proxy/uid/prometheus/api/v1/query_range',
       expect.objectContaining({
-        body: 'query=sum%28rate%28http_requests_total%5B%24__interval%5D%29%29&start=0&end=10&step=60',
+        body: 'query=sum%28rate%28http_requests_total%5B%24__interval%5D%29%29&start=0&end=0&step=60',
         headers: expect.objectContaining({
           Accept: MULTIBATCH_ACCEPT_HEADER,
         }),
@@ -216,6 +219,101 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[1].data[0].fields[0].values).toEqual([1000, 2000]);
     expect(responses[1].data[0].fields[1].values).toEqual([10, 20]);
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 0);
+  });
+
+  it('uses datasource and target interval limits when building query_range parameters', async () => {
+    const target: PromQuery = {
+      expr: 'up',
+      refId: 'A',
+      intervalFactor: 10,
+      stepSize: '2m',
+    };
+    const request = {
+      interval: '15s',
+      intervalMs: 15000,
+      range: {
+        from: dateTime(10_500),
+        to: dateTime(131_000),
+      },
+      scopedVars: {},
+      targets: [target],
+    } as DataQueryRequest<PromQuery>;
+    global.fetch = jest.fn().mockResolvedValue({
+      body: null,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      ok: true,
+      text: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          status: 'success',
+          data: {
+            resultType: 'matrix',
+            result: [],
+          },
+        })
+      ),
+    });
+
+    await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+        minInterval: '1m',
+        queryTimeout: '30s',
+      })
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/datasources/proxy/uid/prometheus/api/v1/query_range',
+      expect.objectContaining({
+        body: 'query=up&start=0&end=120&step=120&timeout=30s',
+      })
+    );
+  });
+
+  it('preserves native histogram samples from Prometheus JSON responses', async () => {
+    const target: PromQuery = {
+      expr: 'histogram_metric',
+      refId: 'A',
+    };
+    const request = {
+      interval: '1m',
+      intervalMs: 60000,
+      range: {
+        from: dateTime(0),
+        to: dateTime(60_000),
+      },
+      scopedVars: {},
+      targets: [target],
+    } as DataQueryRequest<PromQuery>;
+    const histogram = { count: '2', sum: '3', buckets: [] };
+    global.fetch = jest.fn().mockResolvedValue({
+      body: null,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      ok: true,
+      text: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          status: 'success',
+          data: {
+            resultType: 'matrix',
+            result: [{ metric: { job: 'native' }, histograms: [[1, histogram]] }],
+          },
+        })
+      ),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses[0].data[0].fields[1].type).toBe(FieldType.other);
+    expect(responses[0].data[0].fields[1].values).toEqual([histogram]);
   });
 
   it('decodes OQP schema and data events keyed by frame id', async () => {

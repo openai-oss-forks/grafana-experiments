@@ -7,6 +7,7 @@ import {
   CoreApp,
   CustomVariableModel,
   DataQueryRequest,
+  DataQueryResponse,
   DataSourceInstanceSettings,
   dateTime,
   LoadingState,
@@ -202,7 +203,39 @@ describe('PrometheusDatasource', () => {
         .mockRejectedValue(new Error('heatmap queries should not use multi-batch streaming'));
 
       try {
-        await lastValueFrom(ds.query(createDataRequest([{ expr: 'sum(rate(metric_bucket[1m]))', refId: 'A', format: 'heatmap' }])));
+        await lastValueFrom(
+          ds.query(createDataRequest([{ expr: 'sum(rate(metric_bucket[1m]))', refId: 'A', format: 'heatmap' }]))
+        );
+
+        expect(browserFetchSpy).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalled();
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it.each([
+      [
+        'scope requests',
+        [{ expr: 'up', refId: 'A' }],
+        { scopes: [{ metadata: { name: 'tenant' }, spec: { filters: [] } }] },
+      ],
+      ['group-by requests', [{ expr: 'up', refId: 'A' }], { groupByKeys: ['job'] }],
+      ['unresolved $__rate_interval queries', [{ expr: 'rate(up[$__rate_interval])', refId: 'A' }], {}],
+      ['unresolved ${__rate_interval} queries', [{ expr: 'rate(up[${__rate_interval}])', refId: 'A' }], {}],
+      ['unresolved ${__rate_interval_ms} queries', [{ expr: 'rate(up[${__rate_interval_ms}ms])', refId: 'A' }], {}],
+    ])('does not use multi-batch streaming for %s', async (_name, targets, requestOverrides) => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('backend-only queries should not use multi-batch streaming'));
+
+      try {
+        await lastValueFrom(
+          ds.query(createDataRequest(targets as PromQuery[], requestOverrides as Partial<DataQueryRequest>))
+        );
 
         expect(browserFetchSpy).not.toHaveBeenCalled();
         expect(fetchMock).toHaveBeenCalled();
@@ -215,9 +248,10 @@ describe('PrometheusDatasource', () => {
     it('uses multi-batch streaming for multi-target range queries', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
-      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input) => {
-        const url = new URL(String(input), 'http://localhost');
-        const query = url.searchParams.get('query') ?? '';
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const params = new URLSearchParams(body);
+        const query = params.get('query') ?? '';
         const refLabel = query.includes('metric_b') ? 'B' : 'A';
 
         return {
@@ -231,7 +265,9 @@ describe('PrometheusDatasource', () => {
               status: 'success',
               data: {
                 resultType: 'matrix',
-                result: [{ metric: { series: refLabel }, values: [[fromSeconds / 1000, refLabel === 'A' ? '1' : '2']] }],
+                result: [
+                  { metric: { series: refLabel }, values: [[fromSeconds / 1000, refLabel === 'A' ? '1' : '2']] },
+                ],
               },
             })
           ),
@@ -250,11 +286,133 @@ describe('PrometheusDatasource', () => {
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(browserFetchSpy).toHaveBeenCalledTimes(2);
-        expect(String(browserFetchSpy.mock.calls[0][0])).toContain('/api/datasources/proxy/uid/ABCDEF/api/v1/query_range');
-        expect(String(browserFetchSpy.mock.calls[1][0])).toContain('/api/datasources/proxy/uid/ABCDEF/api/v1/query_range');
+        expect(String(browserFetchSpy.mock.calls[0][0])).toContain(
+          '/api/datasources/proxy/uid/ABCDEF/api/v1/query_range'
+        );
+        expect(String(browserFetchSpy.mock.calls[1][0])).toContain(
+          '/api/datasources/proxy/uid/ABCDEF/api/v1/query_range'
+        );
+        expect(browserFetchSpy.mock.calls[0][1]).toMatchObject({ method: 'POST' });
+        expect(browserFetchSpy.mock.calls[1][1]).toMatchObject({ method: 'POST' });
         expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
         expect(responses[0].data.map((frame) => frame.refId)).toEqual(['A']);
         expect(responses[1].data.map((frame) => frame.refId)).toEqual(['A', 'B']);
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('interpolates $__interval from the effective multi-batch query step', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const intervalTemplateSrv = {
+        replace: jest.fn((value: string | undefined, scopedVars?: Record<string, { value: unknown }>) => {
+          if (!value) {
+            return value;
+          }
+
+          return value
+            .replace(/\$__interval_ms/g, String(scopedVars?.__interval_ms?.value ?? '$__interval_ms'))
+            .replace(/\$__interval/g, String(scopedVars?.__interval?.value ?? '$__interval'));
+        }),
+      } as unknown as TemplateSrv;
+      const intervalDs = new PrometheusDatasource(
+        {
+          ...instanceSettings,
+          jsonData: {
+            ...instanceSettings.jsonData,
+            timeInterval: '1m',
+          },
+        },
+        intervalTemplateSrv
+      );
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const params = new URLSearchParams(body);
+
+        expect(params.get('query')).toBe('rate(up[1m])');
+        expect(params.get('step')).toBe('60');
+
+        return {
+          body: null,
+          headers: {
+            get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+          },
+          ok: true,
+          text: jest.fn().mockResolvedValue(
+            JSON.stringify({
+              status: 'success',
+              data: {
+                resultType: 'matrix',
+                result: [],
+              },
+            })
+          ),
+        } as unknown as Response;
+      });
+
+      try {
+        await collectQueryResponses(
+          intervalDs.query(createDataRequest([{ expr: 'rate(up[$__interval])', refId: 'A' }]))
+        );
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('keeps streaming other targets when one multi-batch target fails', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const params = new URLSearchParams(body);
+        const query = params.get('query') ?? '';
+
+        if (query.includes('metric_a')) {
+          return {
+            headers: {
+              get: () => 'text/plain',
+            },
+            ok: false,
+            text: jest.fn().mockResolvedValue('metric_a failed'),
+          } as unknown as Response;
+        }
+
+        return {
+          body: null,
+          headers: {
+            get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+          },
+          ok: true,
+          text: jest.fn().mockResolvedValue(
+            JSON.stringify({
+              status: 'success',
+              data: {
+                resultType: 'matrix',
+                result: [{ metric: { series: 'B' }, values: [[fromSeconds / 1000, '2']] }],
+              },
+            })
+          ),
+        } as unknown as Response;
+      });
+
+      try {
+        const responses = await collectQueryResponses(
+          ds.query(
+            createDataRequest([
+              { expr: 'metric_a', refId: 'A' },
+              { expr: 'metric_b', refId: 'B' },
+            ])
+          )
+        );
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(browserFetchSpy).toHaveBeenCalledTimes(2);
+        expect(responses.map((response) => response.state)).toContain(LoadingState.Done);
+        expect(responses[responses.length - 1].data.map((frame) => frame.refId)).toEqual(['B']);
+        expect(responses[responses.length - 1].errors?.[0]?.message).toBe('metric_a failed');
       } finally {
         browserFetchSpy.mockRestore();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;

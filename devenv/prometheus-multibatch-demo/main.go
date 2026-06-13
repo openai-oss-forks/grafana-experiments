@@ -18,7 +18,7 @@ import (
 const (
 	contentType              = "application/prometheus.multibatch; version=1"
 	multiBatchMediaType      = "application/prometheus.multibatch"
-	frameMagic               = "MBPB"
+	frameMagic               = "MBBF"
 	frameVersion        byte = 1
 	payloadTypeJSONL    byte = 1
 	flagFinalBatch      byte = 1
@@ -123,6 +123,11 @@ func handleQueryRange(w http.ResponseWriter, r *http.Request, delay time.Duratio
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	if err := writeResponseHeader(w, flusher); err != nil {
+		log.Printf("write response header: %v", err)
+		return
+	}
+
 	if err := writeFrame(w, flusher, first, 0); err != nil {
 		log.Printf("write first batch: %v", err)
 		return
@@ -146,6 +151,18 @@ func handleInstantQuery(w http.ResponseWriter, r *http.Request) {
 
 	now := float64(time.Now().Unix())
 	writeResponseJSON(w, buildRangeResponse(now, now, 1))
+}
+
+func writeResponseHeader(w http.ResponseWriter, flusher http.Flusher) error {
+	header := make([]byte, 12)
+	copy(header[0:4], "MBRH")
+	header[4] = frameVersion
+
+	if _, err := w.Write(header); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 func writeFrame(w http.ResponseWriter, flusher http.Flusher, response apiResponse, flags byte) error {

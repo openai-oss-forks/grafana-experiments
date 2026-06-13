@@ -10,6 +10,7 @@ import {
   CoreApp,
   CustomVariableModel,
   DataFrame,
+  DataQueryError,
   DataQueryRequest,
   DataQueryResponse,
   DataSourceGetTagKeysOptions,
@@ -58,7 +59,7 @@ import { getQueryHints } from './query_hints';
 import { renderLabelsWithoutBrackets } from './querybuilder/shared/rendering/labels';
 import { QueryBuilderLabelFilter, QueryEditorMode } from './querybuilder/shared/types';
 import { CacheRequestInfo, defaultPrometheusQueryOverlapWindow, QueryCache } from './querycache/QueryCache';
-import { queryPrometheusMultiBatch } from './prometheusMultibatchStream';
+import { getPrometheusStepSeconds, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { transformV2 } from './result_transformer';
 import { trackQuery } from './tracking';
 import {
@@ -90,6 +91,8 @@ export class PrometheusDatasource
   exemplarsAvailable: boolean;
   hasIncrementalQuery: boolean;
   httpMethod: string;
+  queryHttpMethod: string;
+  queryTimeout: string;
   interval: string;
   languageProvider: PrometheusLanguageProviderInterface;
   lookupsDisabled: boolean;
@@ -125,6 +128,8 @@ export class PrometheusDatasource
     this.exemplarsAvailable = true;
     this.hasIncrementalQuery = instanceSettings.jsonData.incrementalQuerying ?? false;
     this.httpMethod = instanceSettings.jsonData.httpMethod || 'GET';
+    this.queryHttpMethod = instanceSettings.jsonData.httpMethod || 'POST';
+    this.queryTimeout = instanceSettings.jsonData.queryTimeout ?? '';
     this.interval = instanceSettings.jsonData.timeInterval || '15s';
     this.lookupsDisabled = instanceSettings.jsonData.disableMetricsLookup ?? false;
     this.ruleMappings = {};
@@ -472,7 +477,9 @@ export class PrometheusDatasource
 
     const multiBatchTargets = this.getPrometheusMultiBatchTargets(request);
     if (multiBatchTargets.length > 0) {
-      const preparedTargets = multiBatchTargets.map((target) => this.preparePrometheusMultiBatchTarget(target, request));
+      const preparedTargets = multiBatchTargets.map((target) =>
+        this.preparePrometheusMultiBatchTarget(target, request)
+      );
       const startTime = new Date();
 
       return this.queryPrometheusMultiBatchTargets(request, preparedTargets, startTime);
@@ -523,20 +530,33 @@ export class PrometheusDatasource
   ): Observable<DataQueryResponse> {
     return new Observable<DataQueryResponse>((subscriber) => {
       const latestDataByTarget = new Map<string, DataFrame[]>();
+      const errorsByTarget = new Map<string, DataQueryError>();
       const completedTargets = new Set<string>();
       const targetKeys = targets.map((target, index) => target.refId ?? String(index));
+      const responseKey = `${request.requestId}-prometheus-multibatch`;
 
       const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
         latestDataByTarget.set(targetKey, response.data);
+        const targetError = response.error ?? response.errors?.[0];
+        if (targetError) {
+          errorsByTarget.set(targetKey, targetError);
+        }
         if (response.state === LoadingState.Done) {
           completedTargets.add(targetKey);
         }
 
         const allTargetsDone = completedTargets.size === targets.length;
+        const errors = targetKeys.flatMap((key) => {
+          const error = errorsByTarget.get(key);
+          return error ? [error] : [];
+        });
         const combinedResponse = transformV2(
           {
             ...response,
             data: targetKeys.flatMap((key) => latestDataByTarget.get(key) ?? []),
+            error: errors[0],
+            errors: errors.length > 0 ? errors : undefined,
+            key: responseKey,
             state: allTargetsDone ? LoadingState.Done : LoadingState.Streaming,
           },
           request,
@@ -545,14 +565,18 @@ export class PrometheusDatasource
           }
         );
 
-        trackQuery(combinedResponse, request, startTime);
+        if (combinedResponse.state === LoadingState.Done) {
+          trackQuery(combinedResponse, request, startTime);
+        }
         subscriber.next(combinedResponse);
       };
 
       const subscriptions = targets.map((target, index) =>
         queryPrometheusMultiBatch(this.uid, request, target, {
-          httpMethod: this.httpMethod,
+          httpMethod: this.queryHttpMethod,
           customQueryParameters: this.customQueryParameters,
+          minInterval: this.interval,
+          queryTimeout: this.queryTimeout,
         }).subscribe({
           complete: () => {
             completedTargets.add(targetKeys[index]);
@@ -560,7 +584,16 @@ export class PrometheusDatasource
               subscriber.complete();
             }
           },
-          error: (error) => subscriber.error(error),
+          error: (error) => {
+            emitCombinedResponse(targetKeys[index], {
+              data: [],
+              error: this.toDataQueryError(error, target.refId),
+              state: LoadingState.Done,
+            });
+            if (completedTargets.size === targets.length) {
+              subscriber.complete();
+            }
+          },
           next: (response) => emitCombinedResponse(targetKeys[index], response),
         })
       );
@@ -583,7 +616,15 @@ export class PrometheusDatasource
       return [];
     }
 
+    if ((request.scopes?.length ?? 0) > 0 || (request.groupByKeys?.length ?? 0) > 0) {
+      return [];
+    }
+
     if (visibleTargets.some((target) => !this.isPrometheusMultiBatchTarget(target))) {
+      return [];
+    }
+
+    if (visibleTargets.some((target) => this.shouldUseBackendQueryPathForMultiBatch(target, request))) {
       return [];
     }
 
@@ -603,12 +644,24 @@ export class PrometheusDatasource
     return true;
   }
 
+  private shouldUseBackendQueryPathForMultiBatch(target: PromQuery, request: DataQueryRequest<PromQuery>): boolean {
+    if ((target.scopes?.length ?? 0) > 0 || (target.groupByKeys?.length ?? 0) > 0) {
+      return true;
+    }
+
+    return this.hasUnresolvedRateIntervalVariable(target, request);
+  }
+
   private preparePrometheusMultiBatchTarget(target: PromQuery, request: DataQueryRequest<PromQuery>): PromQuery {
+    const intervalSeconds = getPrometheusStepSeconds(request, target, this.interval);
+    const interval = rangeUtil.secondsToHms(intervalSeconds);
+    const intervalMs = intervalSeconds * 1000;
     const scopedVars = {
       ...request.scopedVars,
-      __interval: { text: request.interval, value: request.interval },
-      __interval_ms: { text: request.intervalMs, value: request.intervalMs },
-      __rate_interval: request.scopedVars?.__rate_interval ?? { text: request.interval, value: request.interval },
+      __interval: { text: interval, value: interval },
+      __interval_ms: { text: intervalMs, value: intervalMs },
+      ...(request.scopedVars?.__rate_interval ? { __rate_interval: request.scopedVars.__rate_interval } : {}),
+      ...(request.scopedVars?.__rate_interval_ms ? { __rate_interval_ms: request.scopedVars.__rate_interval_ms } : {}),
       ...this.getRangeScopedVars(request.range),
     };
     const interpolatedTarget = this.interpolateVariablesInQueries([target], scopedVars, request.filters)[0];
@@ -621,6 +674,35 @@ export class PrometheusDatasource
       ...request,
       targets: [targetWithInterpolatedLegend],
     })[0];
+  }
+
+  private hasUnresolvedRateIntervalVariable(target: PromQuery, request: DataQueryRequest<PromQuery>): boolean {
+    const expr = target.expr;
+    const usesRateInterval = /\$(?:__rate_interval\b|\{__rate_interval\})/.test(expr);
+    const usesRateIntervalMs = /\$(?:__rate_interval_ms\b|\{__rate_interval_ms\})/.test(expr);
+
+    return (
+      (usesRateInterval && !request.scopedVars?.__rate_interval) ||
+      (usesRateIntervalMs && !request.scopedVars?.__rate_interval_ms)
+    );
+  }
+
+  private toDataQueryError(error: unknown, refId: string | undefined): DataQueryError {
+    if (isFetchError(error)) {
+      return {
+        data: error.data,
+        message: error.message,
+        refId,
+        status: error.status,
+        statusText: error.statusText,
+      };
+    }
+
+    if (error instanceof Error) {
+      return { message: error.message, refId };
+    }
+
+    return { message: String(error), refId };
   }
 
   protected shouldRequestCompactQueryResponse(request: DataQueryRequest<PromQuery>, queries: PromQuery[]): boolean {

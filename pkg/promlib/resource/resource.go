@@ -25,6 +25,7 @@ import (
 )
 
 const multiBatchContentType = "application/prometheus.multibatch"
+const preferredMultiBatchContentType = "application/com.openai.prometheus.multibatch"
 const streamBufferSize = 32 * 1024
 
 type Resource struct {
@@ -102,13 +103,17 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 		}
 	}()
 
-	// frontend sets the X-Grafana-Cache with the desired response cache control value
-	if len(req.GetHTTPHeaders().Get("X-Grafana-Cache")) > 0 {
+	isMultiBatchResponse := isMultiBatchContentType(resp.Header.Get("Content-Type"))
+
+	// frontend sets the X-Grafana-Cache with the desired response cache control value. Streaming
+	// multibatch responses cannot use this complete-response cache because each chunk is sent
+	// separately through CallResourceResponseSender.
+	if !isMultiBatchResponse && len(req.GetHTTPHeaders().Get("X-Grafana-Cache")) > 0 {
 		resp.Header.Set("X-Grafana-Cache", "y")
 		resp.Header.Set("Cache-Control", req.GetHTTPHeaders().Get("X-Grafana-Cache"))
 	}
 
-	if !isMultiBatchContentType(resp.Header.Get("Content-Type")) {
+	if !isMultiBatchResponse {
 		var buf bytes.Buffer
 		// Should be more efficient than ReadAll. See https://github.com/prometheus/client_golang/pull/976
 		_, err = buf.ReadFrom(resp.Body)
@@ -125,6 +130,8 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 
 	headers := resp.Header.Clone()
 	headers.Del("Content-Length")
+	headers.Del("X-Grafana-Cache")
+	headers.Set("Cache-Control", "no-store")
 
 	buf := make([]byte, streamBufferSize)
 	sentHeader := false
@@ -168,7 +175,9 @@ func isMultiBatchContentType(contentType string) bool {
 	if err != nil {
 		mediaType = strings.Split(contentType, ";")[0]
 	}
-	return strings.EqualFold(strings.TrimSpace(mediaType), multiBatchContentType)
+	mediaType = strings.TrimSpace(mediaType)
+	return strings.EqualFold(mediaType, multiBatchContentType) ||
+		strings.EqualFold(mediaType, preferredMultiBatchContentType)
 }
 
 func getSelectors(expr string) ([]string, error) {

@@ -13,7 +13,6 @@ import { config } from '@grafana/runtime';
 import { Observable } from 'rxjs';
 import { ZSTDDecoder } from 'zstddec';
 
-import { getPrometheusTime } from './language_utils';
 import { parseSampleValue } from './result_transformer';
 import { PromQuery } from './types';
 
@@ -99,13 +98,15 @@ interface PrometheusApiResponse {
 
 interface PrometheusResult {
   metric?: Record<string, string>;
+  histograms?: Array<[number | string, unknown]>;
+  histogram?: [number | string, unknown];
   values?: Array<[number | string, number | string]>;
   value?: [number | string, number | string];
 }
 
 interface SeriesAccumulator {
   labels: Record<string, string>;
-  points: Map<number, number | null>;
+  points: Map<number, number | null | unknown>;
 }
 
 class TextLineBuffer {
@@ -273,6 +274,8 @@ export function queryPrometheusMultiBatch(
   options: {
     httpMethod: string;
     customQueryParameters: URLSearchParams;
+    minInterval?: string;
+    queryTimeout?: string;
   }
 ): Observable<DataQueryResponse> {
   return new Observable<DataQueryResponse>((subscriber) => {
@@ -301,6 +304,8 @@ async function streamQueryRange(
   options: {
     httpMethod: string;
     customQueryParameters: URLSearchParams;
+    minInterval?: string;
+    queryTimeout?: string;
   },
   signal: AbortSignal,
   emit: (response: DataQueryResponse) => void
@@ -308,7 +313,7 @@ async function streamQueryRange(
   const accumulator = new MultiBatchResponseAccumulator(target);
   const method = options.httpMethod.toUpperCase();
   const response = await fetch(buildResourceUrl(datasourceUid, request, target, options), {
-    body: method === 'POST' ? buildQueryParams(request, target, options.customQueryParameters).toString() : undefined,
+    body: method === 'POST' ? buildQueryParams(request, target, options).toString() : undefined,
     credentials: 'same-origin',
     headers: {
       Accept: MULTIBATCH_ACCEPT_HEADER,
@@ -378,6 +383,8 @@ function buildResourceUrl(
   options: {
     httpMethod: string;
     customQueryParameters: URLSearchParams;
+    minInterval?: string;
+    queryTimeout?: string;
   }
 ): string {
   const path = `${config.appSubUrl ?? ''}/api/datasources/proxy/uid/${encodeURIComponent(
@@ -388,28 +395,73 @@ function buildResourceUrl(
     return path;
   }
 
-  const params = buildQueryParams(request, target, options.customQueryParameters);
+  const params = buildQueryParams(request, target, options);
   return `${path}?${params.toString()}`;
 }
 
 function buildQueryParams(
   request: DataQueryRequest<PromQuery>,
   target: PromQuery,
-  customQueryParameters: URLSearchParams
+  options: {
+    customQueryParameters: URLSearchParams;
+    minInterval?: string;
+    queryTimeout?: string;
+  }
 ): URLSearchParams {
-  const params = new URLSearchParams(customQueryParameters);
+  const step = getPrometheusStepSeconds(request, target, options.minInterval);
+  const range = getAlignedPrometheusTimeRange(request, target, step);
+  const params = new URLSearchParams(options.customQueryParameters);
   params.set('query', target.expr);
-  params.set('start', String(getPrometheusTime(request.range.from, false)));
-  params.set('end', String(getPrometheusTime(request.range.to, true)));
-  params.set('step', String(getPrometheusStepSeconds(request, target)));
+  params.set('start', String(range.start));
+  params.set('end', String(range.end));
+  params.set('step', String(step));
+  if (options.queryTimeout) {
+    params.set('timeout', options.queryTimeout);
+  }
   return params;
 }
 
-function getPrometheusStepSeconds(request: DataQueryRequest<PromQuery>, target: PromQuery): number {
-  const minIntervalMs = target.interval ? rangeUtil.intervalToMs(target.interval) : 0;
-  const intervalFactor = target.intervalFactor ?? 1;
+export function getPrometheusStepSeconds(
+  request: DataQueryRequest<PromQuery>,
+  target: PromQuery,
+  minInterval?: string
+): number {
+  const minIntervalMs = Math.max(
+    intervalToMs(minInterval),
+    intervalToMs(target.interval),
+    intervalToMs(target.stepSize)
+  );
+  const intervalFactor = target.stepSize ? 1 : (target.intervalFactor ?? 1);
   const intervalMs = Math.max(request.intervalMs ?? 0, minIntervalMs) * intervalFactor;
   return Math.max(1, Math.ceil(intervalMs / 1000));
+}
+
+function getAlignedPrometheusTimeRange(
+  request: DataQueryRequest<PromQuery>,
+  target: PromQuery,
+  stepSeconds: number
+): { start: number; end: number } {
+  const offsetSeconds = target.utcOffsetSec ?? 0;
+
+  return {
+    start: alignPrometheusTime(request.range.from.valueOf(), stepSeconds, offsetSeconds),
+    end: alignPrometheusTime(request.range.to.valueOf(), stepSeconds, offsetSeconds),
+  };
+}
+
+function alignPrometheusTime(timestampMs: number, stepSeconds: number, offsetSeconds: number): number {
+  const stepMs = stepSeconds * 1000;
+  const offsetMs = offsetSeconds * 1000;
+  const alignedMs = Math.floor((timestampMs + offsetMs) / stepMs) * stepMs - offsetMs;
+  return Math.floor(alignedMs / 1000);
+}
+
+function intervalToMs(interval: string | null | undefined): number {
+  if (!interval) {
+    return 0;
+  }
+
+  return rangeUtil.intervalToMs(interval);
 }
 
 class MultiBatchResponseAccumulator {
@@ -503,7 +555,8 @@ class MultiBatchResponseAccumulator {
       throw new Error(`Prometheus multi-batch data event referenced unknown frame: ${frameKey}`);
     }
 
-    const rows = event.rows ?? (event.row ? [event.row] : event.data ? [event.data] : event.values ? [event.values] : []);
+    const rows =
+      event.rows ?? (event.row ? [event.row] : event.data ? [event.data] : event.values ? [event.values] : []);
     for (const row of rows) {
       frame.fields.forEach((field, index) => {
         const raw = getRowValue(row, field.name, index);
@@ -566,6 +619,11 @@ class MultiBatchResponseAccumulator {
       for (const [timestamp, value] of values) {
         series.points.set(toTimestampMs(timestamp), parseSampleValue(String(value)));
       }
+
+      const histograms = result.histograms ?? (result.histogram ? [result.histogram] : []);
+      for (const [timestamp, histogram] of histograms) {
+        series.points.set(toTimestampMs(timestamp), histogram);
+      }
     }
   }
 
@@ -574,6 +632,9 @@ class MultiBatchResponseAccumulator {
       const points = Array.from(series.points.entries()).sort(([a], [b]) => a - b);
       const labels = { ...series.labels };
       const valueName = labels.__name__ ?? TIME_SERIES_VALUE_FIELD_NAME;
+      const valueType = points.some(([, value]) => value !== null && typeof value === 'object')
+        ? FieldType.other
+        : FieldType.number;
       const displayNameFromDS = getDisplayName(this.target.legendFormat, labels);
 
       return {
@@ -588,7 +649,7 @@ class MultiBatchResponseAccumulator {
             config: displayNameFromDS ? { displayNameFromDS } : {},
             labels,
             name: valueName,
-            type: FieldType.number,
+            type: valueType,
             values: points.map(([, value]) => value),
           },
         ],
