@@ -245,58 +245,34 @@ describe('PrometheusDatasource', () => {
       }
     });
 
-    it('uses multi-batch streaming for multi-target range queries', async () => {
+    it('does not use compact multi-batch streaming for multi-target range queries', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
-      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
-        const body = typeof init?.body === 'string' ? init.body : '';
-        const params = new URLSearchParams(body);
-        const query = params.get('query') ?? '';
-        const refLabel = query.includes('metric_b') ? 'B' : 'A';
-
-        return {
-          body: null,
-          headers: {
-            get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
-          },
-          ok: true,
-          text: jest.fn().mockResolvedValue(
-            JSON.stringify({
-              status: 'success',
-              data: {
-                resultType: 'matrix',
-                result: [
-                  { metric: { series: refLabel }, values: [[fromSeconds / 1000, refLabel === 'A' ? '1' : '2']] },
-                ],
-              },
-            })
-          ),
-        } as unknown as Response;
-      });
+      const browserFetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('multi-target queries should use the backend query path'));
 
       try {
-        const responses = await collectQueryResponses(
+        await collectQueryResponses(
           ds.query(
-            createDataRequest([
-              { expr: 'metric_a', refId: 'A' },
-              { expr: 'metric_b', refId: 'B' },
-            ])
+            createDataRequest(
+              [
+                { expr: 'metric_a', refId: 'A' },
+                { expr: 'metric_b', refId: 'B' },
+              ],
+              {
+                app: CoreApp.Dashboard,
+                panelPluginId: 'timeseries',
+                preferredQueryResultFormat: 'compact-v1',
+              }
+            )
           )
         );
 
-        expect(fetchMock).not.toHaveBeenCalled();
-        expect(browserFetchSpy).toHaveBeenCalledTimes(2);
-        expect(String(browserFetchSpy.mock.calls[0][0])).toContain(
-          '/api/datasources/proxy/uid/ABCDEF/api/v1/query_range'
-        );
-        expect(String(browserFetchSpy.mock.calls[1][0])).toContain(
-          '/api/datasources/proxy/uid/ABCDEF/api/v1/query_range'
-        );
-        expect(browserFetchSpy.mock.calls[0][1]).toMatchObject({ method: 'POST' });
-        expect(browserFetchSpy.mock.calls[1][1]).toMatchObject({ method: 'POST' });
-        expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
-        expect(responses[0].data.map((frame) => frame.refId)).toEqual(['A']);
-        expect(responses[1].data.map((frame) => frame.refId)).toEqual(['A', 'B']);
+        expect(browserFetchSpy).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0].url).toContain('/api/ds/query');
+        expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
       } finally {
         browserFetchSpy.mockRestore();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
@@ -362,57 +338,34 @@ describe('PrometheusDatasource', () => {
       }
     });
 
-    it('keeps streaming other targets when one multi-batch target fails', async () => {
+    it('does not use compact multi-batch streaming for multi-target failures', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
-      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
-        const body = typeof init?.body === 'string' ? init.body : '';
-        const params = new URLSearchParams(body);
-        const query = params.get('query') ?? '';
-
-        if (query.includes('metric_a')) {
-          return {
-            headers: {
-              get: () => 'text/plain',
-            },
-            ok: false,
-            text: jest.fn().mockResolvedValue('metric_a failed'),
-          } as unknown as Response;
-        }
-
-        return {
-          body: null,
-          headers: {
-            get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
-          },
-          ok: true,
-          text: jest.fn().mockResolvedValue(
-            JSON.stringify({
-              status: 'success',
-              data: {
-                resultType: 'matrix',
-                result: [{ metric: { series: 'B' }, values: [[fromSeconds / 1000, '2']] }],
-              },
-            })
-          ),
-        } as unknown as Response;
-      });
+      const browserFetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('multi-target queries should use the backend query path'));
 
       try {
-        const responses = await collectQueryResponses(
+        await collectQueryResponses(
           ds.query(
-            createDataRequest([
-              { expr: 'metric_a', refId: 'A' },
-              { expr: 'metric_b', refId: 'B' },
-            ])
+            createDataRequest(
+              [
+                { expr: 'metric_a', refId: 'A' },
+                { expr: 'metric_b', refId: 'B' },
+              ],
+              {
+                app: CoreApp.Dashboard,
+                panelPluginId: 'timeseries',
+                preferredQueryResultFormat: 'compact-v1',
+              }
+            )
           )
         );
 
-        expect(fetchMock).not.toHaveBeenCalled();
-        expect(browserFetchSpy).toHaveBeenCalledTimes(2);
-        expect(responses.map((response) => response.state)).toContain(LoadingState.Done);
-        expect(responses[responses.length - 1].data.map((frame) => frame.refId)).toEqual(['B']);
-        expect(responses[responses.length - 1].errors?.[0]?.message).toBe('metric_a failed');
+        expect(browserFetchSpy).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0].url).toContain('/api/ds/query');
+        expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
       } finally {
         browserFetchSpy.mockRestore();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;

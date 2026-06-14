@@ -528,6 +528,32 @@ export class PrometheusDatasource
     targets: PromQuery[],
     startTime: Date
   ): Observable<DataQueryResponse> {
+    if (targets.length === 1) {
+      const responseKey = `${request.requestId}-prometheus-multibatch`;
+      const target = targets[0];
+      return queryPrometheusMultiBatch(this.uid, request, target, {
+        httpMethod: this.queryHttpMethod,
+        customQueryParameters: this.customQueryParameters,
+        minInterval: this.interval,
+        queryTimeout: this.queryTimeout,
+      }).pipe(
+        map((response) => {
+          const keyedResponse = { ...response, key: responseKey };
+          if (keyedResponse.compactSeries) {
+            return keyedResponse;
+          }
+          return transformV2(keyedResponse, request, {
+            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
+          });
+        }),
+        tap((response) => {
+          if (response.state === LoadingState.Done) {
+            trackQuery(response, request, startTime);
+          }
+        })
+      );
+    }
+
     return new Observable<DataQueryResponse>((subscriber) => {
       const latestDataByTarget = new Map<string, DataFrame[]>();
       const errorsByTarget = new Map<string, DataQueryError>();
@@ -613,6 +639,14 @@ export class PrometheusDatasource
 
     const visibleTargets = request.targets.filter((target) => this.filterQuery(target));
     if (visibleTargets.length === 0) {
+      return [];
+    }
+
+    if (
+      request.preferredQueryResultFormat !== 'compact-v1' ||
+      visibleTargets.length !== 1 ||
+      !this.shouldRequestCompactQueryResponse(request, visibleTargets)
+    ) {
       return [];
     }
 

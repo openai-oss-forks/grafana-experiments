@@ -1,0 +1,900 @@
+package compact
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"reflect"
+	"sort"
+	"time"
+	"unicode/utf8"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
+
+	"github.com/grafana/grafana/pkg/promlib/models"
+)
+
+var errCompactQueryDataTooLarge = errors.New("compact query response exceeds encoding limits")
+var errCompactQueryDataUnsupported = errors.New("query response does not satisfy compact-v1")
+
+type compactQueryDataUnsupportedError struct {
+	reason string
+}
+
+func (e *compactQueryDataUnsupportedError) Error() string {
+	return fmt.Sprintf("%s: %s", errCompactQueryDataUnsupported, e.reason)
+}
+
+func (e *compactQueryDataUnsupportedError) Unwrap() error {
+	return errCompactQueryDataUnsupported
+}
+
+func compactQueryDataUnsupported(reason string) error {
+	return &compactQueryDataUnsupportedError{reason: reason}
+}
+
+func compactQueryDataUnsupportedReason(err error) string {
+	var unsupported *compactQueryDataUnsupportedError
+	if errors.As(err, &unsupported) {
+		return unsupported.reason
+	}
+	return "unspecified"
+}
+
+const (
+	compactQueryDataHeader        = "X-Grafana-Query-Format"
+	compactQueryDataVersion       = "compact-v1"
+	compactQueryDataMediaType     = "application/vnd.grafana.querydata.compact;version=1"
+	compactQueryDataMagic         = "GQD1"
+	compactQueryDataBinaryVersion = 1
+
+	compactResponseHeaderSize       = 32
+	compactAxisRecordSize           = 24
+	compactStringRecordSize         = 8
+	compactResultHeaderSize         = 48
+	compactNoticeRecordSize         = 16
+	compactFrameHeaderSize          = 48
+	compactLabelRecordSize          = 8
+	compactWriteChunkSize           = 64 * 1024
+	maxCompactAxisPoints            = 5_000_000
+	maxCompactRecordSize            = math.MaxUint32
+	maxSafeInteger            int64 = 1<<53 - 1
+	maxDurationMilliseconds         = math.MaxInt64 / int64(time.Millisecond)
+)
+
+// QueryRequest describes the requested time range used to validate compact-v1 axes.
+type QueryRequest = compactQueryRequest
+
+// QueryDataResponse is the compact-v1 intermediate response.
+type QueryDataResponse = compactQueryDataResponse
+
+const (
+	Header    = compactQueryDataHeader
+	Version   = compactQueryDataVersion
+	MediaType = compactQueryDataMediaType
+)
+
+var (
+	ErrTooLarge    = errCompactQueryDataTooLarge
+	ErrUnsupported = errCompactQueryDataUnsupported
+)
+
+// UnsupportedReason returns the compact-v1 invariant that rejected a response.
+func UnsupportedReason(err error) string {
+	return compactQueryDataUnsupportedReason(err)
+}
+
+// NewQueryDataResponse builds a compact-v1 intermediate response.
+func NewQueryDataResponse(qdr *backend.QueryDataResponse, requests map[string]QueryRequest) (*QueryDataResponse, error) {
+	return newCompactQueryDataResponse(qdr, requests)
+}
+
+// NewQueryDataResponseContext builds a compact-v1 intermediate response while honoring cancellation.
+func NewQueryDataResponseContext(ctx context.Context, qdr *backend.QueryDataResponse, requests map[string]QueryRequest) (*QueryDataResponse, error) {
+	return newCompactQueryDataResponseContext(ctx, qdr, requests)
+}
+
+// WriteQueryDataResponse writes compact-v1 bytes to writer.
+func WriteQueryDataResponse(ctx context.Context, response *QueryDataResponse, writer io.Writer) error {
+	binaryWriter := compactBinaryWriter{context: ctx, writer: writer}
+	writeCompactQueryDataResponse(response, &binaryWriter)
+	return binaryWriter.err
+}
+
+type compactResultType uint16
+
+const (
+	compactResultTypeUnknown compactResultType = iota
+	compactResultTypeMatrix
+)
+
+type compactFrameType uint16
+
+const (
+	compactFrameTypeUnknown compactFrameType = iota
+	compactFrameTypeTimeSeriesMulti
+)
+
+const compactResultFlagCalculatedMinStep uint32 = 1 << 0
+
+type compactQueryDataResponse struct {
+	Axes              []compactRegularTimeAxis
+	Strings           []string
+	StringBytesLength uint32
+	Results           map[string]compactDataResponse
+}
+
+type compactDataResponse struct {
+	Status                backend.Status
+	RefIDStringID         uint32
+	ErrorStringID         uint32
+	ExecutedQueryStringID uint32
+	CalculatedMinStep     int64
+	ResultType            compactResultType
+	FrameType             compactFrameType
+	FrameTypeVersionMajor uint16
+	FrameTypeVersionMinor uint16
+	Flags                 uint32
+	Notices               []compactNotice
+	Frames                []compactFrame
+	RecordLength          uint32
+}
+
+type compactNotice struct {
+	TextStringID uint32
+	LinkStringID uint32
+	Severity     uint8
+	Inspect      uint8
+}
+
+type compactFrame struct {
+	Frame                     *data.Frame
+	AxisID                    uint32
+	FrameNameStringID         uint32
+	FrameRefIDStringID        uint32
+	ValueNameStringID         uint32
+	DisplayNameFromDSStringID uint32
+	Labels                    []compactLabel
+	Presence                  []byte
+	PresentCount              uint32
+	Padding                   int
+	RecordLength              uint32
+}
+
+type compactLabel struct {
+	NameStringID  uint32
+	ValueStringID uint32
+}
+
+type compactRegularTimeAxis struct {
+	Start int64
+	Step  int64
+	Count uint32
+}
+
+type compactQueryRequest struct {
+	Start        time.Time
+	End          time.Time
+	UTCOffsetSec int64
+}
+
+type compactStringTable struct {
+	values      []string
+	ids         map[string]uint32
+	bytesLength uint64
+}
+
+func newCompactStringTable() *compactStringTable {
+	return &compactStringTable{
+		values: []string{""},
+		ids:    map[string]uint32{"": 0},
+	}
+}
+
+func (t *compactStringTable) intern(value string) (uint32, error) {
+	if !utf8.ValidString(value) {
+		return 0, compactQueryDataUnsupported("invalid_utf8")
+	}
+	if id, ok := t.ids[value]; ok {
+		return id, nil
+	}
+	if uint64(len(t.values)) >= uint64(math.MaxUint32) || t.bytesLength+uint64(len(value)) > math.MaxUint32 {
+		return 0, errCompactQueryDataTooLarge
+	}
+	id := uint32(len(t.values))
+	t.values = append(t.values, value)
+	t.ids[value] = id
+	t.bytesLength += uint64(len(value))
+	return id, nil
+}
+
+// Compact v1 is intentionally all-or-nothing. Every successful frame must
+// satisfy the executed regular-grid invariant before response streaming starts.
+func newCompactQueryDataResponse(qdr *backend.QueryDataResponse, requests map[string]compactQueryRequest) (*compactQueryDataResponse, error) {
+	return newCompactQueryDataResponseContext(context.Background(), qdr, requests)
+}
+
+func newCompactQueryDataResponseContext(
+	ctx context.Context,
+	qdr *backend.QueryDataResponse,
+	requests map[string]compactQueryRequest,
+) (*compactQueryDataResponse, error) {
+	result := &compactQueryDataResponse{
+		Results: make(map[string]compactDataResponse, len(qdr.Responses)),
+	}
+	strings := newCompactStringTable()
+	axisIDs := make(map[compactRegularTimeAxis]uint32)
+	totalAxisPoints := 0
+
+	refIDs := make([]string, 0, len(qdr.Responses))
+	for refID := range qdr.Responses {
+		refIDs = append(refIDs, refID)
+	}
+	sort.Strings(refIDs)
+
+	for _, refID := range refIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		dataResponse := qdr.Responses[refID]
+		refIDStringID, err := strings.intern(refID)
+		if err != nil {
+			return nil, err
+		}
+		compactResponse := compactDataResponse{
+			Status:        dataResponse.Status,
+			RefIDStringID: refIDStringID,
+			Frames:        make([]compactFrame, 0, len(dataResponse.Frames)),
+		}
+		if dataResponse.Error != nil {
+			compactResponse.ErrorStringID, err = strings.intern(dataResponse.Error.Error())
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if dataResponse.Error == nil && (dataResponse.Status == 0 || dataResponse.Status == backend.StatusOK) {
+			if err := populateCompactResultMetadata(&compactResponse, dataResponse.Frames, strings); err != nil {
+				return nil, err
+			}
+			if onlyNoDataFrames(dataResponse.Frames) {
+				recordLength, ok := compactResultRecordLength(compactResponse)
+				if !ok {
+					return nil, errCompactQueryDataTooLarge
+				}
+				compactResponse.RecordLength = recordLength
+				result.Results[refID] = compactResponse
+				continue
+			}
+
+			axis, eligible := getExecutedTimeAxis(dataResponse.Frames, requests[refID])
+			if !eligible {
+				return nil, compactQueryDataUnsupported("invalid_time_axis")
+			}
+
+			axisID, exists := axisIDs[axis]
+			if !exists {
+				if totalAxisPoints+int(axis.Count) > maxCompactAxisPoints {
+					return nil, errCompactQueryDataTooLarge
+				}
+				axisID = uint32(len(result.Axes))
+				axisIDs[axis] = axisID
+				result.Axes = append(result.Axes, axis)
+				totalAxisPoints += int(axis.Count)
+			}
+
+			for _, frame := range dataResponse.Frames {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if isNoDataFrame(frame) {
+					continue
+				}
+				compactFrame, err := newCompactFrame(ctx, frame, axis, axisID, strings)
+				if err != nil {
+					return nil, err
+				}
+				compactResponse.Frames = append(compactResponse.Frames, compactFrame)
+			}
+		}
+
+		recordLength, ok := compactResultRecordLength(compactResponse)
+		if !ok {
+			return nil, errCompactQueryDataTooLarge
+		}
+		compactResponse.RecordLength = recordLength
+		result.Results[refID] = compactResponse
+	}
+	result.Strings = strings.values
+	result.StringBytesLength = uint32(strings.bytesLength)
+
+	return result, nil
+}
+
+func populateCompactResultMetadata(response *compactDataResponse, frames data.Frames, strings *compactStringTable) error {
+	var resultType compactResultType
+	var frameType compactFrameType
+	var version data.FrameTypeVersion
+	hasDataFrame := false
+	hasNoDataFrame := false
+	var noticeSet map[compactNotice]struct{}
+
+	for frameIndex, frame := range frames {
+		if frame == nil {
+			return compactQueryDataUnsupported("missing_frame")
+		}
+		if frame.Meta == nil {
+			return compactQueryDataUnsupported("missing_frame_metadata")
+		}
+		if reason := compactFrameMetaUnsupportedReason(frame.Meta); reason != "" {
+			return compactQueryDataUnsupported(reason)
+		}
+		for _, notice := range frame.Meta.Notices {
+			severity, validSeverity := compactNoticeSeverity(notice.Severity)
+			inspect, validInspect := compactNoticeInspect(notice.Inspect)
+			if !validSeverity || !validInspect {
+				return compactQueryDataUnsupported("invalid_frame_notice")
+			}
+			textStringID, err := strings.intern(notice.Text)
+			if err != nil {
+				return err
+			}
+			linkStringID, err := strings.intern(notice.Link)
+			if err != nil {
+				return err
+			}
+			encodedNotice := compactNotice{
+				TextStringID: textStringID,
+				LinkStringID: linkStringID,
+				Severity:     severity,
+				Inspect:      inspect,
+			}
+			if noticeSet == nil {
+				noticeSet = make(map[compactNotice]struct{})
+			}
+			if _, exists := noticeSet[encodedNotice]; !exists {
+				noticeSet[encodedNotice] = struct{}{}
+				response.Notices = append(response.Notices, encodedNotice)
+			}
+		}
+
+		custom, ok := frame.Meta.Custom.(map[string]any)
+		if frame.Meta.Custom != nil && !ok {
+			return compactQueryDataUnsupported("invalid_custom_metadata")
+		}
+		if !compactCustomMetaSupported(custom) {
+			return compactQueryDataUnsupported("unsupported_custom_metadata")
+		}
+
+		if frame.Meta.ExecutedQueryString != "" {
+			if frameIndex != 0 || response.ExecutedQueryStringID != 0 {
+				return compactQueryDataUnsupported("inconsistent_executed_query")
+			}
+			id, err := strings.intern(frame.Meta.ExecutedQueryString)
+			if err != nil {
+				return err
+			}
+			response.ExecutedQueryStringID = id
+		}
+		if calculatedMinStep, exists := custom["calculatedMinStep"]; exists {
+			if frameIndex != 0 || response.Flags&compactResultFlagCalculatedMinStep != 0 {
+				return compactQueryDataUnsupported("inconsistent_calculated_min_step")
+			}
+			value, ok := calculatedMinStep.(int64)
+			if !ok || value <= 0 {
+				return compactQueryDataUnsupported("invalid_calculated_min_step")
+			}
+			response.CalculatedMinStep = value
+			response.Flags |= compactResultFlagCalculatedMinStep
+		}
+
+		if isNoDataFrame(frame) {
+			if frame.Meta.Type != data.FrameTypeUnknown || !frame.Meta.TypeVersion.IsZero() {
+				return compactQueryDataUnsupported("invalid_no_data_frame_type")
+			}
+			if _, exists := custom["resultType"]; exists {
+				return compactQueryDataUnsupported("invalid_no_data_result_type")
+			}
+			hasNoDataFrame = true
+			continue
+		}
+		hasDataFrame = true
+		if frame.Meta.Type != data.FrameTypeTimeSeriesMulti || frame.Meta.TypeVersion[0] > math.MaxUint16 || frame.Meta.TypeVersion[1] > math.MaxUint16 {
+			return compactQueryDataUnsupported("unsupported_frame_type")
+		}
+		if custom["resultType"] != models.ResultTypeMatrix.String() {
+			return compactQueryDataUnsupported("unsupported_result_type")
+		}
+		if resultType == compactResultTypeUnknown {
+			resultType = compactResultTypeMatrix
+			frameType = compactFrameTypeTimeSeriesMulti
+			version = frame.Meta.TypeVersion
+		} else if frame.Meta.TypeVersion != version {
+			return compactQueryDataUnsupported("inconsistent_frame_type_version")
+		}
+	}
+	if hasDataFrame && hasNoDataFrame {
+		return compactQueryDataUnsupported("mixed_data_and_no_data_frames")
+	}
+	if hasNoDataFrame && len(response.Notices) > 0 {
+		return compactQueryDataUnsupported("no_data_notices")
+	}
+
+	response.ResultType = resultType
+	response.FrameType = frameType
+	response.FrameTypeVersionMajor = uint16(version[0])
+	response.FrameTypeVersionMinor = uint16(version[1])
+	return nil
+}
+
+func compactNoticeSeverity(severity data.NoticeSeverity) (uint8, bool) {
+	switch severity {
+	case data.NoticeSeverityInfo:
+		return 0, true
+	case data.NoticeSeverityWarning:
+		return 1, true
+	case data.NoticeSeverityError:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func compactNoticeInspect(inspect data.InspectType) (uint8, bool) {
+	switch inspect {
+	case data.InspectTypeNone:
+		return 0, true
+	case data.InspectTypeMeta:
+		return 1, true
+	case data.InspectTypeError:
+		return 2, true
+	case data.InspectTypeData:
+		return 3, true
+	case data.InspectTypeStats:
+		return 4, true
+	default:
+		return 0, false
+	}
+}
+
+func compactFrameMetaUnsupportedReason(meta *data.FrameMeta) string {
+	switch {
+	case meta.Path != "" || meta.PathSeparator != "":
+		return "frame_path"
+	case meta.Channel != "":
+		return "streaming_channel"
+	case meta.DataTopic != "":
+		return "data_topic"
+	default:
+		return ""
+	}
+}
+
+func compactCustomMetaSupported(custom map[string]any) bool {
+	for key := range custom {
+		if key != "resultType" && key != "calculatedMinStep" {
+			return false
+		}
+	}
+	return true
+}
+
+func getExecutedTimeAxis(frames data.Frames, request compactQueryRequest) (compactRegularTimeAxis, bool) {
+	if request.Start.IsZero() || request.End.IsZero() || request.End.Before(request.Start) {
+		return compactRegularTimeAxis{}, false
+	}
+
+	for _, frame := range frames {
+		if isNoDataFrame(frame) || len(frame.Fields) == 0 || frame.Fields[0] == nil ||
+			frame.Fields[0].Type() != data.FieldTypeTime || frame.Fields[0].Config == nil {
+			continue
+		}
+
+		step := int64(frame.Fields[0].Config.Interval)
+		if float64(step) != frame.Fields[0].Config.Interval || step <= 0 ||
+			step > maxSafeInteger || step > maxDurationMilliseconds {
+			return compactRegularTimeAxis{}, false
+		}
+		start := models.AlignTimeRange(request.Start, time.Duration(step)*time.Millisecond, request.UTCOffsetSec).UnixMilli()
+		end := models.AlignTimeRange(request.End, time.Duration(step)*time.Millisecond, request.UTCOffsetSec).UnixMilli()
+		if start < -maxSafeInteger || start > maxSafeInteger || end < start || end > maxSafeInteger {
+			return compactRegularTimeAxis{}, false
+		}
+		count := (end-start)/step + 1
+		if count < 1 || count > math.MaxUint32 ||
+			count-1 > (maxSafeInteger-start)/step {
+			return compactRegularTimeAxis{}, false
+		}
+		return compactRegularTimeAxis{Start: start, Step: step, Count: uint32(count)}, true
+	}
+	return compactRegularTimeAxis{}, false
+}
+
+func onlyNoDataFrames(frames data.Frames) bool {
+	for _, frame := range frames {
+		if !isNoDataFrame(frame) {
+			return false
+		}
+	}
+	return true
+}
+
+func isNoDataFrame(frame *data.Frame) bool {
+	return frame != nil && len(frame.Fields) == 0
+}
+
+func newCompactFrame(
+	ctx context.Context,
+	frame *data.Frame,
+	axis compactRegularTimeAxis,
+	axisID uint32,
+	strings *compactStringTable,
+) (compactFrame, error) {
+	if frame == nil || len(frame.Fields) != 2 || frame.Fields[0] == nil || frame.Fields[1] == nil ||
+		frame.Fields[0].Type() != data.FieldTypeTime || frame.Fields[1].Type() != data.FieldTypeFloat64 ||
+		frame.Fields[0].Name != data.TimeSeriesTimeFieldName || len(frame.Fields[0].Labels) != 0 ||
+		!reflect.DeepEqual(frame.Fields[0].Config, &data.FieldConfig{Interval: float64(axis.Step)}) ||
+		!compactValueFieldConfigSupported(frame.Fields[1].Config) {
+		return compactFrame{}, compactQueryDataUnsupported("unsupported_frame_shape")
+	}
+
+	rowCount, err := frame.RowLen()
+	if err != nil || rowCount < 0 || uint64(rowCount) > uint64(axis.Count) {
+		return compactFrame{}, compactQueryDataUnsupported("invalid_row_count")
+	}
+
+	presenceLength := uint64(0)
+	if rowCount != int(axis.Count) {
+		presenceLength = (uint64(axis.Count) + 7) / 8
+	}
+	metadataLength := uint64(compactFrameHeaderSize) + uint64(len(frame.Fields[1].Labels))*compactLabelRecordSize + presenceLength
+	padding := paddingTo8(int(metadataLength))
+	recordLength := metadataLength + uint64(padding) + uint64(rowCount)*8
+	if metadataLength > maxCompactRecordSize || recordLength > maxCompactRecordSize {
+		return compactFrame{}, errCompactQueryDataTooLarge
+	}
+
+	presence, err := compactFramePresence(ctx, frame.Fields[0], axis, rowCount, int(presenceLength))
+	if err != nil {
+		return compactFrame{}, err
+	}
+
+	frameNameStringID, err := strings.intern(frame.Name)
+	if err != nil {
+		return compactFrame{}, err
+	}
+	frameRefIDStringID, err := strings.intern(frame.RefID)
+	if err != nil {
+		return compactFrame{}, err
+	}
+	valueNameStringID, err := strings.intern(frame.Fields[1].Name)
+	if err != nil {
+		return compactFrame{}, err
+	}
+	displayNameFromDS := ""
+	if frame.Fields[1].Config != nil {
+		displayNameFromDS = frame.Fields[1].Config.DisplayNameFromDS
+	}
+	displayNameFromDSStringID, err := strings.intern(displayNameFromDS)
+	if err != nil {
+		return compactFrame{}, err
+	}
+
+	labelNames := make([]string, 0, len(frame.Fields[1].Labels))
+	for name := range frame.Fields[1].Labels {
+		labelNames = append(labelNames, name)
+	}
+	sort.Strings(labelNames)
+	labels := make([]compactLabel, 0, len(labelNames))
+	for _, name := range labelNames {
+		nameStringID, err := strings.intern(name)
+		if err != nil {
+			return compactFrame{}, err
+		}
+		valueStringID, err := strings.intern(frame.Fields[1].Labels[name])
+		if err != nil {
+			return compactFrame{}, err
+		}
+		labels = append(labels, compactLabel{NameStringID: nameStringID, ValueStringID: valueStringID})
+	}
+
+	return compactFrame{
+		Frame:                     frame,
+		AxisID:                    axisID,
+		FrameNameStringID:         frameNameStringID,
+		FrameRefIDStringID:        frameRefIDStringID,
+		ValueNameStringID:         valueNameStringID,
+		DisplayNameFromDSStringID: displayNameFromDSStringID,
+		Labels:                    labels,
+		Presence:                  presence,
+		PresentCount:              uint32(rowCount),
+		Padding:                   padding,
+		RecordLength:              uint32(recordLength),
+	}, nil
+}
+
+func compactFramePresence(
+	ctx context.Context,
+	timeField *data.Field,
+	axis compactRegularTimeAxis,
+	rowCount int,
+	presenceLength int,
+) ([]byte, error) {
+	axisEnd := axis.Start + int64(axis.Count-1)*axis.Step
+	if rowCount == int(axis.Count) {
+		for rowIndex := 0; rowIndex < rowCount; rowIndex++ {
+			if rowIndex%compactWriteChunkSize == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			timestamp := *timeField.PointerAt(rowIndex).(*time.Time)
+			if timestamp.Nanosecond()%int(time.Millisecond) != 0 ||
+				timestamp.UnixMilli() != axis.Start+int64(rowIndex)*axis.Step {
+				return nil, compactQueryDataUnsupported("irregular_gapless_timestamp")
+			}
+		}
+		return nil, nil
+	}
+
+	presence := make([]byte, presenceLength)
+	previousIndex := int64(-1)
+	for rowIndex := 0; rowIndex < rowCount; rowIndex++ {
+		if rowIndex%compactWriteChunkSize == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		timestamp := *timeField.PointerAt(rowIndex).(*time.Time)
+		if timestamp.Nanosecond()%int(time.Millisecond) != 0 {
+			return nil, compactQueryDataUnsupported("sub_millisecond_timestamp")
+		}
+		timestampMillis := timestamp.UnixMilli()
+		if timestampMillis < axis.Start || timestampMillis > axisEnd {
+			return nil, compactQueryDataUnsupported("timestamp_outside_axis")
+		}
+		delta := timestampMillis - axis.Start
+		if delta%axis.Step != 0 {
+			return nil, compactQueryDataUnsupported("off_grid_timestamp")
+		}
+		gridIndex := delta / axis.Step
+		if gridIndex <= previousIndex {
+			return nil, compactQueryDataUnsupported("unordered_or_duplicate_timestamp")
+		}
+		presence[gridIndex>>3] |= 1 << (gridIndex & 7)
+		previousIndex = gridIndex
+	}
+	return presence, nil
+}
+
+func compactValueFieldConfigSupported(config *data.FieldConfig) bool {
+	if config == nil {
+		return true
+	}
+	return reflect.DeepEqual(config, &data.FieldConfig{DisplayNameFromDS: config.DisplayNameFromDS})
+}
+
+func compactResultRecordLength(response compactDataResponse) (uint32, bool) {
+	length := uint64(compactResultHeaderSize) + uint64(len(response.Notices))*compactNoticeRecordSize
+	for _, frame := range response.Frames {
+		length += uint64(frame.RecordLength)
+	}
+	return uint32(length), length <= maxCompactRecordSize
+}
+
+func paddingTo8(length int) int {
+	return (8 - length%8) % 8
+}
+
+func writeCompactQueryDataResponse(response *compactQueryDataResponse, writer *compactBinaryWriter) {
+	writer.writeBytes([]byte(compactQueryDataMagic))
+	writer.writeUint16(compactQueryDataBinaryVersion)
+	writer.writeUint16(0)
+	writer.writeUint32(uint32(len(response.Axes)))
+	writer.writeUint32(uint32(len(response.Results)))
+	writer.writeUint32(uint32(len(response.Strings)))
+	writer.writeUint32(response.StringBytesLength)
+	writer.writeUint64(0)
+
+	for _, axis := range response.Axes {
+		if writer.err != nil {
+			return
+		}
+		writer.writeInt64(axis.Start)
+		writer.writeUint64(uint64(axis.Step))
+		writer.writeUint32(axis.Count)
+		writer.writeUint32(0)
+	}
+
+	stringOffset := uint32(0)
+	for _, value := range response.Strings {
+		if writer.err != nil {
+			return
+		}
+		writer.writeUint32(stringOffset)
+		writer.writeUint32(uint32(len(value)))
+		stringOffset += uint32(len(value))
+	}
+	for _, value := range response.Strings {
+		if writer.err != nil {
+			return
+		}
+		writer.writeBytes([]byte(value))
+	}
+	writer.writeZeros(paddingTo8(int(response.StringBytesLength)))
+
+	refIDs := make([]string, 0, len(response.Results))
+	for refID := range response.Results {
+		refIDs = append(refIDs, refID)
+	}
+	sort.Strings(refIDs)
+
+	for _, refID := range refIDs {
+		if writer.err != nil {
+			return
+		}
+		writeCompactDataResponse(response.Results[refID], writer)
+	}
+}
+
+func writeCompactDataResponse(response compactDataResponse, writer *compactBinaryWriter) {
+	writer.writeUint32(response.RecordLength)
+	writer.writeUint32(response.RefIDStringID)
+	writer.writeUint32(response.ErrorStringID)
+	writer.writeUint32(response.ExecutedQueryStringID)
+	writer.writeInt32(int32(response.Status))
+	writer.writeUint32(uint32(len(response.Frames)))
+	writer.writeInt64(response.CalculatedMinStep)
+	writer.writeUint16(uint16(response.ResultType))
+	writer.writeUint16(uint16(response.FrameType))
+	writer.writeUint16(response.FrameTypeVersionMajor)
+	writer.writeUint16(response.FrameTypeVersionMinor)
+	writer.writeUint32(response.Flags)
+	writer.writeUint32(uint32(len(response.Notices)))
+
+	for _, notice := range response.Notices {
+		if writer.err != nil {
+			return
+		}
+		writer.writeUint32(notice.TextStringID)
+		writer.writeUint32(notice.LinkStringID)
+		writer.writeUint8(notice.Severity)
+		writer.writeUint8(notice.Inspect)
+		writer.writeUint16(0)
+		writer.writeUint32(0)
+	}
+
+	for _, frame := range response.Frames {
+		if writer.err != nil {
+			return
+		}
+		writeCompactFrame(frame, writer)
+	}
+}
+
+func writeCompactFrame(frame compactFrame, writer *compactBinaryWriter) {
+	writer.writeUint32(frame.RecordLength)
+	writer.writeUint32(frame.AxisID)
+	writer.writeUint32(frame.PresentCount)
+	writer.writeUint32(uint32(len(frame.Presence)))
+	writer.writeUint32(frame.FrameNameStringID)
+	writer.writeUint32(frame.FrameRefIDStringID)
+	writer.writeUint32(frame.ValueNameStringID)
+	writer.writeUint32(frame.DisplayNameFromDSStringID)
+	writer.writeUint32(uint32(len(frame.Labels)))
+	writer.writeUint32(0)
+	writer.writeUint64(0)
+	for _, label := range frame.Labels {
+		if writer.err != nil {
+			return
+		}
+		writer.writeUint32(label.NameStringID)
+		writer.writeUint32(label.ValueStringID)
+	}
+	writer.writeBytes(frame.Presence)
+	writer.writeZeros(frame.Padding)
+	if writer.err != nil {
+		return
+	}
+
+	if frame.Frame.Fields[1].Len() == 0 {
+		return
+	}
+
+	valueBytes := writer.valueBuffer()
+	valueOffset := 0
+	for i := 0; i < frame.Frame.Fields[1].Len(); i++ {
+		value := *frame.Frame.Fields[1].PointerAt(i).(*float64)
+		binary.LittleEndian.PutUint64(valueBytes[valueOffset:], math.Float64bits(value))
+		valueOffset += 8
+		if valueOffset == len(valueBytes) {
+			writer.writeBytes(valueBytes)
+			if writer.err != nil {
+				return
+			}
+			valueOffset = 0
+		}
+	}
+	writer.writeBytes(valueBytes[:valueOffset])
+}
+
+type compactBinaryWriter struct {
+	context      context.Context
+	writer       io.Writer
+	err          error
+	scratch      [8]byte
+	valueScratch []byte
+}
+
+func (w *compactBinaryWriter) valueBuffer() []byte {
+	if w.valueScratch == nil {
+		w.valueScratch = make([]byte, compactWriteChunkSize)
+	}
+	return w.valueScratch
+}
+
+func (w *compactBinaryWriter) writeUint8(value uint8) {
+	w.scratch[0] = value
+	w.writeBytes(w.scratch[:1])
+}
+
+func (w *compactBinaryWriter) writeUint16(value uint16) {
+	binary.LittleEndian.PutUint16(w.scratch[:2], value)
+	w.writeBytes(w.scratch[:2])
+}
+
+func (w *compactBinaryWriter) writeUint32(value uint32) {
+	binary.LittleEndian.PutUint32(w.scratch[:4], value)
+	w.writeBytes(w.scratch[:4])
+}
+
+func (w *compactBinaryWriter) writeInt32(value int32) {
+	w.writeUint32(uint32(value))
+}
+
+func (w *compactBinaryWriter) writeUint64(value uint64) {
+	binary.LittleEndian.PutUint64(w.scratch[:], value)
+	w.writeBytes(w.scratch[:])
+}
+
+func (w *compactBinaryWriter) writeInt64(value int64) {
+	w.writeUint64(uint64(value))
+}
+
+func (w *compactBinaryWriter) writeZeros(length int) {
+	var zeros [8]byte
+	for length > 0 {
+		chunk := min(length, len(zeros))
+		w.writeBytes(zeros[:chunk])
+		length -= chunk
+	}
+}
+
+func (w *compactBinaryWriter) writeBytes(value []byte) {
+	if w.err != nil {
+		return
+	}
+	for len(value) > 0 {
+		if w.context != nil {
+			if err := w.context.Err(); err != nil {
+				w.err = err
+				return
+			}
+		}
+		chunk := min(len(value), compactWriteChunkSize)
+		var written int
+		written, w.err = w.writer.Write(value[:chunk])
+		if w.err != nil {
+			return
+		}
+		if written != chunk {
+			w.err = io.ErrShortWrite
+			return
+		}
+		value = value[chunk:]
+	}
+}

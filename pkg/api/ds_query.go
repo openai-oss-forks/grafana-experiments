@@ -14,6 +14,7 @@ import (
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/middleware/requestmeta"
 	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
+	promcompact "github.com/grafana/grafana/pkg/promlib/compact"
 	"github.com/grafana/grafana/pkg/services/apiserver/endpoints/request"
 	"github.com/grafana/grafana/pkg/services/contexthandler"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
@@ -42,7 +43,7 @@ func (hs *HTTPServer) getDSQueryEndpoint() web.Handler {
 		// rewrite requests from /ds/query to the new query service
 		namespaceMapper := request.GetNamespaceMapper(hs.Cfg)
 		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get(compactQueryDataHeader) == compactQueryDataVersion {
+			if r.Header.Get(promcompact.Header) == promcompact.Version {
 				reqCtx := contexthandler.FromContext(r.Context())
 				if reqCtx == nil {
 					errhttp.Write(r.Context(), errors.New("missing request context"), w)
@@ -81,13 +82,13 @@ func (hs *HTTPServer) getDSQueryEndpoint() web.Handler {
 // 403: forbiddenError
 // 500: internalServerError
 func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Response {
-	c.Resp.Header().Set("Vary", compactQueryDataHeader+", Accept-Encoding")
+	c.Resp.Header().Set("Vary", promcompact.Header+", Accept-Encoding")
 
 	reqDTO := dtos.MetricRequest{}
 	if err := web.Bind(c.Req, &reqDTO); err != nil {
 		return response.Error(http.StatusBadRequest, "bad request data", err)
 	}
-	if c.Req.Header.Get(compactQueryDataHeader) == compactQueryDataVersion && !isCompactDashboardQuery(c.Req, reqDTO) {
+	if c.Req.Header.Get(promcompact.Header) == promcompact.Version && !isCompactDashboardQuery(c.Req, reqDTO) {
 		err := errors.New("compact-v1 is restricted to Prometheus dashboard time-series panels")
 		return response.Error(http.StatusNotAcceptable, err.Error(), err)
 	}
@@ -107,16 +108,16 @@ func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Respon
 	if err != nil {
 		return hs.handleQueryMetricsError(err)
 	}
-	if c.Req.Header.Get(compactQueryDataHeader) == compactQueryDataVersion {
-		compactResponse, err := newCompactQueryDataResponseContext(
+	if c.Req.Header.Get(promcompact.Header) == promcompact.Version {
+		compactResponse, err := promcompact.NewQueryDataResponseContext(
 			c.Req.Context(),
 			resp,
-			newCompactQueryRequests(reqDTO, handleTimeInQuery),
+			toPromCompactQueryRequests(newCompactQueryRequests(reqDTO, handleTimeInQuery)),
 		)
-		if errors.Is(err, errCompactQueryDataUnsupported) {
+		if errors.Is(err, promcompact.ErrUnsupported) {
 			hs.log.Warn(
 				"Compact query response fell back to JSON",
-				"reason", compactQueryDataUnsupportedReason(err),
+				"reason", promcompact.UnsupportedReason(err),
 				"dashboardUID", c.Req.Header.Get(query.HeaderDashboardUID),
 				"dashboardTitle", c.Req.Header.Get(query.HeaderDashboardTitle),
 				"panelID", c.Req.Header.Get(query.HeaderPanelID),
@@ -126,15 +127,50 @@ func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Respon
 			)
 			return hs.toJsonStreamingResponse(c.Req.Context(), resp)
 		}
-		if errors.Is(err, errCompactQueryDataTooLarge) {
+		if errors.Is(err, promcompact.ErrTooLarge) {
 			return response.Error(http.StatusRequestEntityTooLarge, err.Error(), err)
 		}
 		if err != nil {
 			return response.Error(http.StatusInternalServerError, "Compact query response encoding failed", err)
 		}
-		return compactQueryDataStreamingResponse{body: compactResponse}
+		return promCompactQueryDataStreamingResponse{body: compactResponse}
 	}
 	return hs.toJsonStreamingResponse(c.Req.Context(), resp)
+}
+
+type promCompactQueryDataStreamingResponse struct {
+	body *promcompact.QueryDataResponse
+}
+
+func (r promCompactQueryDataStreamingResponse) Status() int {
+	return http.StatusOK
+}
+
+func (r promCompactQueryDataStreamingResponse) Body() []byte {
+	return nil
+}
+
+func (r promCompactQueryDataStreamingResponse) WriteTo(ctx *contextmodel.ReqContext) {
+	header := ctx.Resp.Header()
+	header.Set("Content-Type", promcompact.MediaType)
+	header.Set("Vary", promcompact.Header+", Accept-Encoding")
+	ctx.Resp.WriteHeader(r.Status())
+
+	if err := promcompact.WriteQueryDataResponse(ctx.Req.Context(), r.body, ctx.Resp); err != nil {
+		ctx.Logger.Error("Error writing compact query response", "err", err)
+	}
+}
+
+func toPromCompactQueryRequests(requests map[string]compactQueryRequest) map[string]promcompact.QueryRequest {
+	converted := make(map[string]promcompact.QueryRequest, len(requests))
+	for refID, request := range requests {
+		converted[refID] = promcompact.QueryRequest{
+			Start:        request.Start,
+			End:          request.End,
+			UTCOffsetSec: request.UTCOffsetSec,
+		}
+	}
+	return converted
 }
 
 func isCompactDashboardQuery(req *http.Request, request dtos.MetricRequest) bool {

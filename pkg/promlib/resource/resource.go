@@ -104,6 +104,9 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 	}()
 
 	isMultiBatchResponse := isMultiBatchContentType(resp.Header.Get("Content-Type"))
+	if isCompactMultiBatchRequest(req) {
+		return r.executeCompactMultiBatchStream(ctx, req, resp, sender)
+	}
 
 	// frontend sets the X-Grafana-Cache with the desired response cache control value. Streaming
 	// multibatch responses cannot use this complete-response cache because each chunk is sent

@@ -1,128 +1,36 @@
-import {
-  DataFrame,
-  DataFrameType,
-  DataQueryRequest,
-  DataQueryResponse,
-  FieldType,
-  LoadingState,
-  TIME_SERIES_TIME_FIELD_NAME,
-  TIME_SERIES_VALUE_FIELD_NAME,
-  rangeUtil,
-} from '@grafana/data';
-import { config } from '@grafana/runtime';
+import { DataQueryRequest, DataQueryResponse, LoadingState, rangeUtil } from '@grafana/data';
+import { config, toDataQueryResponse } from '@grafana/runtime';
 import { Observable } from 'rxjs';
 import { ZSTDDecoder } from 'zstddec';
 
-import { parseSampleValue } from './result_transformer';
 import { PromQuery } from './types';
 
 export const MULTIBATCH_CONTENT_TYPE = 'application/prometheus.multibatch';
 export const MULTIBATCH_PREFERRED_CONTENT_TYPE = 'application/com.openai.prometheus.multibatch';
 export const MULTIBATCH_ACCEPT_HEADER = `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1, ${MULTIBATCH_CONTENT_TYPE}; version=1, application/jsonl`;
+const QUERY_DATA_COMPACT_HEADER = 'X-Grafana-Query-Format';
+const QUERY_DATA_COMPACT_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact;version=1';
+const QUERY_DATA_COMPACT_VERSION = 'compact-v1';
+const MULTIBATCH_REF_ID_HEADER = 'X-Grafana-Prometheus-Multibatch-Ref-Id';
+const MULTIBATCH_LEGEND_FORMAT_HEADER = 'X-Grafana-Prometheus-Multibatch-Legend-Format';
+const MULTIBATCH_UTC_OFFSET_HEADER = 'X-Grafana-Prometheus-Multibatch-UTC-Offset-Sec';
 
 const FRAME_HEADER_SIZE = 12;
 const FINAL_BATCH_FLAG = 1;
 const RESERVED_FLAGS_MASK = 0xfe;
-const PAYLOAD_TYPE_JSONL = 1;
+const PAYLOAD_TYPE_COMPACT_V1 = 2;
 const PAYLOAD_ENCODING_IDENTITY = 0;
 const PAYLOAD_ENCODING_ZSTD = 1;
 const RESPONSE_HEADER_MAGIC = 'MBRH';
 const BATCH_FRAME_MAGIC = 'MBBF';
-const ZSTD_DECODE_BUFFER_SIZE = 64 * 1024 * 1024;
 
-type BatchHandler = (payload: string, isFinal: boolean) => Promise<void> | void;
+type BatchHandler = (payload: Uint8Array, isFinal: boolean) => Promise<void> | void;
 
 export interface MultiBatchFrame {
   payloadType: number;
   flags: number;
   payloadEncoding: number;
   payload: Uint8Array;
-}
-
-type MultiBatchColumnType = 'time' | 'number' | 'string' | 'boolean';
-
-interface MultiBatchColumn {
-  name: string;
-  type: MultiBatchColumnType;
-  labels?: Record<string, string>;
-}
-
-interface MultiBatchSchemaEvent {
-  type: 'schema';
-  frame?: string;
-  refId?: string;
-  name?: string;
-  columns?: MultiBatchColumn[];
-  fields?: MultiBatchColumn[];
-}
-
-interface MultiBatchDataEvent {
-  type: 'data';
-  frame?: string;
-  refId?: string;
-  data?: unknown[];
-  row?: unknown[];
-  rows?: unknown[][];
-  values?: Record<string, unknown>;
-}
-
-interface MultiBatchStatusEvent {
-  type: 'status';
-  frame?: string;
-  status?: string;
-  isIncomplete?: boolean;
-  incomplete?: boolean;
-  refId?: string;
-}
-
-interface MultiBatchErrorEvent {
-  type: 'error';
-  error?: string;
-  message?: string;
-}
-
-type MultiBatchEvent =
-  | MultiBatchSchemaEvent
-  | MultiBatchDataEvent
-  | MultiBatchStatusEvent
-  | MultiBatchErrorEvent
-  | PrometheusApiResponse;
-
-interface PrometheusApiResponse {
-  status?: string;
-  data?: {
-    resultType?: string;
-    result?: PrometheusResult[];
-  };
-}
-
-interface PrometheusResult {
-  metric?: Record<string, string>;
-  histograms?: Array<[number | string, unknown]>;
-  histogram?: [number | string, unknown];
-  values?: Array<[number | string, number | string]>;
-  value?: [number | string, number | string];
-}
-
-interface SeriesAccumulator {
-  labels: Record<string, string>;
-  points: Map<number, number | null | unknown>;
-}
-
-class TextLineBuffer {
-  private pending = '';
-
-  push(text: string): string[] {
-    const lines = `${this.pending}${text}`.split(/\r?\n/);
-    this.pending = lines.pop() ?? '';
-    return lines.filter((line) => line.trim().length > 0);
-  }
-
-  finish(): string[] {
-    const line = this.pending;
-    this.pending = '';
-    return line.trim().length > 0 ? [line] : [];
-  }
 }
 
 class ZstdPayloadDecoder {
@@ -142,8 +50,7 @@ class ZstdPayloadDecoder {
       await this.decoder.init();
     }
 
-    // zstddec cannot infer sizes for OQP frames that omit the zstd content-size field.
-    return this.decoder.decode(payload, ZSTD_DECODE_BUFFER_SIZE);
+    return this.decoder.decode(payload);
   }
 }
 
@@ -217,7 +124,7 @@ export class MultiBatchFrameDecoder {
         throw new Error('Prometheus multi-batch response missing response header');
       }
 
-      if (frame.payloadType !== PAYLOAD_TYPE_JSONL) {
+      if (frame.payloadType !== PAYLOAD_TYPE_COMPACT_V1) {
         throw new Error(`Unsupported Prometheus multi-batch payload type: ${frame.payloadType}`);
       }
 
@@ -255,12 +162,11 @@ export function isMultiBatchContentType(contentType: string | null | undefined):
 export async function decodeMultiBatchFrames(chunks: Uint8Array[], onBatch: BatchHandler): Promise<void> {
   const frameDecoder = new MultiBatchFrameDecoder();
   const payloadDecoder = new ZstdPayloadDecoder();
-  const textDecoder = new TextDecoder();
 
   for (const chunk of chunks) {
     for (const frame of frameDecoder.push(chunk)) {
       const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
-      await onBatch(textDecoder.decode(payload), (frame.flags & FINAL_BATCH_FLAG) !== 0);
+      await onBatch(payload, (frame.flags & FINAL_BATCH_FLAG) !== 0);
     }
   }
 
@@ -310,13 +216,16 @@ async function streamQueryRange(
   signal: AbortSignal,
   emit: (response: DataQueryResponse) => void
 ) {
-  const accumulator = new MultiBatchResponseAccumulator(target);
   const method = options.httpMethod.toUpperCase();
   const response = await fetch(buildResourceUrl(datasourceUid, request, target, options), {
     body: method === 'POST' ? buildQueryParams(request, target, options).toString() : undefined,
     credentials: 'same-origin',
     headers: {
       Accept: MULTIBATCH_ACCEPT_HEADER,
+      [QUERY_DATA_COMPACT_HEADER]: QUERY_DATA_COMPACT_VERSION,
+      [MULTIBATCH_REF_ID_HEADER]: target.refId ?? 'A',
+      [MULTIBATCH_LEGEND_FORMAT_HEADER]: target.legendFormat ?? '',
+      [MULTIBATCH_UTC_OFFSET_HEADER]: String(target.utcOffsetSec ?? 0),
       ...(method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
     },
     method,
@@ -328,9 +237,8 @@ async function streamQueryRange(
   }
 
   if (!isMultiBatchContentType(response.headers.get('Content-Type'))) {
-    const body = await response.text();
-    accumulator.pushText(body);
-    emit({ data: accumulator.snapshotFrames(false), state: LoadingState.Done });
+    const body = await response.arrayBuffer();
+    emit(decodeCompactQueryDataResponse(body, response.headers, request, target, LoadingState.Done));
     return;
   }
 
@@ -340,7 +248,6 @@ async function streamQueryRange(
 
   const frameDecoder = new MultiBatchFrameDecoder();
   const payloadDecoder = new ZstdPayloadDecoder();
-  const textDecoder = new TextDecoder();
   const reader = response.body.getReader();
 
   try {
@@ -352,13 +259,16 @@ async function streamQueryRange(
 
       for (const frame of frameDecoder.push(result.value)) {
         const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
-        accumulator.pushText(textDecoder.decode(payload));
         const isFinal = (frame.flags & FINAL_BATCH_FLAG) !== 0;
-
-        emit({
-          data: accumulator.snapshotFrames(!isFinal),
-          state: isFinal ? LoadingState.Done : LoadingState.Streaming,
-        });
+        emit(
+          decodeCompactQueryDataResponse(
+            payload,
+            compactHeaders(),
+            request,
+            target,
+            isFinal ? LoadingState.Done : LoadingState.Streaming
+          )
+        );
 
         if (!isFinal) {
           await yieldToBrowser();
@@ -370,6 +280,41 @@ async function streamQueryRange(
   }
 
   frameDecoder.finish();
+}
+
+function decodeCompactQueryDataResponse(
+  payload: Uint8Array | ArrayBuffer,
+  headers: Headers,
+  request: DataQueryRequest<PromQuery>,
+  target: PromQuery,
+  state: LoadingState
+): DataQueryResponse {
+  const arrayBuffer = isArrayBuffer(payload) ? payload : copyArrayBuffer(payload);
+  return {
+    ...toDataQueryResponse(
+      {
+        data: arrayBuffer,
+        headers,
+      },
+      request.targets.length === 1 ? request.targets : [target],
+      true
+    ),
+    state,
+  };
+}
+
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  return Object.prototype.toString.call(value) === '[object ArrayBuffer]';
+}
+
+function compactHeaders(): Headers {
+  return new Headers({ 'content-type': QUERY_DATA_COMPACT_MEDIA_TYPE });
+}
+
+function copyArrayBuffer(payload: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(payload.byteLength);
+  copy.set(payload);
+  return copy.buffer;
 }
 
 function yieldToBrowser(): Promise<void> {
@@ -387,9 +332,9 @@ function buildResourceUrl(
     queryTimeout?: string;
   }
 ): string {
-  const path = `${config.appSubUrl ?? ''}/api/datasources/proxy/uid/${encodeURIComponent(
+  const path = `${config.appSubUrl ?? ''}/api/datasources/uid/${encodeURIComponent(
     datasourceUid
-  )}/api/v1/query_range`;
+  )}/resources/api/v1/query_range`;
 
   if (options.httpMethod.toUpperCase() === 'POST') {
     return path;
@@ -462,316 +407,6 @@ function intervalToMs(interval: string | null | undefined): number {
   }
 
   return rangeUtil.intervalToMs(interval);
-}
-
-class MultiBatchResponseAccumulator {
-  private framesByKey = new Map<string, DataFrame>();
-  private lineBuffer = new TextLineBuffer();
-  private seriesByKey = new Map<string, SeriesAccumulator>();
-  private resultType = 'matrix';
-
-  constructor(private readonly target: PromQuery) {}
-
-  pushText(text: string) {
-    const lines = this.lineBuffer.push(text);
-    for (const line of lines) {
-      this.processLine(line);
-    }
-  }
-
-  snapshotFrames(isIncomplete: boolean): DataFrame[] {
-    for (const line of this.lineBuffer.finish()) {
-      this.processLine(line);
-    }
-
-    const eventFrames = Array.from(this.framesByKey.values())
-      .filter((frame) => isIncomplete || frame.length > 0)
-      .map((frame) => cloneFrame(frame, isIncomplete));
-    const prometheusFrames = this.prometheusFrames(isIncomplete);
-    return eventFrames.length > 0 ? eventFrames : prometheusFrames;
-  }
-
-  private processLine(line: string) {
-    const event = JSON.parse(line) as MultiBatchEvent;
-
-    if (isPrometheusApiResponse(event)) {
-      this.processPrometheusResponse(event);
-      return;
-    }
-
-    switch (event.type) {
-      case 'schema':
-        this.processSchema(event);
-        return;
-      case 'data':
-        this.processData(event);
-        return;
-      case 'status':
-        this.processStatus(event);
-        return;
-      case 'error':
-        throw new Error(event.error ?? event.message ?? 'Prometheus multi-batch response returned an error event');
-      default:
-        throw new Error(`Unsupported Prometheus multi-batch event type: ${(event as { type?: string }).type}`);
-    }
-  }
-
-  private processSchema(event: MultiBatchSchemaEvent) {
-    const columns = event.columns ?? event.fields ?? [];
-    const frameKey = this.getFrameKey(event);
-    const frame: DataFrame = {
-      fields: columns.map((column) => {
-        const labels = column.labels;
-        const displayNameFromDS =
-          column.type === 'number' ? getDisplayName(this.target.legendFormat, labels ?? {}) : undefined;
-
-        return {
-          config: displayNameFromDS ? { displayNameFromDS } : {},
-          labels,
-          name: column.name,
-          type: toFieldType(column.type),
-          values: [],
-        };
-      }),
-      length: 0,
-      meta: {
-        custom: {
-          isIncomplete: true,
-        },
-        type: DataFrameType.TimeSeriesMulti,
-        typeVersion: [0, 1],
-      },
-      name: event.name,
-      refId: event.refId ?? this.target.refId,
-    };
-
-    this.framesByKey.set(frameKey, frame);
-  }
-
-  private processData(event: MultiBatchDataEvent) {
-    const frameKey = this.getFrameKey(event);
-    const frame = this.framesByKey.get(frameKey);
-    if (!frame) {
-      throw new Error(`Prometheus multi-batch data event referenced unknown frame: ${frameKey}`);
-    }
-
-    const rows =
-      event.rows ?? (event.row ? [event.row] : event.data ? [event.data] : event.values ? [event.values] : []);
-    for (const row of rows) {
-      frame.fields.forEach((field, index) => {
-        const raw = getRowValue(row, field.name, index);
-        field.values.push(convertValue(raw, field.type));
-      });
-      frame.length += 1;
-    }
-  }
-
-  private processStatus(event: MultiBatchStatusEvent) {
-    const isIncomplete =
-      event.isIncomplete ?? event.incomplete ?? (event.status ? event.status.toLowerCase() !== 'done' : undefined);
-
-    if (isIncomplete === undefined) {
-      return;
-    }
-
-    const frameKey = event.frame ?? event.refId;
-    if (frameKey) {
-      const frame = this.framesByKey.get(frameKey);
-      if (frame) {
-        this.setFrameIncomplete(frame, isIncomplete);
-      }
-      return;
-    }
-
-    for (const frame of this.framesByKey.values()) {
-      this.setFrameIncomplete(frame, isIncomplete);
-    }
-  }
-
-  private getFrameKey(event: { frame?: string; refId?: string }): string {
-    return event.frame ?? event.refId ?? this.target.refId;
-  }
-
-  private setFrameIncomplete(frame: DataFrame, isIncomplete: boolean) {
-    frame.meta = {
-      ...frame.meta,
-      custom: {
-        ...frame.meta?.custom,
-        isIncomplete,
-      },
-    };
-  }
-
-  private processPrometheusResponse(response: PrometheusApiResponse) {
-    const resultType = response.data?.resultType ?? 'matrix';
-    this.resultType = resultType;
-
-    for (const result of response.data?.result ?? []) {
-      const labels = result.metric ?? {};
-      const key = metricKey(labels);
-      let series = this.seriesByKey.get(key);
-      if (!series) {
-        series = { labels, points: new Map() };
-        this.seriesByKey.set(key, series);
-      }
-
-      const values = result.values ?? (result.value ? [result.value] : []);
-      for (const [timestamp, value] of values) {
-        series.points.set(toTimestampMs(timestamp), parseSampleValue(String(value)));
-      }
-
-      const histograms = result.histograms ?? (result.histogram ? [result.histogram] : []);
-      for (const [timestamp, histogram] of histograms) {
-        series.points.set(toTimestampMs(timestamp), histogram);
-      }
-    }
-  }
-
-  private prometheusFrames(isIncomplete: boolean): DataFrame[] {
-    return Array.from(this.seriesByKey.values()).map((series) => {
-      const points = Array.from(series.points.entries()).sort(([a], [b]) => a - b);
-      const labels = { ...series.labels };
-      const valueName = labels.__name__ ?? TIME_SERIES_VALUE_FIELD_NAME;
-      const valueType = points.some(([, value]) => value !== null && typeof value === 'object')
-        ? FieldType.other
-        : FieldType.number;
-      const displayNameFromDS = getDisplayName(this.target.legendFormat, labels);
-
-      return {
-        fields: [
-          {
-            config: {},
-            name: TIME_SERIES_TIME_FIELD_NAME,
-            type: FieldType.time,
-            values: points.map(([timestamp]) => timestamp),
-          },
-          {
-            config: displayNameFromDS ? { displayNameFromDS } : {},
-            labels,
-            name: valueName,
-            type: valueType,
-            values: points.map(([, value]) => value),
-          },
-        ],
-        length: points.length,
-        meta: {
-          custom: {
-            isIncomplete,
-            resultType: this.resultType,
-          },
-          type: DataFrameType.TimeSeriesMulti,
-          typeVersion: [0, 1],
-        },
-        refId: this.target.refId,
-      };
-    });
-  }
-}
-
-function cloneFrame(frame: DataFrame, isIncomplete: boolean): DataFrame {
-  return {
-    ...frame,
-    fields: frame.fields.map((field) => ({
-      ...field,
-      config: { ...field.config },
-      labels: field.labels ? { ...field.labels } : undefined,
-      values: [...field.values],
-    })),
-    meta: {
-      ...frame.meta,
-      custom: {
-        ...frame.meta?.custom,
-        isIncomplete,
-      },
-    },
-  };
-}
-
-function isPrometheusApiResponse(event: MultiBatchEvent): event is PrometheusApiResponse {
-  return Boolean((event as PrometheusApiResponse).data?.resultType);
-}
-
-function toFieldType(type: MultiBatchColumnType): FieldType {
-  switch (type) {
-    case 'time':
-      return FieldType.time;
-    case 'number':
-      return FieldType.number;
-    case 'boolean':
-      return FieldType.boolean;
-    case 'string':
-    default:
-      return FieldType.string;
-  }
-}
-
-function convertValue(value: unknown, type: FieldType): unknown {
-  if (type === FieldType.time) {
-    return toTimestampMs(value);
-  }
-
-  if (type === FieldType.number) {
-    return parseSampleValue(String(value));
-  }
-
-  return value;
-}
-
-function getRowValue(row: unknown, fieldName: string, index: number): unknown {
-  if (Array.isArray(row)) {
-    return row[index];
-  }
-
-  if (row && typeof row === 'object') {
-    return (row as Record<string, unknown>)[fieldName];
-  }
-
-  return undefined;
-}
-
-function toTimestampMs(timestamp: unknown): number {
-  if (typeof timestamp === 'number') {
-    return timestamp > 1e12 ? timestamp : timestamp * 1000;
-  }
-
-  if (typeof timestamp === 'string') {
-    const numeric = Number(timestamp);
-    if (!Number.isNaN(numeric)) {
-      return numeric > 1e12 ? numeric : numeric * 1000;
-    }
-
-    return new Date(timestamp).getTime();
-  }
-
-  return Number(timestamp);
-}
-
-function getDisplayName(legendFormat: string | undefined, labels: Record<string, string>): string | undefined {
-  if (!legendFormat) {
-    return undefined;
-  }
-
-  if (legendFormat === '__auto') {
-    return getSingleLabelDisplayName(labels);
-  }
-
-  return legendFormat.replace(/\{\{\s*([^}\s]+)\s*\}\}/g, (_, label: string) => labels[label] ?? '');
-}
-
-function getSingleLabelDisplayName(labels: Record<string, string>): string | undefined {
-  const labelEntries = Object.entries(labels).filter(([label]) => label !== '__name__');
-  if (labelEntries.length !== 1 || labels.__name__) {
-    return undefined;
-  }
-
-  return labelEntries[0][1];
-}
-
-function metricKey(metric: Record<string, string>): string {
-  return Object.keys(metric)
-    .sort()
-    .map((key) => `${key}=${metric[key]}`)
-    .join('\xff');
 }
 
 function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
