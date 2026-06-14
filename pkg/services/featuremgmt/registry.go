@@ -53,7 +53,7 @@ var (
 			Stage:        FeatureStagePublicPreview,
 			FrontendOnly: true,
 			Owner:        grafanaOSSBigTent,
-			Expression:   "true",
+			Expression:   "false",
 		},
 		{
 			Name:        "featureHighlights",

@@ -654,6 +654,10 @@ export class PrometheusDatasource
       return [];
     }
 
+    if (request.queryCachingTTL || request.stepSize || request.minInterval) {
+      return [];
+    }
+
     if (visibleTargets.some((target) => !this.isPrometheusMultiBatchTarget(target))) {
       return [];
     }
@@ -680,6 +684,10 @@ export class PrometheusDatasource
 
   private shouldUseBackendQueryPathForMultiBatch(target: PromQuery, request: DataQueryRequest<PromQuery>): boolean {
     if ((target.scopes?.length ?? 0) > 0 || (target.groupByKeys?.length ?? 0) > 0) {
+      return true;
+    }
+
+    if (this.hasTemplateVariable(target.interval) || this.hasTemplateVariable(target.stepSize)) {
       return true;
     }
 
@@ -719,6 +727,10 @@ export class PrometheusDatasource
       (usesRateInterval && !request.scopedVars?.__rate_interval) ||
       (usesRateIntervalMs && !request.scopedVars?.__rate_interval_ms)
     );
+  }
+
+  private hasTemplateVariable(value: string | null | undefined): boolean {
+    return typeof value === 'string' && value.includes('$');
   }
 
   private toDataQueryError(error: unknown, refId: string | undefined): DataQueryError {

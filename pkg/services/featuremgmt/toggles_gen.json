@@ -3836,7 +3836,7 @@
         "stage": "preview",
         "codeowner": "@grafana/oss-big-tent",
         "frontend": true,
-        "expression": "true"
+        "expression": "false"
       }
     },
     {

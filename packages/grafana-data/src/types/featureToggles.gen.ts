@@ -40,7 +40,7 @@ export interface FeatureToggles {
   lokiExperimentalStreaming?: boolean;
   /**
   * Enables progressive rendering for Prometheus HTTP multi-batch responses
-  * @default true
+  * @default false
   */
   prometheusMultiBatchStreaming?: boolean;
   /**

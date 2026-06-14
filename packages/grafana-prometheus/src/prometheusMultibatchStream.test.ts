@@ -58,7 +58,7 @@ describe('Prometheus multi-batch streaming', () => {
   });
 
   it('detects the neutral content type', () => {
-    expect(isMultiBatchContentType('application/prometheus.multibatch; version=1')).toBe(true);
+    expect(isMultiBatchContentType(`${MULTIBATCH_CONTENT_TYPE}; version=1`)).toBe(true);
     expect(isMultiBatchContentType('application/com.openai.prometheus.multibatch; version=1')).toBe(true);
     expect(isMultiBatchContentType('application/json')).toBe(false);
   });
