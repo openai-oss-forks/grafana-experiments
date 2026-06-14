@@ -216,8 +216,13 @@ describe('Prometheus multi-batch streaming', () => {
     const target: PromQuery = { expr: 'bad promql', refId: 'A' };
     const request = requestForTarget(target);
     const text = jest.fn();
+    const responseHeader = responseHeaderFrame();
     global.fetch = jest.fn().mockResolvedValue({
-      body: readableBody([concatBytes(responseHeaderFrame(), frame('query-error', FINAL_BATCH_FLAG))]),
+      body: readableBody([
+        responseHeader.subarray(0, 2),
+        responseHeader.subarray(2),
+        frame('query-error', FINAL_BATCH_FLAG),
+      ]),
       headers: {
         get: (name: string) =>
           name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
@@ -236,6 +241,31 @@ describe('Prometheus multi-batch streaming', () => {
     expect(text).not.toHaveBeenCalled();
     expect(responses.map((response) => response.compactSeries)).toEqual([{ payload: 'query-error' }]);
     expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
+  });
+
+  it('surfaces mislabeled non-OK multibatch responses as response errors', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target);
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([new TextEncoder().encode('{"message":"context canceled"}')]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: jest.fn(),
+    });
+
+    await expect(
+      collectResponses(
+        queryPrometheusMultiBatch('prometheus', request, target, {
+          customQueryParameters: new URLSearchParams(),
+          httpMethod: 'POST',
+        })
+      )
+    ).rejects.toThrow('context canceled');
   });
 
   it('uses datasource and target interval limits when building query_range parameters', async () => {

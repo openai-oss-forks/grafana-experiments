@@ -534,7 +534,7 @@ export class PrometheusDatasource
       return queryPrometheusMultiBatch(this.uid, request, target, {
         httpMethod: this.queryHttpMethod,
         customQueryParameters: this.customQueryParameters,
-        minInterval: this.interval,
+        minInterval: request.minInterval ?? this.interval,
         queryTimeout: this.queryTimeout,
       }).pipe(
         map((response) => {
@@ -601,7 +601,7 @@ export class PrometheusDatasource
         queryPrometheusMultiBatch(this.uid, request, target, {
           httpMethod: this.queryHttpMethod,
           customQueryParameters: this.customQueryParameters,
-          minInterval: this.interval,
+          minInterval: request.minInterval ?? this.interval,
           queryTimeout: this.queryTimeout,
         }).subscribe({
           complete: () => {
@@ -644,7 +644,6 @@ export class PrometheusDatasource
 
     if (
       request.preferredQueryResultFormat !== 'compact-v1' ||
-      visibleTargets.length !== 1 ||
       !this.shouldRequestCompactQueryResponse(request, visibleTargets)
     ) {
       return [];
@@ -654,7 +653,7 @@ export class PrometheusDatasource
       return [];
     }
 
-    if (request.queryCachingTTL || request.stepSize || request.minInterval) {
+    if (request.queryCachingTTL || request.stepSize || this.hasTemplateVariable(request.minInterval)) {
       return [];
     }
 
@@ -687,23 +686,26 @@ export class PrometheusDatasource
       return true;
     }
 
-    if (this.hasTemplateVariable(target.interval) || this.hasTemplateVariable(target.stepSize)) {
-      return true;
-    }
-
-    return this.hasUnresolvedRateIntervalVariable(target, request);
+    return (
+      this.hasTemplateVariable(target.interval) ||
+      this.hasTemplateVariable(target.stepSize) ||
+      this.hasUnsupportedPrometheusMultiBatchExpression(target.expr)
+    );
   }
 
   private preparePrometheusMultiBatchTarget(target: PromQuery, request: DataQueryRequest<PromQuery>): PromQuery {
-    const intervalSeconds = getPrometheusStepSeconds(request, target, this.interval);
+    const minInterval = request.minInterval ?? this.interval;
+    const intervalSeconds = getPrometheusStepSeconds(request, target, minInterval);
     const interval = rangeUtil.secondsToHms(intervalSeconds);
     const intervalMs = intervalSeconds * 1000;
+    const rateIntervalMs = this.getPrometheusRateIntervalMs(intervalMs, target, minInterval);
+    const rateInterval = rangeUtil.secondsToHms(rateIntervalMs / 1000);
     const scopedVars = {
       ...request.scopedVars,
       __interval: { text: interval, value: interval },
       __interval_ms: { text: intervalMs, value: intervalMs },
-      ...(request.scopedVars?.__rate_interval ? { __rate_interval: request.scopedVars.__rate_interval } : {}),
-      ...(request.scopedVars?.__rate_interval_ms ? { __rate_interval_ms: request.scopedVars.__rate_interval_ms } : {}),
+      __rate_interval: request.scopedVars?.__rate_interval ?? { text: rateInterval, value: rateInterval },
+      __rate_interval_ms: request.scopedVars?.__rate_interval_ms ?? { text: rateIntervalMs, value: rateIntervalMs },
       ...this.getRangeScopedVars(request.range),
     };
     const interpolatedTarget = this.interpolateVariablesInQueries([target], scopedVars, request.filters)[0];
@@ -718,19 +720,29 @@ export class PrometheusDatasource
     })[0];
   }
 
-  private hasUnresolvedRateIntervalVariable(target: PromQuery, request: DataQueryRequest<PromQuery>): boolean {
-    const expr = target.expr;
-    const usesRateInterval = /\$(?:__rate_interval\b|\{__rate_interval\})/.test(expr);
-    const usesRateIntervalMs = /\$(?:__rate_interval_ms\b|\{__rate_interval_ms\})/.test(expr);
+  private getPrometheusRateIntervalMs(
+    intervalMs: number,
+    target: PromQuery,
+    minInterval: string | undefined
+  ): number {
+    const requestedMinStepMs =
+      this.prometheusIntervalToMs(target.interval) || this.prometheusIntervalToMs(minInterval) || 15000;
+    return Math.max(intervalMs + requestedMinStepMs, 4 * requestedMinStepMs);
+  }
 
-    return (
-      (usesRateInterval && !request.scopedVars?.__rate_interval) ||
-      (usesRateIntervalMs && !request.scopedVars?.__rate_interval_ms)
-    );
+  private prometheusIntervalToMs(interval: string | null | undefined): number {
+    if (!interval || this.hasTemplateVariable(interval)) {
+      return 0;
+    }
+    return rangeUtil.intervalToMs(interval);
   }
 
   private hasTemplateVariable(value: string | null | undefined): boolean {
     return typeof value === 'string' && value.includes('$');
+  }
+
+  private hasUnsupportedPrometheusMultiBatchExpression(expr: string | undefined): boolean {
+    return typeof expr === 'string' && /\b(?:head_[a-zA-Z0-9_]+|median_[a-zA-Z0-9_]+)\s*\(/.test(expr);
   }
 
   private toDataQueryError(error: unknown, refId: string | undefined): DataQueryError {

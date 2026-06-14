@@ -259,35 +259,125 @@ async function streamQueryRange(
   const reader = response.body.getReader();
 
   try {
+    const initialChunks: Uint8Array[] = [];
+    let result = await reader.read();
+    if (!result.done) {
+      initialChunks.push(result.value);
+      while (byteLength(initialChunks) < RESPONSE_HEADER_MAGIC.length) {
+        result = await reader.read();
+        if (result.done) {
+          break;
+        }
+        initialChunks.push(result.value);
+      }
+    }
+
+    if (!response.ok && !chunksStartWithMagic(initialChunks, RESPONSE_HEADER_MAGIC)) {
+      throw new Error(await readStreamText(reader, initialChunks, response));
+    }
+
+    for (const chunk of initialChunks) {
+      await processMultiBatchChunk(chunk, frameDecoder, payloadDecoder, request, target, emit);
+    }
+
     while (true) {
-      const result = await reader.read();
+      result = await reader.read();
       if (result.done) {
         break;
       }
 
-      for (const frame of frameDecoder.push(result.value)) {
-        const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
-        const isFinal = (frame.flags & FINAL_BATCH_FLAG) !== 0;
-        emit(
-          decodeCompactQueryDataResponse(
-            payload,
-            compactHeaders(),
-            request,
-            target,
-            isFinal ? LoadingState.Done : LoadingState.Streaming
-          )
-        );
-
-        if (!isFinal) {
-          await yieldToBrowser();
-        }
-      }
+      await processMultiBatchChunk(result.value, frameDecoder, payloadDecoder, request, target, emit);
     }
   } finally {
     reader.releaseLock();
   }
 
   frameDecoder.finish();
+}
+
+async function processMultiBatchChunk(
+  chunk: Uint8Array,
+  frameDecoder: MultiBatchFrameDecoder,
+  payloadDecoder: ZstdPayloadDecoder,
+  request: DataQueryRequest<PromQuery>,
+  target: PromQuery,
+  emit: (response: DataQueryResponse) => void
+) {
+  for (const frame of frameDecoder.push(chunk)) {
+    const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
+    const isFinal = (frame.flags & FINAL_BATCH_FLAG) !== 0;
+    emit(
+      decodeCompactQueryDataResponse(
+        payload,
+        compactHeaders(),
+        request,
+        target,
+        isFinal ? LoadingState.Done : LoadingState.Streaming
+      )
+    );
+
+    if (!isFinal) {
+      await yieldToBrowser();
+    }
+  }
+}
+
+async function readStreamText(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  initialChunks: Uint8Array[],
+  response: Response
+): Promise<string> {
+  const chunks = [...initialChunks];
+
+  while (true) {
+    const result = await reader.read();
+    if (result.done) {
+      break;
+    }
+    chunks.push(result.value);
+  }
+
+  const text = new TextDecoder().decode(concatChunks(chunks)).trim();
+  return text || response.statusText || `Prometheus multi-batch request failed with status ${response.status}`;
+}
+
+function chunksStartWithMagic(chunks: Uint8Array[], magic: string): boolean {
+  if (byteLength(chunks) < magic.length) {
+    return false;
+  }
+
+  const magicBytes = [...magic].map((char) => char.charCodeAt(0));
+  let chunkIndex = 0;
+  let offset = 0;
+
+  for (const expected of magicBytes) {
+    while (chunkIndex < chunks.length && offset >= chunks[chunkIndex].byteLength) {
+      chunkIndex += 1;
+      offset = 0;
+    }
+
+    if (chunkIndex >= chunks.length || chunks[chunkIndex][offset] !== expected) {
+      return false;
+    }
+
+    offset += 1;
+  }
+
+  return true;
+}
+
+function byteLength(chunks: Uint8Array[]): number {
+  return chunks.reduce((length, chunk) => length + chunk.byteLength, 0);
+}
+
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(byteLength(chunks));
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }
 
 function decodeCompactQueryDataResponse(
