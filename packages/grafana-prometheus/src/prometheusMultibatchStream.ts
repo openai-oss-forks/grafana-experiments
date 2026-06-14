@@ -159,6 +159,15 @@ export function isMultiBatchContentType(contentType: string | null | undefined):
   return mediaType === MULTIBATCH_CONTENT_TYPE || mediaType === MULTIBATCH_PREFERRED_CONTENT_TYPE;
 }
 
+function isCompactContentType(contentType: string | null | undefined): boolean {
+  if (!contentType) {
+    return false;
+  }
+
+  const mediaType = contentType.split(';')[0].trim().toLowerCase();
+  return mediaType === QUERY_DATA_COMPACT_MEDIA_TYPE.split(';')[0];
+}
+
 export async function decodeMultiBatchFrames(chunks: Uint8Array[], onBatch: BatchHandler): Promise<void> {
   const frameDecoder = new MultiBatchFrameDecoder();
   const payloadDecoder = new ZstdPayloadDecoder();
@@ -232,12 +241,11 @@ async function streamQueryRange(
     signal,
   });
 
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-
   if (!isMultiBatchContentType(response.headers.get('Content-Type'))) {
     const body = await response.arrayBuffer();
+    if (!response.ok && !isCompactContentType(response.headers.get('Content-Type'))) {
+      throw new Error(new TextDecoder().decode(body));
+    }
     emit(decodeCompactQueryDataResponse(body, response.headers, request, target, LoadingState.Done));
     return;
   }

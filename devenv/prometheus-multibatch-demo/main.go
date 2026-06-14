@@ -172,7 +172,7 @@ func writeFrame(w http.ResponseWriter, flusher http.Flusher, response apiRespons
 	}
 	payload = append(payload, '\n')
 
-	encoder, err := zstd.NewWriter(nil)
+	encoder, err := zstd.NewWriter(nil, zstd.WithSingleSegment(true))
 	if err != nil {
 		return err
 	}

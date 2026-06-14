@@ -44,7 +44,8 @@ const (
 	multiBatchPayloadEncodingIdentity = 0
 	multiBatchPayloadEncodingZstd     = 1
 
-	maxZstdDecodedPayloadSize = 512 * 1024 * 1024
+	maxMultiBatchPayloadSize  = 512 * 1024 * 1024
+	maxZstdDecodedPayloadSize = maxMultiBatchPayloadSize
 )
 
 var legendFormatRegexpForResource = regexp.MustCompile(`\{\{\s*(.+?)\s*\}\}`)
@@ -143,16 +144,18 @@ func compactMultiBatchResponseHeaders(upstream http.Header) http.Header {
 }
 
 func sendCompactDataResponseFrame(ctx context.Context, sender backend.CallResourceResponseSender, statusCode int, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) error {
-	qdr := &backend.QueryDataResponse{Responses: backend.Responses{query.RefID: response}}
-	compactResponse, err := compact.NewQueryDataResponseContext(ctx, qdr, map[string]compact.QueryRequest{
-		query.RefID: {
-			Start:        query.Start,
-			End:          query.End,
-			UTCOffsetSec: query.UTCOffsetSec,
-		},
-	})
+	compactResponse, err := encodeCompactMultiBatchResponse(ctx, query, response)
 	if err != nil {
-		return err
+		if !errors.Is(err, compact.ErrUnsupported) {
+			return err
+		}
+		compactResponse, err = encodeCompactMultiBatchResponse(ctx, query, backend.DataResponse{
+			Error:  err,
+			Status: backend.StatusInternal,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	var payload bytes.Buffer
@@ -167,6 +170,17 @@ func sendCompactDataResponseFrame(ctx context.Context, sender backend.CallResour
 	return sender.Send(&backend.CallResourceResponse{
 		Status: statusCode,
 		Body:   multiBatchPayloadFrame(multiBatchPayloadTypeCompactV1, flags, multiBatchPayloadEncodingIdentity, payload.Bytes()),
+	})
+}
+
+func encodeCompactMultiBatchResponse(ctx context.Context, query compactMultiBatchQuery, response backend.DataResponse) (*compact.QueryDataResponse, error) {
+	qdr := &backend.QueryDataResponse{Responses: backend.Responses{query.RefID: response}}
+	return compact.NewQueryDataResponseContext(ctx, qdr, map[string]compact.QueryRequest{
+		query.RefID: {
+			Start:        query.Start,
+			End:          query.End,
+			UTCOffsetSec: query.UTCOffsetSec,
+		},
 	})
 }
 
@@ -228,6 +242,9 @@ func readMultiBatchFrame(reader io.Reader) (multiBatchFrame, error) {
 		return multiBatchFrame{}, fmt.Errorf("unsupported Prometheus multi-batch payload encoding: %d", encoding)
 	}
 	payloadLength := binary.BigEndian.Uint32(header[8:12])
+	if payloadLength > maxMultiBatchPayloadSize {
+		return multiBatchFrame{}, fmt.Errorf("Prometheus multi-batch payload length %d exceeds limit %d", payloadLength, maxMultiBatchPayloadSize)
+	}
 	payload := make([]byte, payloadLength)
 	if _, err := io.ReadFull(reader, payload); err != nil {
 		return multiBatchFrame{}, err

@@ -212,6 +212,32 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
   });
 
+  it('decodes non-OK multibatch compact responses instead of reading binary as text', async () => {
+    const target: PromQuery = { expr: 'bad promql', refId: 'A' };
+    const request = requestForTarget(target);
+    const text = jest.fn();
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([concatBytes(responseHeaderFrame(), frame('query-error', FINAL_BATCH_FLAG))]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: false,
+      text,
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(text).not.toHaveBeenCalled();
+    expect(responses.map((response) => response.compactSeries)).toEqual([{ payload: 'query-error' }]);
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
+  });
+
   it('uses datasource and target interval limits when building query_range parameters', async () => {
     const target: PromQuery = {
       expr: 'up',

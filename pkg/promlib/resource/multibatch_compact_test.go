@@ -3,6 +3,7 @@ package resource
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"testing"
@@ -155,6 +156,44 @@ func TestDecodeMultiBatchPayloadRejectsZstdWithoutFrameContentSize(t *testing.T)
 
 	_, err = decodeMultiBatchPayload(multiBatchFrame{payloadEncoding: multiBatchPayloadEncodingZstd, payload: compressed.Bytes()})
 	require.ErrorContains(t, err, "missing frame content size")
+}
+
+func TestReadMultiBatchFrameRejectsOversizedPayloadLength(t *testing.T) {
+	header := make([]byte, multiBatchFrameHeaderSize)
+	copy(header, "MBBF")
+	header[4] = multiBatchVersion
+	binary.BigEndian.PutUint32(header[8:12], maxMultiBatchPayloadSize+1)
+
+	_, err := readMultiBatchFrame(bytes.NewReader(header))
+	require.ErrorContains(t, err, "exceeds limit")
+}
+
+func TestSendCompactDataResponseFrameConvertsCompactUnsupportedToErrorFrame(t *testing.T) {
+	query := compactMultiBatchQuery{
+		RefID:        "A",
+		Start:        time.Unix(0, 0).UTC(),
+		End:          time.Unix(60, 0).UTC(),
+		Step:         time.Minute,
+		UTCOffsetSec: 0,
+	}
+	response := backend.DataResponse{
+		Frames: data.Frames{
+			data.NewFrame(
+				"unsupported",
+				data.NewField(data.TimeSeriesTimeFieldName, nil, []time.Time{time.Unix(0, 0).UTC()}),
+				data.NewField("value", nil, []float64{1}),
+				data.NewField("extra", nil, []float64{2}),
+			),
+		},
+		Status: backend.StatusOK,
+	}
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 1)}
+
+	require.NoError(t, sendCompactDataResponseFrame(context.Background(), sender, http.StatusOK, query, response, true))
+	frame := receiveResponse(t, sender.responses)
+	require.Equal(t, "MBBF", string(frame.Body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), frame.Body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), frame.Body[6]&multiBatchFinalFlag)
 }
 
 func TestMergeDataResponsesUsesFinalBatchPrecedence(t *testing.T) {
