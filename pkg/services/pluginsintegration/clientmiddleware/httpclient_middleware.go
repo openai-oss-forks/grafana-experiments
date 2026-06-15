@@ -3,28 +3,17 @@ package clientmiddleware
 import (
 	"context"
 	"net/http"
-	"strings"
-	"sync"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 
-	"github.com/grafana/grafana/pkg/services/contexthandler"
 	ngalertmodels "github.com/grafana/grafana/pkg/services/ngalert/models"
 )
 
 const forwardPluginRequestHTTPHeaders = "forward-plugin-request-http-headers"
 
-// proxiedQueryResponseHeaderPrefixes contains the response header prefixes that
-// should be copied from a data source query response to the Grafana client.
-// Add new prefixes here when another family of data source response headers
-// needs to be exposed to panels.
-var proxiedQueryResponseHeaderPrefixes = []string{
-	"X-Trickster-",
-}
-
-// NewHTTPClientMiddleware creates a new backend.HandlerMiddleware that forwards
-// plugin request headers and selected data source query response headers.
+// NewHTTPClientMiddleware creates a new backend.HandlerMiddleware
+// that will forward plugin request headers as outgoing HTTP headers.
 func NewHTTPClientMiddleware() backend.HandlerMiddleware {
 	return backend.HandlerMiddlewareFunc(func(next backend.Handler) backend.Handler {
 		return &HTTPClientMiddleware{
@@ -41,14 +30,6 @@ func (m *HTTPClientMiddleware) applyHeaders(ctx context.Context, pReq any) conte
 	if pReq == nil {
 		return ctx
 	}
-
-	var responseHeaders http.Header
-	if _, ok := pReq.(*backend.QueryDataRequest); ok {
-		if reqCtx := contexthandler.FromContext(ctx); reqCtx != nil && reqCtx.Resp != nil {
-			responseHeaders = reqCtx.Resp.Header()
-		}
-	}
-	var responseHeadersMu sync.Mutex
 
 	mw := httpclient.NamedMiddlewareFunc(forwardPluginRequestHTTPHeaders, func(opts httpclient.Options, next http.RoundTripper) http.RoundTripper {
 		return httpclient.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -76,31 +57,11 @@ func (m *HTTPClientMiddleware) applyHeaders(ctx context.Context, pReq any) conte
 				}
 			}
 
-			res, err := next.RoundTrip(req)
-			if err == nil && res != nil && responseHeaders != nil {
-				responseHeadersMu.Lock()
-				proxyQueryResponseHeaders(responseHeaders, res.Header)
-				responseHeadersMu.Unlock()
-			}
-
-			return res, err
+			return next.RoundTrip(req)
 		})
 	})
 
 	return httpclient.WithContextualMiddleware(ctx, mw)
-}
-
-func proxyQueryResponseHeaders(dst, src http.Header) {
-	for name, values := range src {
-		for _, prefix := range proxiedQueryResponseHeaderPrefixes {
-			if len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix) {
-				for _, value := range values {
-					dst.Add(name, value)
-				}
-				break
-			}
-		}
-	}
 }
 
 func (m *HTTPClientMiddleware) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {

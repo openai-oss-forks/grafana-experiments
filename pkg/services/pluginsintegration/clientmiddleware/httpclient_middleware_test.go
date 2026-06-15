@@ -9,7 +9,6 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/handlertest"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
-	"github.com/grafana/grafana/pkg/services/contexthandler"
 	ngalertmodels "github.com/grafana/grafana/pkg/services/ngalert/models"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/util/proxyutil"
@@ -309,49 +308,6 @@ func TestHTTPClientMiddleware(t *testing.T) {
 			})
 		})
 	})
-}
-
-func TestHTTPClientMiddlewareProxiesQueryResponseHeaders(t *testing.T) {
-	req, err := http.NewRequest(http.MethodGet, "/some/thing", nil)
-	require.NoError(t, err)
-
-	cdt := handlertest.NewHandlerMiddlewareTest(t,
-		WithReqContext(req, &user.SignedInUser{}),
-		handlertest.WithMiddlewares(NewHTTPClientMiddleware()),
-	)
-
-	_, err = cdt.MiddlewareHandler.QueryData(req.Context(), &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{},
-		},
-	})
-	require.NoError(t, err)
-
-	middlewares := httpclient.ContextualMiddlewareFromContext(cdt.QueryDataCtx)
-	require.Len(t, middlewares, 1)
-
-	upstreamHeaders := http.Header{}
-	upstreamHeaders.Add("X-Trickster-Result", "cache-hit")
-	upstreamHeaders.Add("x-trickster-cache-status", "fresh")
-	upstreamHeaders.Add("X-Trickster-Result", "proxy-hit")
-	upstreamHeaders.Add("X-Not-Proxied", "secret")
-	roundTripper := httpclient.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Request:    req,
-			Header:     upstreamHeaders,
-			Body:       io.NopCloser(bytes.NewBufferString("")),
-		}, nil
-	})
-
-	res, err := middlewares[0].CreateMiddleware(httpclient.Options{}, roundTripper).RoundTrip(req.Clone(req.Context()))
-	require.NoError(t, err)
-	require.NoError(t, res.Body.Close())
-
-	responseHeaders := contexthandler.FromContext(req.Context()).Resp.Header()
-	require.Equal(t, []string{"cache-hit", "proxy-hit"}, responseHeaders.Values("X-Trickster-Result"))
-	require.Equal(t, "fresh", responseHeaders.Get("X-Trickster-Cache-Status"))
-	require.Empty(t, responseHeaders.Get("X-Not-Proxied"))
 }
 
 var finalRoundTripper = httpclient.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
