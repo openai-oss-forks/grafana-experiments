@@ -1,4 +1,4 @@
-import { dateTime, DataQueryRequest, DataQueryResponse, LoadingState } from '@grafana/data';
+import { dateTime, DataFrameType, DataQueryRequest, DataQueryResponse, LoadingState } from '@grafana/data';
 import { toDataQueryResponse } from '@grafana/runtime';
 
 import {
@@ -331,6 +331,56 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[1].data[0].fields[1].values).toEqual([1, 2]);
   });
 
+  it('decodes regular JSON query response payload frames through the standard response decoder', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target);
+    const queryResponse = JSON.stringify({
+      results: {
+        A: {
+          frames: [
+            {
+              schema: {
+                fields: [
+                  { name: 'Time', type: 'time' },
+                  { name: 'Value', type: 'number' },
+                ],
+              },
+              data: { values: [[0], [1]] },
+            },
+          ],
+        },
+      },
+    });
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(queryResponse, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(toDataQueryResponseMock).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: new Headers({ 'content-type': 'application/json' }) }),
+      [target],
+      true
+    );
+    expect(responses.map((response) => response.compactSeries)).toEqual([{ payload: queryResponse }]);
+  });
+
   it('decodes zstd non-compact JSONL payload frames', async () => {
     const target: PromQuery = { expr: 'up', refId: 'A' };
     const request = requestForTarget(target, false);
@@ -417,6 +467,113 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
     expect(responses[0].data[0].fields[0].values).toEqual([0]);
     expect(responses[0].data[0].fields[1].values).toEqual([1]);
+  });
+
+  it('preserves Prometheus warnings and infos on decoded API payload frames', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(
+            JSON.stringify({
+              status: 'success',
+              warnings: ['partial data'],
+              infos: ['query used cache'],
+              data: {
+                resultType: 'matrix',
+                result: [{ metric: { job: 'api' }, values: [[0, '1']] }],
+              },
+            }),
+            FINAL_BATCH_FLAG,
+            PAYLOAD_ENCODING_IDENTITY,
+            PAYLOAD_TYPE_JSONL
+          )
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses[0].data[0].meta?.notices).toEqual([
+      { severity: 'warning', text: 'partial data' },
+      { severity: 'info', text: 'query used cache' },
+    ]);
+  });
+
+  it('decodes native histogram samples into heatmap-cell frames', async () => {
+    const target: PromQuery = { expr: 'native_histogram', refId: 'A' };
+    const request = requestForTarget(target, false);
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(
+            JSON.stringify({
+              status: 'success',
+              data: {
+                resultType: 'matrix',
+                result: [
+                  {
+                    metric: { job: 'api' },
+                    histograms: [
+                      [
+                        60,
+                        {
+                          buckets: [
+                            [0, '0', '1', '2'],
+                            [0, '1', '2', '3'],
+                          ],
+                        },
+                      ],
+                    ],
+                  },
+                ],
+              },
+            }),
+            FINAL_BATCH_FLAG,
+            PAYLOAD_ENCODING_IDENTITY,
+            PAYLOAD_TYPE_JSONL
+          )
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses[0].data[0].meta?.type).toBe(DataFrameType.HeatmapCells);
+    expect(responses[0].data[0].fields.map((field: { name: string }) => field.name)).toEqual([
+      'xMax',
+      'yMin',
+      'yMax',
+      'count',
+      'yLayout',
+    ]);
+    expect(responses[0].data[0].fields[0].values).toEqual([60000, 60000]);
+    expect(responses[0].data[0].fields[3].values).toEqual([2, 3]);
   });
 
   it('decodes non-OK multibatch compact responses instead of reading binary as text', async () => {
@@ -511,7 +668,46 @@ describe('Prometheus multi-batch streaming', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/datasources/uid/prometheus/resources/api/v1/query_range',
       expect.objectContaining({
-        body: 'query=up&start=0&end=120&step=120&timeout=30s',
+        body: 'query=up&start=0&end=120&step=60&timeout=30s',
+      })
+    );
+  });
+
+  it('clamps explicit target step sizes with the standard query interval resolver', async () => {
+    const target: PromQuery = {
+      expr: 'up',
+      refId: 'A',
+      stepSize: '1m',
+    };
+    const request = {
+      ...requestForTarget(target),
+      interval: '1m',
+      intervalMs: 60000,
+      maxDataPoints: 10_000,
+      range: {
+        from: dateTime(0),
+        to: dateTime(48 * 60 * 60 * 1000),
+      },
+    } as DataQueryRequest<PromQuery>;
+    global.fetch = jest.fn().mockResolvedValue({
+      arrayBuffer: jest.fn().mockResolvedValue(new TextEncoder().encode('single').buffer),
+      body: null,
+      headers: new Headers({ 'content-type': compactMediaType }),
+      ok: true,
+      text: jest.fn(),
+    });
+
+    await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/datasources/uid/prometheus/resources/api/v1/query_range',
+      expect.objectContaining({
+        body: 'query=up&start=0&end=172800&step=300',
       })
     );
   });

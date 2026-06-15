@@ -66,7 +66,7 @@ import { getQueryHints } from './query_hints';
 import { renderLabelsWithoutBrackets } from './querybuilder/shared/rendering/labels';
 import { QueryBuilderLabelFilter, QueryEditorMode } from './querybuilder/shared/types';
 import { CacheRequestInfo, defaultPrometheusQueryOverlapWindow, QueryCache } from './querycache/QueryCache';
-import { getPrometheusStepSeconds, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
+import { getPrometheusMultiBatchIntervals, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { transformV2 } from './result_transformer';
 import { trackQuery } from './tracking';
 import {
@@ -703,10 +703,11 @@ export class PrometheusDatasource
 
   private preparePrometheusMultiBatchTarget(target: PromQuery, request: DataQueryRequest<PromQuery>): PromQuery {
     const minInterval = request.minInterval ?? this.interval;
-    const intervalSeconds = getPrometheusStepSeconds(request, target, minInterval);
+    const intervals = getPrometheusMultiBatchIntervals(request, target, minInterval);
+    const intervalSeconds = intervals.stepSeconds;
     const interval = rangeUtil.secondsToHms(intervalSeconds);
-    const intervalMs = intervalSeconds * 1000;
-    const rateIntervalMs = this.getPrometheusRateIntervalMs(intervalMs, target, minInterval);
+    const intervalMs = intervals.stepMs;
+    const rateIntervalMs = this.getPrometheusRateIntervalMs(intervals.rateIntervalBaseMs, target, minInterval);
     const rateInterval = rangeUtil.secondsToHms(rateIntervalMs / 1000);
     const scopedVars = {
       ...request.scopedVars,

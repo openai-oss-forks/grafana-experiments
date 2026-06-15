@@ -1,4 +1,5 @@
 import {
+  AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
   DataFrame,
   DataFrameType,
   DataQueryError,
@@ -10,6 +11,7 @@ import {
   TIME_SERIES_VALUE_FIELD_NAME,
   rangeUtil,
   renderLegendFormat,
+  resolveQueryIntervalWithStepSize,
 } from '@grafana/data';
 import { config, toDataQueryResponse } from '@grafana/runtime';
 import { Observable } from 'rxjs';
@@ -50,6 +52,7 @@ export interface MultiBatchFrame {
 
 class ZstdPayloadDecoder {
   private decoder?: ZSTDDecoder;
+  private decoderInit?: Promise<void>;
 
   async decode(payload: Uint8Array, encoding: number): Promise<Uint8Array> {
     if (encoding === PAYLOAD_ENCODING_IDENTITY) {
@@ -62,8 +65,9 @@ class ZstdPayloadDecoder {
 
     if (!this.decoder) {
       this.decoder = new ZSTDDecoder();
-      await this.decoder.init();
     }
+    this.decoderInit ??= initZstdDecoder(this.decoder);
+    await this.decoderInit;
 
     const contentSize = zstdFrameContentSize(payload);
     if (contentSize !== undefined) {
@@ -97,6 +101,43 @@ class ZstdPayloadDecoder {
 
     throw new Error('Prometheus multi-batch zstd payload is missing frame content size');
   }
+}
+
+async function initZstdDecoder(decoder: ZSTDDecoder): Promise<void> {
+  if (typeof globalThis.fetch !== 'function') {
+    await decoder.init();
+    return;
+  }
+
+  const originalFetch = globalThis.fetch;
+  const patchedFetch: typeof fetch = (input, init) => {
+    if (typeof input === 'string' && input.startsWith(ZSTD_WASM_DATA_URL_PREFIX)) {
+      return Promise.resolve(
+        new Response(copyArrayBuffer(base64ToBytes(input.slice(ZSTD_WASM_DATA_URL_PREFIX.length))))
+      );
+    }
+    return originalFetch.call(globalThis, input, init);
+  };
+
+  globalThis.fetch = patchedFetch;
+  try {
+    await decoder.init();
+  } finally {
+    if (globalThis.fetch === patchedFetch) {
+      globalThis.fetch = originalFetch;
+    }
+  }
+}
+
+const ZSTD_WASM_DATA_URL_PREFIX = 'data:application/wasm;base64,';
+
+function base64ToBytes(value: string): Uint8Array {
+  const decoded = atob(value);
+  const bytes = new Uint8Array(decoded.length);
+  for (let index = 0; index < decoded.length; index++) {
+    bytes[index] = decoded.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function zstdFrameContentSize(payload: Uint8Array): number | undefined {
@@ -155,16 +196,16 @@ function zstdFrameContentSize(payload: Uint8Array): number | undefined {
 }
 
 export class MultiBatchFrameDecoder {
-  private buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  private buffer = new ChunkBuffer();
   private sawResponseHeader = false;
   private sawFinalBatch = false;
 
   push(chunk: Uint8Array): MultiBatchFrame[] {
-    this.buffer = concatBytes(this.buffer, chunk);
+    this.buffer.append(chunk);
     const frames: MultiBatchFrame[] = [];
 
     while (this.buffer.byteLength >= FRAME_HEADER_SIZE) {
-      const header = this.buffer.subarray(0, FRAME_HEADER_SIZE);
+      const header = this.buffer.peek(FRAME_HEADER_SIZE);
       const magic = String.fromCharCode(...header.subarray(0, 4));
 
       if (magic === RESPONSE_HEADER_MAGIC) {
@@ -182,7 +223,7 @@ export class MultiBatchFrameDecoder {
         }
 
         this.sawResponseHeader = true;
-        this.buffer = this.buffer.subarray(FRAME_HEADER_SIZE);
+        this.buffer.consume(FRAME_HEADER_SIZE);
         continue;
       }
 
@@ -209,7 +250,7 @@ export class MultiBatchFrameDecoder {
         payloadType: header[5],
         flags: header[6],
         payloadEncoding: header[7],
-        payload: this.buffer.subarray(FRAME_HEADER_SIZE, frameLength),
+        payload: this.buffer.readFramePayload(payloadLength),
       };
 
       if ((frame.flags & RESERVED_FLAGS_MASK) !== 0) {
@@ -233,7 +274,6 @@ export class MultiBatchFrameDecoder {
       }
 
       frames.push(frame);
-      this.buffer = this.buffer.subarray(frameLength);
     }
 
     return frames;
@@ -247,6 +287,100 @@ export class MultiBatchFrameDecoder {
     if (!this.sawFinalBatch) {
       throw new Error('Prometheus multi-batch response ended without a final batch');
     }
+  }
+}
+
+class ChunkBuffer {
+  private chunks: Uint8Array[] = [];
+  byteLength = 0;
+
+  append(chunk: Uint8Array) {
+    if (chunk.byteLength === 0) {
+      return;
+    }
+    this.chunks.push(chunk);
+    this.byteLength += chunk.byteLength;
+  }
+
+  peek(length: number): Uint8Array {
+    if (this.byteLength < length) {
+      throw new Error('Prometheus multi-batch buffer underflow');
+    }
+    const first = this.chunks[0];
+    if (first.byteLength >= length) {
+      return first.subarray(0, length);
+    }
+    const result = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of this.chunks) {
+      const copyLength = Math.min(chunk.byteLength, length - offset);
+      result.set(chunk.subarray(0, copyLength), offset);
+      offset += copyLength;
+      if (offset === length) {
+        break;
+      }
+    }
+    return result;
+  }
+
+  consume(length: number) {
+    if (length > this.byteLength) {
+      throw new Error('Prometheus multi-batch buffer underflow');
+    }
+    let remaining = length;
+    while (remaining > 0) {
+      const first = this.chunks[0];
+      if (remaining < first.byteLength) {
+        this.chunks[0] = first.subarray(remaining);
+        this.byteLength -= length;
+        return;
+      }
+      remaining -= first.byteLength;
+      this.chunks.shift();
+    }
+    this.byteLength -= length;
+  }
+
+  read(length: number): Uint8Array {
+    if (length === 0) {
+      return new Uint8Array();
+    }
+    if (length > this.byteLength) {
+      throw new Error('Prometheus multi-batch buffer underflow');
+    }
+    const first = this.chunks[0];
+    if (first.byteLength === length) {
+      this.chunks.shift();
+      this.byteLength -= length;
+      return first;
+    }
+    if (first.byteLength > length) {
+      this.chunks[0] = first.subarray(length);
+      this.byteLength -= length;
+      return first.subarray(0, length);
+    }
+    const result = new Uint8Array(length);
+    let offset = 0;
+    let remaining = length;
+    while (remaining > 0) {
+      const chunk = this.chunks[0];
+      const copyLength = Math.min(chunk.byteLength, remaining);
+      result.set(chunk.subarray(0, copyLength), offset);
+      offset += copyLength;
+      remaining -= copyLength;
+      if (copyLength === chunk.byteLength) {
+        this.chunks.shift();
+      } else {
+        this.chunks[0] = chunk.subarray(copyLength);
+      }
+    }
+    this.byteLength -= length;
+    return result;
+  }
+
+  readFramePayload(payloadLength: number): Uint8Array {
+    this.consume(FRAME_HEADER_SIZE);
+    return this.read(payloadLength);
   }
 }
 
@@ -314,15 +448,26 @@ interface JsonlRow {
 }
 
 interface PrometheusApiResult {
+  histogram?: PrometheusHistogramSample;
+  histograms?: PrometheusHistogramSample[];
   metric?: Record<string, string>;
   values?: Array<[number | string, number | string]>;
   value?: [number | string, number | string];
 }
 
+type PrometheusHistogramSample = [
+  number | string,
+  {
+    buckets?: Array<[number | string, number | string, number | string, number | string]>;
+  },
+];
+
 interface PrometheusApiPayload {
   status?: string;
   error?: string;
   errorType?: string;
+  infos?: string[];
+  warnings?: string[];
   data?: {
     resultType?: string;
     result?: PrometheusApiResult[];
@@ -472,8 +617,15 @@ function decodePrometheusApiResponse(payload: string, query: MultiBatchQueryCont
     throw new Error(`Unsupported Prometheus multi-batch result type: ${resultType}`);
   }
 
-  return results.map((result, index) => {
+  const notices = prometheusNotices(parsed);
+  const frames = results.map((result, index) => {
     const labels = cloneLabels(result.metric ?? {});
+    const histogramSamples =
+      resultType === 'vector' && result.histogram ? [result.histogram] : (result.histograms ?? []);
+    if (histogramSamples.length > 0) {
+      return nativeHistogramFrame(histogramSamples, labels, query);
+    }
+
     const samples = resultType === 'vector' && result.value ? [result.value] : (result.values ?? []);
     const timeValues: number[] = [];
     const numberValues: number[] = [];
@@ -496,6 +648,71 @@ function decodePrometheusApiResponse(payload: string, query: MultiBatchQueryCont
       numberValues,
     });
   });
+  if (frames.length === 0 && notices.length > 0) {
+    frames.push({
+      fields: [],
+      length: 0,
+      meta: { notices },
+      name: 'Warnings',
+      refId: query.refId,
+    });
+  }
+  return notices.length > 0 ? frames.map((frame) => withNotices(frame, notices)) : frames;
+}
+
+function prometheusNotices(payload: PrometheusApiPayload) {
+  const notices = [
+    ...(payload.warnings ?? []).map((text) => ({ severity: 'warning' as const, text })),
+    ...(payload.infos ?? []).map((text) => ({ severity: 'info' as const, text })),
+  ];
+  return notices;
+}
+
+function withNotices(frame: DataFrame, notices: Array<{ severity: 'warning' | 'info'; text: string }>): DataFrame {
+  return {
+    ...frame,
+    meta: {
+      ...frame.meta,
+      notices,
+    },
+  };
+}
+
+function nativeHistogramFrame(
+  samples: PrometheusHistogramSample[],
+  labels: Record<string, string>,
+  query: MultiBatchQueryContext
+): DataFrame {
+  const timeValues: number[] = [];
+  const yMinValues: number[] = [];
+  const yMaxValues: number[] = [];
+  const countValues: number[] = [];
+  const yLayoutValues: number[] = [];
+
+  for (const [timestamp, histogram] of samples) {
+    const parsedTime = parseTimeValue(timestamp);
+    for (const bucket of histogram.buckets ?? []) {
+      timeValues.push(parsedTime);
+      yLayoutValues.push(parseNumberValue(bucket[0]));
+      yMinValues.push(parseNumberValue(bucket[1]));
+      yMaxValues.push(parseNumberValue(bucket[2]));
+      countValues.push(parseNumberValue(bucket[3]));
+    }
+  }
+
+  return {
+    fields: [
+      { name: 'xMax', type: FieldType.time, labels: cloneLabels(labels), config: {}, values: timeValues },
+      { name: 'yMin', type: FieldType.number, labels: cloneLabels(labels), config: {}, values: yMinValues },
+      { name: 'yMax', type: FieldType.number, labels: cloneLabels(labels), config: {}, values: yMaxValues },
+      { name: 'count', type: FieldType.number, labels: cloneLabels(labels), config: {}, values: countValues },
+      { name: 'yLayout', type: FieldType.number, labels: cloneLabels(labels), config: {}, values: yLayoutValues },
+    ],
+    length: timeValues.length,
+    meta: { type: DataFrameType.HeatmapCells },
+    name: metricNameFromLabels(labels),
+    refId: query.refId,
+  };
 }
 
 function jsonlFrameKey(event: JsonlEvent): string {
@@ -692,6 +909,10 @@ function mergeFrameKey(frame: DataFrame): string {
 }
 
 function mergeTimeSeriesFrame(base: DataFrame, delta: DataFrame): DataFrame {
+  if (base.fields.length !== 2 || delta.fields.length !== 2) {
+    return mergeDataFrameRows(base, delta);
+  }
+
   const points = new Map<number, number>();
   for (let index = 0; index < base.fields[0].values.length; index++) {
     points.set(Number(base.fields[0].values[index]), Number(base.fields[1].values[index]));
@@ -708,6 +929,53 @@ function mergeTimeSeriesFrame(base: DataFrame, delta: DataFrame): DataFrame {
   merged.fields[1].values = timestamps.map((timestamp) => points.get(timestamp)!);
   merged.length = timestamps.length;
   return merged;
+}
+
+function mergeDataFrameRows(base: DataFrame, delta: DataFrame): DataFrame {
+  const rows = new Map<string, unknown[]>();
+  for (let index = 0; index < base.length; index++) {
+    rows.set(rowMergeKey(base, index), frameRow(base, index));
+  }
+  for (let index = 0; index < delta.length; index++) {
+    rows.set(rowMergeKey(delta, index), frameRow(delta, index));
+  }
+
+  const mergedRows = [...rows.values()].sort(compareFrameRows);
+  const merged = cloneFrame(delta);
+  merged.name = base.name;
+  merged.refId = base.refId;
+  for (let fieldIndex = 0; fieldIndex < merged.fields.length; fieldIndex++) {
+    merged.fields[fieldIndex].values = mergedRows.map((row) => row[fieldIndex]);
+  }
+  merged.length = mergedRows.length;
+  return merged;
+}
+
+function frameRow(frame: DataFrame, index: number): unknown[] {
+  return frame.fields.map((field) => field.values[index]);
+}
+
+function rowMergeKey(frame: DataFrame, index: number): string {
+  if (frame.meta?.type === DataFrameType.HeatmapCells && frame.fields.length >= 5) {
+    return [
+      frame.fields[0].values[index],
+      frame.fields[1].values[index],
+      frame.fields[2].values[index],
+      frame.fields[4].values[index],
+    ].join('\x00');
+  }
+  return frameRow(frame, index).join('\x00');
+}
+
+function compareFrameRows(left: unknown[], right: unknown[]): number {
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    const leftValue = Number(left[index]);
+    const rightValue = Number(right[index]);
+    if (leftValue !== rightValue) {
+      return leftValue - rightValue;
+    }
+  }
+  return left.length - right.length;
 }
 
 function cloneFrame(frame: DataFrame): DataFrame {
@@ -859,6 +1127,11 @@ async function streamQueryRange(
       throw new Error(new TextDecoder().decode(body));
     }
 
+    if (isQueryDataJsonPayload(body)) {
+      emit(decodeQueryDataJsonResponse(body, response.headers, request, target, LoadingState.Done));
+      return;
+    }
+
     emit(new JsonlMultiBatchAccumulator().decode(body, queryContext, LoadingState.Done));
     return;
   }
@@ -943,6 +1216,8 @@ async function processMultiBatchChunk(
     const state = isFinal ? LoadingState.Done : LoadingState.Streaming;
     if (frame.payloadType === PAYLOAD_TYPE_COMPACT_V1) {
       emit(decodeCompactQueryDataResponse(payload, compactHeaders(), request, target, state));
+    } else if (isQueryDataJsonPayload(payload)) {
+      emit(decodeQueryDataJsonResponse(payload, jsonHeaders(), request, target, state));
     } else {
       emit(jsonlAccumulator.decode(payload, queryContext, state));
     }
@@ -1040,6 +1315,43 @@ function compactHeaders(): Headers {
   return new Headers({ 'content-type': QUERY_DATA_COMPACT_MEDIA_TYPE });
 }
 
+function jsonHeaders(): Headers {
+  return new Headers({ 'content-type': 'application/json' });
+}
+
+function isQueryDataJsonPayload(payload: Uint8Array): boolean {
+  const text = new TextDecoder().decode(payload).trim();
+  if (!text.startsWith('{')) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null && 'results' in parsed;
+  } catch {
+    return false;
+  }
+}
+
+function decodeQueryDataJsonResponse(
+  payload: Uint8Array,
+  headers: Headers,
+  request: DataQueryRequest<PromQuery>,
+  target: PromQuery,
+  state: LoadingState
+): DataQueryResponse {
+  return {
+    ...toDataQueryResponse(
+      {
+        data: copyArrayBuffer(payload),
+        headers,
+      },
+      request.targets.length === 1 ? request.targets : [target],
+      request.preferredQueryResultFormat === QUERY_DATA_COMPACT_VERSION
+    ),
+    state,
+  };
+}
+
 function copyArrayBuffer(payload: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(payload.byteLength);
   copy.set(payload);
@@ -1115,14 +1427,39 @@ export function getPrometheusStepSeconds(
   target: PromQuery,
   minInterval?: string
 ): number {
-  const minIntervalMs = Math.max(
-    intervalToMs(minInterval),
-    intervalToMs(target.interval),
-    intervalToMs(target.stepSize)
-  );
-  const intervalFactor = target.stepSize ? 1 : (target.intervalFactor ?? 1);
-  const intervalMs = Math.max(request.intervalMs ?? 0, minIntervalMs) * intervalFactor;
-  return Math.max(1, Math.ceil(intervalMs / 1000));
+  return getPrometheusMultiBatchIntervals(request, target, minInterval).stepSeconds;
+}
+
+export function getPrometheusMultiBatchIntervals(
+  request: DataQueryRequest<PromQuery>,
+  target: PromQuery,
+  minInterval?: string
+): { rateIntervalBaseMs: number; stepMs: number; stepSeconds: number } {
+  const queryMinInterval = target.interval || minInterval;
+  const baseIntervalMs = Math.max(request.intervalMs ?? 0, intervalToMs(queryMinInterval));
+
+  if (target.stepSize) {
+    const resolved = resolveQueryIntervalWithStepSize({
+      range: request.range,
+      maxDataPoints: request.maxDataPoints ?? AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+      minInterval: queryMinInterval,
+      stepSize: target.stepSize,
+    });
+    const stepSeconds = Math.max(1, Math.ceil(resolved.intervalMs / 1000));
+    return {
+      rateIntervalBaseMs: baseIntervalMs,
+      stepMs: stepSeconds * 1000,
+      stepSeconds,
+    };
+  }
+
+  const intervalMs = baseIntervalMs * (target.intervalFactor ?? 1);
+  const stepSeconds = Math.max(1, Math.ceil(intervalMs / 1000));
+  return {
+    rateIntervalBaseMs: baseIntervalMs,
+    stepMs: stepSeconds * 1000,
+    stepSeconds,
+  };
 }
 
 function getAlignedPrometheusTimeRange(
@@ -1151,17 +1488,4 @@ function intervalToMs(interval: string | null | undefined): number {
   }
 
   return rangeUtil.intervalToMs(interval);
-}
-
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  if (a.byteLength === 0) {
-    const result = new Uint8Array(b.byteLength);
-    result.set(b, 0);
-    return result;
-  }
-
-  const result = new Uint8Array(a.byteLength + b.byteLength);
-  result.set(a, 0);
-  result.set(b, a.byteLength);
-  return result;
 }

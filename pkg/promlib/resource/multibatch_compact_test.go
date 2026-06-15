@@ -335,7 +335,7 @@ func TestReadMultiBatchFrameRejectsOversizedPayloadLength(t *testing.T) {
 	require.ErrorContains(t, err, "exceeds limit")
 }
 
-func TestSendCompactDataResponseFrameConvertsCompactUnsupportedToErrorFrame(t *testing.T) {
+func TestSendCompactDataResponseFrameFallsBackToJSONForCompactUnsupported(t *testing.T) {
 	query := compactMultiBatchQuery{
 		RefID:        "A",
 		Start:        time.Unix(0, 0).UTC(),
@@ -359,8 +359,10 @@ func TestSendCompactDataResponseFrameConvertsCompactUnsupportedToErrorFrame(t *t
 	require.NoError(t, sendCompactDataResponseFrame(context.Background(), sender, http.StatusOK, query, response, true))
 	frame := receiveResponse(t, sender.responses)
 	require.Equal(t, "MBBF", string(frame.Body[:4]))
-	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), frame.Body[5])
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), frame.Body[5])
 	require.Equal(t, byte(multiBatchFinalFlag), frame.Body[6]&multiBatchFinalFlag)
+	require.Contains(t, string(frame.Body[multiBatchFrameHeaderSize:]), `"results"`)
+	require.Contains(t, string(frame.Body[multiBatchFrameHeaderSize:]), `"A"`)
 }
 
 func TestSendCompactDataResponseFrameKeepsNoDataWithNoticesAsNoData(t *testing.T) {

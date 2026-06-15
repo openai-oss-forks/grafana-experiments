@@ -479,6 +479,62 @@ describe('PrometheusDatasource', () => {
       }
     });
 
+    it('keeps $__rate_interval based on the pre-factor interval in multi-batch queries', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const intervalTemplateSrv = {
+        replace: jest.fn((value: string | undefined, scopedVars?: Record<string, { value: unknown }>) => {
+          if (!value) {
+            return value;
+          }
+
+          return value
+            .replace(/\$__rate_interval_ms/g, String(scopedVars?.__rate_interval_ms?.value ?? '$__rate_interval_ms'))
+            .replace(/\$__rate_interval/g, String(scopedVars?.__rate_interval?.value ?? '$__rate_interval'))
+            .replace(/\$__interval_ms/g, String(scopedVars?.__interval_ms?.value ?? '$__interval_ms'))
+            .replace(/\$__interval/g, String(scopedVars?.__interval?.value ?? '$__interval'));
+        }),
+      } as unknown as TemplateSrv;
+      const intervalDs = new PrometheusDatasource(instanceSettings, intervalTemplateSrv);
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const params = new URLSearchParams(body);
+
+        expect(params.get('query')).toBe('rate(up[1m]) + 75000');
+        expect(params.get('step')).toBe('600');
+
+        throw new Error('stop after checking interval factor rate interval query');
+      });
+
+      try {
+        await expect(
+          collectQueryResponses(
+            intervalDs.query(
+              createDataRequest(
+                [
+                  {
+                    datasource: { type: 'prometheus', uid: 'ABCDEF' },
+                    expr: 'rate(up[$__rate_interval]) + $__rate_interval_ms',
+                    intervalFactor: 10,
+                    refId: 'A',
+                  },
+                ],
+                {
+                  app: CoreApp.Dashboard,
+                  intervalMs: 60000,
+                  panelPluginId: 'timeseries',
+                  preferredQueryResultFormat: 'compact-v1',
+                }
+              )
+            )
+          )
+        ).rejects.toThrow('stop after checking interval factor rate interval query');
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
     it('surfaces multi-target compact multi-batch failures without backend fallback', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;

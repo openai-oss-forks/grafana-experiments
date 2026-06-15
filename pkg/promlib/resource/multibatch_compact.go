@@ -149,13 +149,7 @@ func sendCompactDataResponseFrame(ctx context.Context, sender backend.CallResour
 		if !errors.Is(err, compact.ErrUnsupported) {
 			return err
 		}
-		compactResponse, err = encodeCompactMultiBatchResponse(ctx, query, backend.DataResponse{
-			Error:  err,
-			Status: backend.StatusInternal,
-		})
-		if err != nil {
-			return err
-		}
+		return sendJSONDataResponseFrame(sender, statusCode, query, response, isFinal)
 	}
 
 	var payload bytes.Buffer
@@ -170,6 +164,22 @@ func sendCompactDataResponseFrame(ctx context.Context, sender backend.CallResour
 	return sender.Send(&backend.CallResourceResponse{
 		Status: statusCode,
 		Body:   multiBatchPayloadFrame(multiBatchPayloadTypeCompactV1, flags, multiBatchPayloadEncodingIdentity, payload.Bytes()),
+	})
+}
+
+func sendJSONDataResponseFrame(sender backend.CallResourceResponseSender, statusCode int, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) error {
+	payload, err := json.Marshal(&backend.QueryDataResponse{Responses: backend.Responses{query.RefID: response}})
+	if err != nil {
+		return err
+	}
+
+	flags := byte(0)
+	if isFinal {
+		flags = multiBatchFinalFlag
+	}
+	return sender.Send(&backend.CallResourceResponse{
+		Status: statusCode,
+		Body:   multiBatchPayloadFrame(multiBatchPayloadTypeJSONL, flags, multiBatchPayloadEncodingIdentity, payload),
 	})
 }
 
