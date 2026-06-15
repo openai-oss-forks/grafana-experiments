@@ -4,6 +4,9 @@ import { lastValueFrom, Observable, of } from 'rxjs';
 
 import {
   AdHocVariableFilter,
+  COMPACT_TIME_SERIES_FORMAT,
+  CompactTimeSeriesData,
+  CompactTimeSeriesSeries,
   CoreApp,
   CustomVariableModel,
   DataQueryRequest,
@@ -17,7 +20,12 @@ import {
 } from '@grafana/data';
 import { config, getBackendSrv, setBackendSrv, TemplateSrv } from '@grafana/runtime';
 
-import { extractResourceMatcher, extractRuleMappingFromGroups, PrometheusDatasource } from './datasource';
+import {
+  combineCompactTimeSeries,
+  extractResourceMatcher,
+  extractRuleMappingFromGroups,
+  PrometheusDatasource,
+} from './datasource';
 import { prometheusRegularEscape, prometheusSpecialRegexEscape } from './escaping';
 import { PrometheusLanguageProviderInterface } from './language_provider';
 import { CacheRequestInfo } from './querycache/QueryCache';
@@ -319,10 +327,9 @@ describe('PrometheusDatasource', () => {
           '/api/datasources/uid/ABCDEF/resources/api/v1/query_range',
           '/api/datasources/uid/ABCDEF/resources/api/v1/query_range',
         ]);
-        expect(browserFetchSpy.mock.calls.map(([, init]) => new URLSearchParams(String(init?.body)).get('query'))).toEqual([
-          'rate(metric_a[1m])',
-          'rate(metric_b[1m])',
-        ]);
+        expect(
+          browserFetchSpy.mock.calls.map(([, init]) => new URLSearchParams(String(init?.body)).get('query'))
+        ).toEqual(['rate(metric_a[1m])', 'rate(metric_b[1m])']);
       } finally {
         browserFetchSpy.mockRestore();
         replaceMock.mockImplementation(defaultReplaceMock ?? ((a: string) => a));
@@ -419,11 +426,14 @@ describe('PrometheusDatasource', () => {
         await expect(
           collectQueryResponses(
             intervalDs.query(
-              createDataRequest([{ datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'rate(up[$__rate_interval])', refId: 'A' }], {
-                app: CoreApp.Dashboard,
-                panelPluginId: 'timeseries',
-                preferredQueryResultFormat: 'compact-v1',
-              })
+              createDataRequest(
+                [{ datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'rate(up[$__rate_interval])', refId: 'A' }],
+                {
+                  app: CoreApp.Dashboard,
+                  panelPluginId: 'timeseries',
+                  preferredQueryResultFormat: 'compact-v1',
+                }
+              )
             )
           )
         ).rejects.toThrow('stop after checking interpolated multi-batch query');
@@ -436,9 +446,7 @@ describe('PrometheusDatasource', () => {
     it('surfaces multi-target compact multi-batch failures without backend fallback', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
-      const browserFetchSpy = jest
-        .spyOn(global, 'fetch')
-        .mockRejectedValue(new Error('upstream stream failed'));
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockRejectedValue(new Error('upstream stream failed'));
 
       try {
         const responses = await collectQueryResponses(
@@ -470,6 +478,42 @@ describe('PrometheusDatasource', () => {
         browserFetchSpy.mockRestore();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
       }
+    });
+
+    it('combines per-target compact snapshots into one accumulated compact response', () => {
+      const first = compactResponseFixture('A', 10);
+      const second = compactResponseFixture('B', 24);
+
+      const combined = combineCompactTimeSeries([first, undefined, second]);
+
+      expect(combined).toBeDefined();
+      expect(combined!.buffer.byteLength).toBe(40);
+      expect(Array.from(new Uint8Array(combined!.buffer, 0, 10))).toEqual(Array.from(new Uint8Array(first.buffer)));
+      expect(Array.from(new Uint8Array(combined!.buffer, 16, 24))).toEqual(Array.from(new Uint8Array(second.buffer)));
+      expect(combined!.axes).toEqual([
+        { start: 0, step: 1000, count: 1 },
+        { start: 0, step: 1000, count: 1 },
+      ]);
+
+      if (!Array.isArray(combined!.series)) {
+        throw new Error('Expected combined compact series to be materialized records');
+      }
+      expect(combined!.series).toHaveLength(2);
+      expect(combined!.series[0]).toMatchObject({ refId: 'A', axisId: 0, valuesByteOffset: 8 });
+      expect(combined!.series[1]).toMatchObject({ refId: 'B', axisId: 1, valuesByteOffset: 24 });
+      expect(combined!.metadata.getLabel(combined!.series[1], 'job')).toBe('B-job');
+      expect(combined!.metadata.materializeLabels(combined!.series[1], { extra: 'label' })).toEqual({
+        extra: 'label',
+        job: 'B-job',
+      });
+
+      const labels: Record<string, string> = {};
+      combined!.metadata.forEachLabel(combined!.series[0], (name, value) => {
+        labels[name] = value;
+      });
+      expect(labels).toEqual({ job: 'A-job' });
+      expect(combined!.notices?.map((notice) => notice.refId)).toEqual(['A', 'B']);
+      expect(combined!.decodeStats).toMatchObject({ axisCount: 2, responseBytes: 40, seriesCount: 2 });
     });
   });
 
@@ -1623,6 +1667,48 @@ describe('modifyQuery', () => {
     });
   });
 });
+
+function compactResponseFixture(refId: string, byteLength: number): CompactTimeSeriesData {
+  const buffer = new ArrayBuffer(byteLength);
+  const bytes = new Uint8Array(buffer);
+  for (let index = 0; index < bytes.length; index++) {
+    bytes[index] = refId.charCodeAt(0) + index;
+  }
+
+  const series: CompactTimeSeriesSeries = {
+    refId,
+    valueName: `${refId}-value`,
+    axisId: 0,
+    labelRecordsOffset: 2,
+    labelCount: 1,
+    presenceByteOffset: 4,
+    presenceByteLength: 1,
+    presentCount: 1,
+    valuesByteOffset: 8,
+  };
+
+  return {
+    kind: 'compact-response-view',
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer,
+    axes: [{ start: 0, step: 1000, count: 1 }],
+    series: [series],
+    metadata: {
+      getLabel: (_series, name) => (name === 'job' ? `${refId}-job` : undefined),
+      forEachLabel: (_series, callback) => callback('job', `${refId}-job`),
+      materializeLabels: (_series, additional) => ({ ...additional, job: `${refId}-job` }),
+    },
+    notices: [{ refId, severity: 'warning', text: `${refId} notice` }],
+    decodeStats: {
+      responseBytes: byteLength,
+      axisCount: 1,
+      resultCount: 1,
+      stringCount: 1,
+      stringBytes: refId.length,
+      seriesCount: 1,
+    },
+  };
+}
 
 describe('PrometheusDatasource incremental query logic', () => {
   let ds: PrometheusDatasource;

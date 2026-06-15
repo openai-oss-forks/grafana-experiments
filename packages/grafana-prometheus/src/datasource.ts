@@ -7,6 +7,12 @@ import { gte } from 'semver';
 import {
   AbstractQuery,
   AdHocVariableFilter,
+  COMPACT_TIME_SERIES_FORMAT,
+  CompactTimeSeriesAxis,
+  CompactTimeSeriesData,
+  CompactTimeSeriesMetadata,
+  CompactTimeSeriesNotice,
+  CompactTimeSeriesSeries,
   CoreApp,
   CustomVariableModel,
   DataFrame,
@@ -21,6 +27,7 @@ import {
   dateTime,
   getDefaultTimeRange,
   LegacyMetricFindQueryOptions,
+  Labels,
   LoadingState,
   MetricFindValue,
   QueryFixAction,
@@ -556,6 +563,7 @@ export class PrometheusDatasource
 
     return new Observable<DataQueryResponse>((subscriber) => {
       const latestDataByTarget = new Map<string, DataFrame[]>();
+      const latestCompactSeriesByTarget = new Map<string, CompactTimeSeriesData>();
       const errorsByTarget = new Map<string, DataQueryError>();
       const completedTargets = new Set<string>();
       const targetKeys = targets.map((target, index) => target.refId ?? String(index));
@@ -563,6 +571,9 @@ export class PrometheusDatasource
 
       const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
         latestDataByTarget.set(targetKey, response.data);
+        if (response.compactSeries) {
+          latestCompactSeriesByTarget.set(targetKey, response.compactSeries);
+        }
         const targetError = response.error ?? response.errors?.[0];
         if (targetError) {
           errorsByTarget.set(targetKey, targetError);
@@ -576,20 +587,23 @@ export class PrometheusDatasource
           const error = errorsByTarget.get(key);
           return error ? [error] : [];
         });
-        const combinedResponse = transformV2(
-          {
-            ...response,
-            data: targetKeys.flatMap((key) => latestDataByTarget.get(key) ?? []),
-            error: errors[0],
-            errors: errors.length > 0 ? errors : undefined,
-            key: responseKey,
-            state: allTargetsDone ? LoadingState.Done : LoadingState.Streaming,
-          },
-          request,
-          {
-            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
-          }
+        const combinedCompactSeries = combineCompactTimeSeries(
+          targetKeys.map((key) => latestCompactSeriesByTarget.get(key))
         );
+        const rawCombinedResponse: DataQueryResponse = {
+          ...response,
+          compactSeries: combinedCompactSeries,
+          data: targetKeys.flatMap((key) => latestDataByTarget.get(key) ?? []),
+          error: errors[0],
+          errors: errors.length > 0 ? errors : undefined,
+          key: responseKey,
+          state: allTargetsDone ? LoadingState.Done : LoadingState.Streaming,
+        };
+        const combinedResponse = combinedCompactSeries
+          ? rawCombinedResponse
+          : transformV2(rawCombinedResponse, request, {
+              exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
+            });
 
         if (combinedResponse.state === LoadingState.Done) {
           trackQuery(combinedResponse, request, startTime);
@@ -720,11 +734,7 @@ export class PrometheusDatasource
     })[0];
   }
 
-  private getPrometheusRateIntervalMs(
-    intervalMs: number,
-    target: PromQuery,
-    minInterval: string | undefined
-  ): number {
+  private getPrometheusRateIntervalMs(intervalMs: number, target: PromQuery, minInterval: string | undefined): number {
     const requestedMinStepMs =
       this.prometheusIntervalToMs(target.interval) || this.prometheusIntervalToMs(minInterval) || 15000;
     return Math.max(intervalMs + requestedMinStepMs, 4 * requestedMinStepMs);
@@ -1138,6 +1148,103 @@ function isCompactTimeSeriesRangeQuery(query: PromQuery): boolean {
   const responseFormat = format || 'time_series';
 
   return instant !== true && range !== false && exemplar !== true && responseFormat === 'time_series';
+}
+
+export function combineCompactTimeSeries(
+  compactSeriesList: Array<CompactTimeSeriesData | undefined>
+): CompactTimeSeriesData | undefined {
+  const compactSeries = compactSeriesList.filter((series): series is CompactTimeSeriesData => Boolean(series));
+  if (compactSeries.length === 0) {
+    return undefined;
+  }
+  if (compactSeries.length === 1) {
+    return compactSeries[0];
+  }
+
+  const bufferOffsets: number[] = [];
+  let combinedByteLength = 0;
+  for (const series of compactSeries) {
+    combinedByteLength = alignToEightBytes(combinedByteLength);
+    bufferOffsets.push(combinedByteLength);
+    combinedByteLength += series.buffer.byteLength;
+  }
+
+  const combinedBuffer = new ArrayBuffer(combinedByteLength);
+  const combinedBytes = new Uint8Array(combinedBuffer);
+  const combinedAxes: CompactTimeSeriesAxis[] = [];
+  const combinedSeries: CompactTimeSeriesSeries[] = [];
+  const combinedNotices: CompactTimeSeriesNotice[] = [];
+  const sourceBySeries = new Map<
+    CompactTimeSeriesSeries,
+    { metadata: CompactTimeSeriesMetadata; series: CompactTimeSeriesSeries }
+  >();
+  let axisOffset = 0;
+  let resultCount = 0;
+  let stringCount = 0;
+  let stringBytes = 0;
+
+  compactSeries.forEach((source, index) => {
+    const bufferOffset = bufferOffsets[index];
+    combinedBytes.set(new Uint8Array(source.buffer), bufferOffset);
+    combinedAxes.push(...source.axes);
+    resultCount += source.decodeStats.resultCount;
+    stringCount += source.decodeStats.stringCount;
+    stringBytes += source.decodeStats.stringBytes;
+
+    for (const sourceSeries of source.series) {
+      const shiftedSeries: CompactTimeSeriesSeries = {
+        ...sourceSeries,
+        axisId: sourceSeries.axisId + axisOffset,
+        labelRecordsOffset: sourceSeries.labelRecordsOffset + bufferOffset,
+        presenceByteOffset: sourceSeries.presenceByteOffset + bufferOffset,
+        valuesByteOffset: sourceSeries.valuesByteOffset + bufferOffset,
+      };
+      combinedSeries.push(shiftedSeries);
+      sourceBySeries.set(shiftedSeries, { metadata: source.metadata, series: sourceSeries });
+    }
+
+    if (source.notices) {
+      combinedNotices.push(...source.notices);
+    }
+    axisOffset += source.axes.length;
+  });
+
+  const metadata: CompactTimeSeriesMetadata = {
+    getLabel: (series, name) => {
+      const source = sourceBySeries.get(series);
+      return source?.metadata.getLabel(source.series, name);
+    },
+    forEachLabel: (series, callback) => {
+      const source = sourceBySeries.get(series);
+      source?.metadata.forEachLabel(source.series, callback);
+    },
+    materializeLabels: (series, additional?: Labels) => {
+      const source = sourceBySeries.get(series);
+      return source?.metadata.materializeLabels(source.series, additional);
+    },
+  };
+
+  return {
+    kind: 'compact-response-view',
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer: combinedBuffer,
+    axes: combinedAxes,
+    series: combinedSeries,
+    metadata,
+    notices: combinedNotices.length > 0 ? combinedNotices : undefined,
+    decodeStats: {
+      responseBytes: combinedBuffer.byteLength,
+      axisCount: combinedAxes.length,
+      resultCount,
+      stringCount,
+      stringBytes,
+      seriesCount: combinedSeries.length,
+    },
+  };
+}
+
+function alignToEightBytes(value: number): number {
+  return (value + 7) & ~7;
 }
 
 function targetHasScopes(target: PromQuery): boolean {
