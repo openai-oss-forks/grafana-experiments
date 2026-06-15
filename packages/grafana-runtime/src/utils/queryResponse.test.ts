@@ -826,6 +826,23 @@ describe('Query Response parser', () => {
     expect(res.errors?.[1].traceId).toBe('traceId1');
   });
 
+  test('preserves proxied upstream headers grouped by ref ID', () => {
+    const input = {
+      data: {
+        results: {
+          A: { frames: [{ schema: { fields: [] } }] },
+          B: { frames: [{ schema: { fields: [] } }] },
+        },
+        proxied_upstream_headers: {
+          A: { 'X-Trickster-Result': 'cache-hit' },
+          B: { 'X-Trickster-Result': 'proxy-hit' },
+        },
+      },
+    } as unknown as FetchResponse<BackendDataSourceResponse>;
+
+    expect(toDataQueryResponse(input).proxied_upstream_headers).toEqual(input.data.proxied_upstream_headers);
+  });
+
   describe('Cache notice', () => {
     let resp: FetchResponse<BackendDataSourceResponse>;
 

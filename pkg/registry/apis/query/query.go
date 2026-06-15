@@ -203,24 +203,22 @@ func (r *queryREST) Connect(connectCtx context.Context, name string, _ runtime.O
 			connectLogger.Error("execute error", "http code", query.GetResponseCode(qdr), "err", err)
 			logEmptyRefids(raw.Queries, connectLogger)
 			if qdr != nil { // if we have a response, we assume the err is set in the response
-				responder.Object(query.GetResponseCode(qdr), &query.QueryDataResponse{
-					QueryDataResponse: *qdr,
-				})
+				responder.Object(query.GetResponseCode(qdr), query.NewQueryDataResponse(qdr))
 				return
 			} else {
 				var errorDataResponse backend.DataResponse
 
-					badRequestErrors := []error{
-						service.ErrInvalidDatasourceID,
-						service.ErrNoQueriesFound,
-						service.ErrMissingDataSourceInfo,
-						service.ErrQueryParamMismatch,
-						service.ErrDuplicateRefId,
-						service.ErrInvalidStepSize,
-						service.ErrInvalidMinInterval,
-						service.ErrStepSizeBelowMinInterval,
-						datasources.ErrDataSourceNotFound,
-					}
+				badRequestErrors := []error{
+					service.ErrInvalidDatasourceID,
+					service.ErrNoQueriesFound,
+					service.ErrMissingDataSourceInfo,
+					service.ErrQueryParamMismatch,
+					service.ErrDuplicateRefId,
+					service.ErrInvalidStepSize,
+					service.ErrInvalidMinInterval,
+					service.ErrStepSizeBelowMinInterval,
+					datasources.ErrDataSourceNotFound,
+				}
 				isTypedBadRequestError := false
 				for _, badRequestError := range badRequestErrors {
 					if errors.Is(err, badRequestError) {
@@ -248,16 +246,12 @@ func (r *queryREST) Connect(connectCtx context.Context, name string, _ runtime.O
 						errorRefId: errorDataResponse,
 					},
 				}
-				responder.Object(query.GetResponseCode(qdr), &query.QueryDataResponse{
-					QueryDataResponse: *qdr,
-				})
+				responder.Object(query.GetResponseCode(qdr), query.NewQueryDataResponse(qdr))
 				return
 			}
 		}
 
-		responder.Object(query.GetResponseCode(qdr), &query.QueryDataResponse{
-			QueryDataResponse: *qdr, // wrap the backend response as a QueryDataResponse
-		})
+		responder.Object(query.GetResponseCode(qdr), query.NewQueryDataResponse(qdr))
 	}), nil
 }
 

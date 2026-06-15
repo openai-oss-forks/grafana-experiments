@@ -74,6 +74,7 @@ export interface DataResponse {
  */
 export interface BackendDataSourceResponse {
   results: KeyValue<DataResponse>;
+  proxied_upstream_headers?: Record<string, Record<string, string>>;
 }
 
 interface QueryFetchResponse {
@@ -130,6 +131,7 @@ export function toDataQueryResponse(
   }
   const responseData = decodeQueryDataResponse(fetchResponse);
   if (responseData?.results) {
+    rsp.proxied_upstream_headers = responseData.proxied_upstream_headers;
     const results = responseData.results;
     const refIDs = queries?.length ? queries.map((q) => q.refId) : Object.keys(results);
     const cachedResponse = isCachedResponse(fetchResponse);

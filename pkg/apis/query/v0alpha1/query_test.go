@@ -3,15 +3,36 @@ package v0alpha1_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	sdkdata "github.com/grafana/grafana-plugin-sdk-go/data"
 	data "github.com/grafana/grafana-plugin-sdk-go/experimental/apis/data/v0alpha1"
 	query "github.com/grafana/grafana/pkg/apis/query/v0alpha1"
+	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 )
+
+func TestQueryDataResponseGroupsProxiedHeadersByRefID(t *testing.T) {
+	frame := sdkdata.NewFrame("")
+	frame.Meta = &sdkdata.FrameMeta{Custom: map[string]any{
+		querydataresponse.MetadataKey: http.Header{"X-Trickster-Result": {"cache-hit"}},
+	}}
+	response := query.NewQueryDataResponse(&backend.QueryDataResponse{Responses: backend.Responses{
+		"A": {Frames: sdkdata.Frames{frame}},
+	}})
+
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	require.Equal(t, map[string]any{
+		"A": map[string]any{"X-Trickster-Result": "cache-hit"},
+	}, decoded["proxied_upstream_headers"])
+}
 
 func TestParseQueriesIntoQueryDataRequest(t *testing.T) {
 	request := []byte(`{
