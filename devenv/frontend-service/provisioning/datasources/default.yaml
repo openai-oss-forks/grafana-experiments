@@ -13,17 +13,6 @@ datasources:
     type: prometheus
     url: http://prometheus:9090
 
-  - name: Chronosphere Multibatch Demo
-    uid: chronosphere-multibatch-demo
-    type: prometheus
-    url: http://host.docker.internal:19090
-    jsonData:
-      customQueryParameters: final=delta
-      disableMetricsLookup: true
-      httpMethod: POST
-      prometheusType: Prometheus
-      prometheusVersion: 2.40.0
-
   - name: Loki Logs
     uid: fs-loki
     type: loki
