@@ -124,6 +124,22 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 			return err
 		}
 
+		if requestAcceptsMultiBatch(req) {
+			headers := resp.Header.Clone()
+			headers.Del("Content-Length")
+			headers.Del("Content-Encoding")
+			headers.Del("X-Grafana-Cache")
+			headers.Set("Cache-Control", "no-store")
+			headers.Set("Content-Type", preferredMultiBatchContentType+"; version=1")
+
+			body := append(multiBatchResponseHeader(), multiBatchPayloadFrame(multiBatchPayloadTypeJSONL, multiBatchFinalFlag, multiBatchPayloadEncodingIdentity, buf.Bytes())...)
+			return sender.Send(&backend.CallResourceResponse{
+				Status:  resp.StatusCode,
+				Headers: headers,
+				Body:    body,
+			})
+		}
+
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  resp.StatusCode,
 			Headers: resp.Header,
@@ -181,6 +197,25 @@ func isMultiBatchContentType(contentType string) bool {
 	mediaType = strings.TrimSpace(mediaType)
 	return strings.EqualFold(mediaType, multiBatchContentType) ||
 		strings.EqualFold(mediaType, preferredMultiBatchContentType)
+}
+
+func requestAcceptsMultiBatch(req *backend.CallResourceRequest) bool {
+	accept := req.GetHTTPHeaders().Get("Accept")
+	if accept == "" {
+		return false
+	}
+
+	for _, value := range strings.Split(accept, ",") {
+		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(value))
+		if err != nil {
+			mediaType = strings.Split(value, ";")[0]
+		}
+		mediaType = strings.TrimSpace(mediaType)
+		if strings.EqualFold(mediaType, multiBatchContentType) || strings.EqualFold(mediaType, preferredMultiBatchContentType) {
+			return true
+		}
+	}
+	return false
 }
 
 func getSelectors(expr string) ([]string, error) {

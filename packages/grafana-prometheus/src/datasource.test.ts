@@ -282,6 +282,42 @@ describe('PrometheusDatasource', () => {
       }
     });
 
+    it('uses non-compact multi-batch streaming for eligible range queries without expanding compact-v1', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        expect(init?.headers).toEqual(
+          expect.objectContaining({
+            Accept: expect.stringContaining('application/com.openai.prometheus.multibatch'),
+          })
+        );
+        expect(init?.headers).not.toHaveProperty('X-Grafana-Query-Format');
+        throw new Error('stop after selecting non-compact multi-batch path');
+      });
+
+      try {
+        await expect(
+          collectQueryResponses(
+            ds.query(
+              createDataRequest(
+                [{ datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'rate(metric_a[1m])', refId: 'A' }],
+                {
+                  app: CoreApp.Dashboard,
+                  panelPluginId: 'timeseries',
+                }
+              )
+            )
+          )
+        ).rejects.toThrow('stop after selecting non-compact multi-batch path');
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(browserFetchSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
     it('uses compact multi-batch streaming for multi-target range queries', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;

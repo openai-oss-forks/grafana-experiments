@@ -11,6 +11,14 @@ import {
 } from './prometheusMultibatchStream';
 import { PromQuery } from './types';
 
+const mockZstdDecode = jest.fn((payload: Uint8Array, uncompressedSize?: number) => {
+  if (uncompressedSize === undefined) {
+    throw new Error('missing fixed zstd output size');
+  }
+  const decoded = payload.subarray(6);
+  return uncompressedSize >= decoded.byteLength ? decoded : new Uint8Array();
+});
+
 jest.mock('@grafana/runtime', () => ({
   config: {
     appSubUrl: '',
@@ -21,24 +29,22 @@ jest.mock('@grafana/runtime', () => ({
 jest.mock('zstddec', () => ({
   ZSTDDecoder: class {
     init = jest.fn(async () => {});
-    decode = jest.fn((payload: Uint8Array, uncompressedSize?: number) => {
-      if (uncompressedSize !== undefined) {
-        throw new Error('unexpected fixed zstd output size');
-      }
-      return payload;
-    });
+    decode = mockZstdDecode;
   },
 }));
 
 const FINAL_BATCH_FLAG = 1;
 const PAYLOAD_ENCODING_IDENTITY = 0;
 const PAYLOAD_ENCODING_ZSTD = 1;
+const PAYLOAD_TYPE_JSONL = 1;
 const PAYLOAD_TYPE_COMPACT_V1 = 2;
 const compactMediaType = 'application/vnd.grafana.querydata.compact;version=1';
 const toDataQueryResponseMock = jest.mocked(toDataQueryResponse);
 
 describe('Prometheus multi-batch streaming', () => {
   beforeEach(() => {
+    mockZstdDecode.mockClear();
+    toDataQueryResponseMock.mockClear();
     toDataQueryResponseMock.mockImplementation((raw) => {
       const data = 'data' in raw ? raw.data : undefined;
       const payload =
@@ -80,17 +86,42 @@ describe('Prometheus multi-batch streaming', () => {
     ]);
   });
 
-  it('does not use a fixed zstd output size for compact-v1 payloads', async () => {
+  it('uses zstd frame content size for compact-v1 payloads', async () => {
     const batches: Array<{ payload: string; isFinal: boolean }> = [];
 
     await decodeMultiBatchFrames(
-      [responseHeaderFrame(), frame('final', FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)],
+      [responseHeaderFrame(), frame(zstdPayload('final'), FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)],
       (payload, isFinal) => {
         batches.push({ payload: new TextDecoder().decode(payload), isFinal });
       }
     );
 
     expect(batches).toEqual([{ payload: 'final', isFinal: true }]);
+    expect(mockZstdDecode).toHaveBeenCalledWith(expect.any(Uint8Array), 5);
+  });
+
+  it('decodes zstd frames without content size using bounded fallback capacity', async () => {
+    const batches: Array<{ payload: string; isFinal: boolean }> = [];
+
+    await decodeMultiBatchFrames(
+      [responseHeaderFrame(), frame(zstdPayloadWithoutContentSize('final'), FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)],
+      (payload, isFinal) => {
+        batches.push({ payload: new TextDecoder().decode(payload), isFinal });
+      }
+    );
+
+    expect(batches).toEqual([{ payload: 'final', isFinal: true }]);
+    expect(mockZstdDecode).toHaveBeenCalledWith(expect.any(Uint8Array), 256);
+  });
+
+  it('rejects invalid zstd frame magic before decoding', async () => {
+    await expect(
+      decodeMultiBatchFrames(
+        [responseHeaderFrame(), frame(new Uint8Array([0, 1, 2, 3, 4, 5]), FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD)],
+        jest.fn()
+      )
+    ).rejects.toThrow(/invalid frame magic/);
+    expect(mockZstdDecode).not.toHaveBeenCalled();
   });
 
   it('rejects truncated frames', async () => {
@@ -136,7 +167,7 @@ describe('Prometheus multi-batch streaming', () => {
 
   it('rejects unsupported payload types', async () => {
     await expect(
-      decodeMultiBatchFrames([responseHeaderFrame(), frame('payload', FINAL_BATCH_FLAG, 0, 1)], jest.fn())
+      decodeMultiBatchFrames([responseHeaderFrame(), frame('payload', FINAL_BATCH_FLAG, 0, 9)], jest.fn())
     ).rejects.toThrow(/payload type/);
   });
 
@@ -190,6 +221,148 @@ describe('Prometheus multi-batch streaming', () => {
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 0);
   });
 
+  it('emits non-compact JSONL partial and final accumulated responses without compact headers', async () => {
+    const target: PromQuery = {
+      expr: 'sum(rate(http_requests_total[$__interval]))',
+      legendFormat: '{{job}}',
+      refId: 'A',
+    };
+    const request = requestForTarget(target, false);
+    const partialJsonl = [
+      jsonlSchema('series:1'),
+      jsonlData('series:1', '2026-06-07T19:20:00Z', '1'),
+      jsonlStatus('series:1', true),
+    ].join('\n');
+    const finalJsonl = [
+      jsonlData('series:1', '2026-06-07T19:20:00Z', '10'),
+      jsonlData('series:1', '2026-06-07T19:21:00Z', '2'),
+      jsonlStatus('series:1', false),
+    ].join('\n');
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(partialJsonl, 0, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL),
+          frame(finalJsonl, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    const fetchInit = (global.fetch as jest.Mock).mock.calls[0][1];
+    expect(fetchInit.headers).toEqual(
+      expect.objectContaining({
+        Accept: MULTIBATCH_ACCEPT_HEADER,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      })
+    );
+    expect(fetchInit.headers).not.toHaveProperty('X-Grafana-Query-Format');
+    expect(toDataQueryResponseMock).not.toHaveBeenCalled();
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
+    expect(responses[0].data[0].length).toBe(1);
+    expect(responses[0].data[0].fields[0].values).toEqual([Date.parse('2026-06-07T19:20:00Z')]);
+    expect(responses[0].data[0].fields[1].values).toEqual([1]);
+    expect(responses[0].data[0].fields[1].config.displayNameFromDS).toBe('api');
+    expect(responses[1].data[0].length).toBe(2);
+    expect(responses[1].data[0].fields[0].values).toEqual([
+      Date.parse('2026-06-07T19:20:00Z'),
+      Date.parse('2026-06-07T19:21:00Z'),
+    ]);
+    expect(responses[1].data[0].fields[1].values).toEqual([10, 2]);
+  });
+
+  it('emits a non-compact JSONL partial response before the final frame arrives', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const partialJsonl = [jsonlSchema('series:1'), jsonlData('series:1', '0', '1')].join('\n');
+    const finalJsonl = [jsonlData('series:1', '60', '2')].join('\n');
+    let resolveFinalFrame: (chunk: Uint8Array) => void = () => {};
+    const finalFrame = new Promise<Uint8Array>((resolve) => {
+      resolveFinalFrame = resolve;
+    });
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableAsyncBody([
+        concatBytes(responseHeaderFrame(), frame(partialJsonl, 0, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)),
+        finalFrame,
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses: DataQueryResponse[] = [];
+    const completion = new Promise<void>((resolve, reject) => {
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      }).subscribe({
+        complete: resolve,
+        error: reject,
+        next: (response) => responses.push(response),
+      });
+    });
+
+    await waitForResponses(responses, 1);
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Streaming);
+    expect(responses[0].data[0].length).toBe(1);
+    expect(responses[0].data[0].fields[1].values).toEqual([1]);
+
+    resolveFinalFrame(frame(finalJsonl, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL));
+    await completion;
+    expect(responses).toHaveLength(2);
+    expect(responses[1].state).toBe(LoadingState.Done);
+    expect(responses[1].data[0].length).toBe(2);
+    expect(responses[1].data[0].fields[1].values).toEqual([1, 2]);
+  });
+
+  it('decodes zstd non-compact JSONL payload frames', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const jsonl = [jsonlSchema('series:1'), jsonlData('series:1', '60', '2')].join('\n');
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(zstdPayload(jsonl), FINAL_BATCH_FLAG, PAYLOAD_ENCODING_ZSTD, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].data[0].length).toBe(1);
+    expect(responses[0].data[0].fields[0].values).toEqual([60000]);
+    expect(responses[0].data[0].fields[1].values).toEqual([2]);
+  });
+
   it('decodes a non-multibatch compact fallback response with the regular compact decoder', async () => {
     const target: PromQuery = { expr: 'up', refId: 'A' };
     const request = requestForTarget(target);
@@ -210,6 +383,40 @@ describe('Prometheus multi-batch streaming', () => {
 
     expect(responses.map((response) => response.compactSeries)).toEqual([{ payload: 'single' }]);
     expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
+  });
+
+  it('decodes a non-multibatch non-compact Prometheus fallback response', async () => {
+    const target: PromQuery = { expr: 'up', legendFormat: '{{job}}', refId: 'A' };
+    const request = requestForTarget(target, false);
+    global.fetch = jest.fn().mockResolvedValue({
+      arrayBuffer: jest.fn().mockResolvedValue(
+        new TextEncoder().encode(
+          JSON.stringify({
+            status: 'success',
+            data: {
+              resultType: 'matrix',
+              result: [{ metric: { job: 'api' }, values: [[0, '1']] }],
+            },
+          })
+        ).buffer
+      ),
+      body: null,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(toDataQueryResponseMock).not.toHaveBeenCalled();
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
+    expect(responses[0].data[0].fields[0].values).toEqual([0]);
+    expect(responses[0].data[0].fields[1].values).toEqual([1]);
   });
 
   it('decodes non-OK multibatch compact responses instead of reading binary as text', async () => {
@@ -310,10 +517,11 @@ describe('Prometheus multi-batch streaming', () => {
   });
 });
 
-function requestForTarget(target: PromQuery): DataQueryRequest<PromQuery> {
+function requestForTarget(target: PromQuery, preferredCompact = true): DataQueryRequest<PromQuery> {
   return {
     interval: '1m',
     intervalMs: 60000,
+    preferredQueryResultFormat: preferredCompact ? 'compact-v1' : undefined,
     range: {
       from: dateTime(0),
       to: dateTime(10_000),
@@ -321,6 +529,33 @@ function requestForTarget(target: PromQuery): DataQueryRequest<PromQuery> {
     scopedVars: {},
     targets: [target],
   } as DataQueryRequest<PromQuery>;
+}
+
+function jsonlSchema(frameKey: string): string {
+  return JSON.stringify({
+    type: 'schema',
+    frame: frameKey,
+    columns: [
+      { name: 'time', type: 'time' },
+      { name: 'value', type: 'number', labels: { job: 'api' } },
+    ],
+  });
+}
+
+function jsonlData(frameKey: string, time: string, value: string): string {
+  return JSON.stringify({
+    type: 'data',
+    frame: frameKey,
+    data: [time, value],
+  });
+}
+
+function jsonlStatus(frameKey: string, isIncomplete: boolean): string {
+  return JSON.stringify({
+    type: 'status',
+    frame: frameKey,
+    data: { isIncomplete },
+  });
 }
 
 function responseHeaderFrame(): Uint8Array {
@@ -334,13 +569,13 @@ function responseHeaderFrame(): Uint8Array {
 }
 
 function frame(
-  payload: string,
+  payload: string | Uint8Array,
   flags = FINAL_BATCH_FLAG,
   encoding = PAYLOAD_ENCODING_IDENTITY,
   payloadType = PAYLOAD_TYPE_COMPACT_V1,
   magic = 'MBBF'
 ): Uint8Array {
-  const payloadBytes = new TextEncoder().encode(payload);
+  const payloadBytes = typeof payload === 'string' ? new TextEncoder().encode(payload) : payload;
   const bytes = new Uint8Array(12 + payloadBytes.byteLength);
   bytes.set(
     [...magic].map((char) => char.charCodeAt(0)),
@@ -349,6 +584,30 @@ function frame(
   bytes.set([1, payloadType, flags, encoding], 4);
   new DataView(bytes.buffer).setUint32(8, payloadBytes.byteLength, false);
   bytes.set(payloadBytes, 12);
+  return bytes;
+}
+
+function zstdPayload(payload: string): Uint8Array {
+  const payloadBytes = new TextEncoder().encode(payload);
+  if (payloadBytes.byteLength > 255) {
+    throw new Error('test helper only supports one-byte zstd content sizes');
+  }
+
+  const bytes = new Uint8Array(6 + payloadBytes.byteLength);
+  bytes.set([0x28, 0xb5, 0x2f, 0xfd], 0);
+  bytes[4] = 0x20;
+  bytes[5] = payloadBytes.byteLength;
+  bytes.set(payloadBytes, 6);
+  return bytes;
+}
+
+function zstdPayloadWithoutContentSize(payload: string): Uint8Array {
+  const payloadBytes = new TextEncoder().encode(payload);
+  const bytes = new Uint8Array(6 + payloadBytes.byteLength);
+  bytes.set([0x28, 0xb5, 0x2f, 0xfd], 0);
+  bytes[4] = 0x00;
+  bytes[5] = 0x00;
+  bytes.set(payloadBytes, 6);
   return bytes;
 }
 
@@ -378,6 +637,35 @@ function readableBody(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
       };
     },
   } as unknown as ReadableStream<Uint8Array>;
+}
+
+function readableAsyncBody(chunks: Array<Uint8Array | Promise<Uint8Array>>): ReadableStream<Uint8Array> {
+  let index = 0;
+  return {
+    getReader() {
+      return {
+        read: async () => {
+          if (index >= chunks.length) {
+            return { done: true, value: undefined };
+          }
+
+          const value = await chunks[index++];
+          return { done: false, value };
+        },
+        releaseLock: jest.fn(),
+      };
+    },
+  } as unknown as ReadableStream<Uint8Array>;
+}
+
+async function waitForResponses(responses: DataQueryResponse[], count: number) {
+  const start = Date.now();
+  while (responses.length < count) {
+    if (Date.now() - start > 1000) {
+      throw new Error(`Timed out waiting for ${count} responses; received ${responses.length}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 function collectResponses(observable: ReturnType<typeof queryPrometheusMultiBatch>): Promise<DataQueryResponse[]> {

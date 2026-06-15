@@ -1,4 +1,16 @@
-import { DataQueryRequest, DataQueryResponse, LoadingState, rangeUtil } from '@grafana/data';
+import {
+  DataFrame,
+  DataFrameType,
+  DataQueryError,
+  DataQueryRequest,
+  DataQueryResponse,
+  FieldType,
+  LoadingState,
+  TIME_SERIES_TIME_FIELD_NAME,
+  TIME_SERIES_VALUE_FIELD_NAME,
+  rangeUtil,
+  renderLegendFormat,
+} from '@grafana/data';
 import { config, toDataQueryResponse } from '@grafana/runtime';
 import { Observable } from 'rxjs';
 import { ZSTDDecoder } from 'zstddec';
@@ -18,13 +30,16 @@ const MULTIBATCH_UTC_OFFSET_HEADER = 'X-Grafana-Prometheus-Multibatch-UTC-Offset
 const FRAME_HEADER_SIZE = 12;
 const FINAL_BATCH_FLAG = 1;
 const RESERVED_FLAGS_MASK = 0xfe;
+const PAYLOAD_TYPE_JSONL = 1;
 const PAYLOAD_TYPE_COMPACT_V1 = 2;
 const PAYLOAD_ENCODING_IDENTITY = 0;
 const PAYLOAD_ENCODING_ZSTD = 1;
 const RESPONSE_HEADER_MAGIC = 'MBRH';
 const BATCH_FRAME_MAGIC = 'MBBF';
+const ZSTD_FRAME_MAGIC = 0xfd2fb528;
+const MAX_ZSTD_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
 
-type BatchHandler = (payload: Uint8Array, isFinal: boolean) => Promise<void> | void;
+type BatchHandler = (payload: Uint8Array, isFinal: boolean, payloadType: number) => Promise<void> | void;
 
 export interface MultiBatchFrame {
   payloadType: number;
@@ -50,7 +65,92 @@ class ZstdPayloadDecoder {
       await this.decoder.init();
     }
 
-    return this.decoder.decode(payload);
+    const contentSize = zstdFrameContentSize(payload);
+    if (contentSize !== undefined) {
+      if (contentSize > MAX_ZSTD_DECOMPRESSED_BYTES) {
+        throw new Error(`Prometheus multi-batch zstd payload is too large: ${contentSize} bytes`);
+      }
+
+      if (contentSize === 0) {
+        return new Uint8Array();
+      }
+
+      return this.decoder.decode(payload, contentSize);
+    }
+
+    return this.decodeWithoutContentSize(payload);
+  }
+
+  private decodeWithoutContentSize(payload: Uint8Array): Uint8Array {
+    let capacity = Math.max(256, Math.min(MAX_ZSTD_DECOMPRESSED_BYTES, payload.byteLength * 4));
+    while (capacity <= MAX_ZSTD_DECOMPRESSED_BYTES) {
+      const decoded = this.decoder!.decode(payload, capacity);
+      if (decoded.byteLength > 0) {
+        return decoded;
+      }
+
+      if (capacity === MAX_ZSTD_DECOMPRESSED_BYTES) {
+        break;
+      }
+      capacity = Math.min(MAX_ZSTD_DECOMPRESSED_BYTES, capacity * 2);
+    }
+
+    throw new Error('Prometheus multi-batch zstd payload is missing frame content size');
+  }
+}
+
+function zstdFrameContentSize(payload: Uint8Array): number | undefined {
+  if (payload.byteLength < 6) {
+    throw new Error('Prometheus multi-batch zstd payload is missing frame content size');
+  }
+
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  if (view.getUint32(0, true) !== ZSTD_FRAME_MAGIC) {
+    throw new Error('Prometheus multi-batch zstd payload has invalid frame magic');
+  }
+
+  const descriptor = payload[4];
+  const dictionaryIdFlag = descriptor & 0x03;
+  const reservedBit = descriptor & 0x08;
+  const singleSegment = (descriptor & 0x20) !== 0;
+  const frameContentSizeFlag = descriptor >> 6;
+  if (reservedBit !== 0) {
+    throw new Error('Prometheus multi-batch zstd payload has unsupported frame descriptor');
+  }
+
+  let offset = 5;
+  if (!singleSegment) {
+    offset += 1;
+  }
+
+  const dictionaryIdSize = dictionaryIdFlag === 3 ? 4 : dictionaryIdFlag;
+  offset += dictionaryIdSize;
+
+  const contentSizeFieldSize = frameContentSizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << frameContentSizeFlag;
+  if (contentSizeFieldSize === 0) {
+    return undefined;
+  }
+
+  if (offset + contentSizeFieldSize > payload.byteLength) {
+    throw new Error('Prometheus multi-batch zstd payload is missing frame content size');
+  }
+
+  switch (contentSizeFieldSize) {
+    case 1:
+      return payload[offset];
+    case 2:
+      return view.getUint16(offset, true) + 256;
+    case 4:
+      return view.getUint32(offset, true);
+    case 8: {
+      const size = view.getBigUint64(offset, true);
+      if (size > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`Prometheus multi-batch zstd payload is too large: ${size.toString()} bytes`);
+      }
+      return Number(size);
+    }
+    default:
+      throw new Error('Prometheus multi-batch zstd payload has unsupported frame content size');
   }
 }
 
@@ -124,7 +224,7 @@ export class MultiBatchFrameDecoder {
         throw new Error('Prometheus multi-batch response missing response header');
       }
 
-      if (frame.payloadType !== PAYLOAD_TYPE_COMPACT_V1) {
+      if (frame.payloadType !== PAYLOAD_TYPE_JSONL && frame.payloadType !== PAYLOAD_TYPE_COMPACT_V1) {
         throw new Error(`Unsupported Prometheus multi-batch payload type: ${frame.payloadType}`);
       }
 
@@ -168,6 +268,504 @@ function isCompactContentType(contentType: string | null | undefined): boolean {
   return mediaType === QUERY_DATA_COMPACT_MEDIA_TYPE.split(';')[0];
 }
 
+interface MultiBatchQueryContext {
+  expr: string;
+  legendFormat?: string;
+  refId: string;
+  stepMs: number;
+}
+
+interface JsonlColumn {
+  name?: string;
+  type?: string;
+  labels?: Record<string, string>;
+}
+
+interface JsonlSchema {
+  frame: string;
+  refId?: string;
+  name?: string;
+  sql?: string;
+  columns: JsonlColumn[];
+}
+
+interface JsonlEvent {
+  type?: string;
+  frame?: string;
+  refId?: string;
+  name?: string;
+  sql?: string;
+  columns?: JsonlColumn[];
+  fields?: JsonlColumn[];
+  data?: unknown;
+  row?: unknown[];
+  rows?: unknown[][];
+  values?: Record<string, unknown>;
+  status?: string;
+  isIncomplete?: boolean;
+  incomplete?: boolean;
+  error?: string;
+  message?: string;
+}
+
+interface JsonlRow {
+  values?: unknown[];
+  named?: Record<string, unknown>;
+}
+
+interface PrometheusApiResult {
+  metric?: Record<string, string>;
+  values?: Array<[number | string, number | string]>;
+  value?: [number | string, number | string];
+}
+
+interface PrometheusApiPayload {
+  status?: string;
+  error?: string;
+  errorType?: string;
+  data?: {
+    resultType?: string;
+    result?: PrometheusApiResult[];
+  };
+}
+
+class JsonlMultiBatchAccumulator {
+  private schemas = new Map<string, JsonlSchema>();
+  private frames = new Map<string, DataFrame>();
+  private frameOrder: string[] = [];
+
+  decode(payload: Uint8Array, query: MultiBatchQueryContext, state: LoadingState): DataQueryResponse {
+    const text = new TextDecoder().decode(payload).trim();
+    if (!text) {
+      return { data: this.snapshot(), state };
+    }
+
+    if (isPrometheusApiPayload(text)) {
+      this.mergeFrames(decodePrometheusApiResponse(text, query));
+      return { data: this.snapshot(), state };
+    }
+
+    const batchFrames = new Map<string, DataFrame>();
+    const batchOrder: string[] = [];
+    let error: DataQueryError | undefined;
+
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const event = JSON.parse(trimmed) as JsonlEvent;
+      const frameKey = jsonlFrameKey(event);
+      switch (event.type) {
+        case 'schema': {
+          const columns = event.columns?.length ? event.columns : event.fields;
+          this.schemas.set(frameKey, {
+            frame: frameKey,
+            refId: event.refId,
+            name: event.name,
+            sql: event.sql,
+            columns: columns ?? [],
+          });
+          break;
+        }
+        case 'data': {
+          const schema = this.schemas.get(frameKey);
+          if (!schema) {
+            throw new Error(`Prometheus multi-batch data event referenced unknown frame: ${frameKey}`);
+          }
+          const rows = jsonlRows(event);
+          for (const row of rows) {
+            const frame = this.batchFrame(batchFrames, batchOrder, frameKey, query);
+            const values = jsonlRowValues(schema, row);
+            frame.fields[0].values.push(parseTimeValue(values[0]));
+            frame.fields[1].values.push(parseNumberValue(values[1]));
+            frame.length = frame.fields[0].values.length;
+          }
+          break;
+        }
+        case 'status':
+          break;
+        case 'error':
+          error = {
+            message: event.error || event.message || 'Prometheus multi-batch response returned an error event',
+          };
+          break;
+        default:
+          throw new Error(`Unsupported Prometheus multi-batch JSONL event type: ${event.type}`);
+      }
+    }
+
+    this.mergeFrames(
+      batchOrder.map((key) => batchFrames.get(key)).filter((frame): frame is DataFrame => Boolean(frame))
+    );
+    return { data: this.snapshot(), error, errors: error ? [error] : undefined, state };
+  }
+
+  private batchFrame(
+    batchFrames: Map<string, DataFrame>,
+    batchOrder: string[],
+    frameKey: string,
+    query: MultiBatchQueryContext
+  ): DataFrame {
+    const existing = batchFrames.get(frameKey);
+    if (existing) {
+      return existing;
+    }
+
+    const schema = this.schemas.get(frameKey);
+    if (!schema) {
+      throw new Error(`Prometheus multi-batch data event referenced unknown frame: ${frameKey}`);
+    }
+
+    const frame = jsonlFrame(schema, query);
+    batchFrames.set(frameKey, frame);
+    batchOrder.push(frameKey);
+    return frame;
+  }
+
+  private mergeFrames(frames: DataFrame[]) {
+    if (frames.length === 0) {
+      return;
+    }
+
+    for (const frame of frames) {
+      const key = mergeFrameKey(frame);
+      const existing = this.frames.get(key);
+      const merged = existing ? mergeTimeSeriesFrame(existing, frame) : cloneFrame(frame);
+      this.frames.set(key, merged);
+      if (!this.frameOrder.includes(key)) {
+        this.frameOrder.push(key);
+      }
+    }
+  }
+
+  private snapshot(): DataFrame[] {
+    return this.frameOrder.map((key) => cloneFrame(this.frames.get(key)!));
+  }
+}
+
+function isPrometheusApiPayload(payload: string): boolean {
+  let parsed: PrometheusApiPayload & { type?: string };
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return false;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || parsed.type) {
+    return false;
+  }
+
+  return Boolean(parsed.status || parsed.error || parsed.data?.resultType);
+}
+
+function decodePrometheusApiResponse(payload: string, query: MultiBatchQueryContext): DataFrame[] {
+  const parsed = JSON.parse(payload) as PrometheusApiPayload;
+  if (parsed.status === 'error' || parsed.error) {
+    throw new Error(parsed.error || parsed.errorType || 'Prometheus multi-batch response returned an error');
+  }
+
+  const resultType = parsed.data?.resultType ?? 'matrix';
+  const results = parsed.data?.result ?? [];
+  if (resultType !== 'matrix' && resultType !== 'vector') {
+    throw new Error(`Unsupported Prometheus multi-batch result type: ${resultType}`);
+  }
+
+  return results.map((result, index) => {
+    const labels = cloneLabels(result.metric ?? {});
+    const samples = resultType === 'vector' && result.value ? [result.value] : (result.values ?? []);
+    const timeValues: number[] = [];
+    const numberValues: number[] = [];
+    for (const sample of samples) {
+      timeValues.push(parseTimeValue(sample[0]));
+      numberValues.push(parseNumberValue(sample[1]));
+    }
+
+    const name = metricNameFromLabels(labels) || `series-${index}`;
+    const displayNameFromDS = legendDisplayName(query.legendFormat, labels);
+    return timeSeriesFrame({
+      labels,
+      name,
+      query,
+      refId: query.refId,
+      resultType,
+      valueFieldName: labels.__name__ || TIME_SERIES_VALUE_FIELD_NAME,
+      displayNameFromDS,
+      timeValues,
+      numberValues,
+    });
+  });
+}
+
+function jsonlFrameKey(event: JsonlEvent): string {
+  return event.frame || event.refId || 'main';
+}
+
+function jsonlRows(event: JsonlEvent): JsonlRow[] {
+  if (event.rows?.length) {
+    return event.rows.map((values) => ({ values }));
+  }
+
+  if (event.row?.length) {
+    return [{ values: event.row }];
+  }
+
+  if (event.values && Object.keys(event.values).length > 0) {
+    return [{ named: event.values }];
+  }
+
+  if (event.data == null) {
+    return [];
+  }
+
+  if (Array.isArray(event.data)) {
+    if (event.data.length === 0) {
+      return [];
+    }
+
+    if (Array.isArray(event.data[0])) {
+      return (event.data as unknown[][]).map((values) => ({ values }));
+    }
+
+    return [{ values: event.data }];
+  }
+
+  if (typeof event.data === 'object') {
+    return [{ named: event.data as Record<string, unknown> }];
+  }
+
+  throw new Error('Unsupported Prometheus multi-batch JSONL data event shape');
+}
+
+function jsonlRowValues(schema: JsonlSchema, row: JsonlRow): unknown[] {
+  const values = row.named ? schema.columns.map((column) => row.named?.[column.name ?? '']) : row.values;
+  if (!values || values.length !== schema.columns.length) {
+    throw new Error(
+      `Prometheus multi-batch data row has ${values?.length ?? 0} values for ${schema.columns.length} columns`
+    );
+  }
+  return values;
+}
+
+function jsonlFrame(schema: JsonlSchema, query: MultiBatchQueryContext): DataFrame {
+  if (schema.columns.length !== 2) {
+    throw new Error(
+      `Prometheus multi-batch JSONL requires two-column time series frames, got ${schema.columns.length}`
+    );
+  }
+
+  if (schema.columns[0].type !== 'time' || schema.columns[1].type !== 'number') {
+    throw new Error(
+      `Prometheus multi-batch JSONL only supports time/number frames, got ${schema.columns[0].type}/${schema.columns[1].type}`
+    );
+  }
+
+  const labels = cloneLabels(schema.columns[1].labels ?? {});
+  const displayNameFromDS = legendDisplayName(query.legendFormat, labels);
+  return timeSeriesFrame({
+    labels,
+    name: schema.name || schema.frame,
+    query,
+    refId: schema.refId || query.refId,
+    resultType: 'matrix',
+    valueFieldName: schema.columns[1].name || labels.__name__ || TIME_SERIES_VALUE_FIELD_NAME,
+    displayNameFromDS,
+  });
+}
+
+function timeSeriesFrame(options: {
+  labels: Record<string, string>;
+  name: string;
+  query: MultiBatchQueryContext;
+  refId: string;
+  resultType: string;
+  valueFieldName: string;
+  displayNameFromDS?: string;
+  timeValues?: number[];
+  numberValues?: number[];
+}): DataFrame {
+  const length = options.timeValues?.length ?? 0;
+  return {
+    length,
+    name: options.name,
+    refId: options.refId,
+    fields: [
+      {
+        name: TIME_SERIES_TIME_FIELD_NAME,
+        type: FieldType.time,
+        config: { interval: options.query.stepMs },
+        values: options.timeValues ? [...options.timeValues] : [],
+      },
+      {
+        name: options.valueFieldName,
+        type: FieldType.number,
+        labels: cloneLabels(options.labels),
+        config: options.displayNameFromDS ? { displayNameFromDS: options.displayNameFromDS } : {},
+        values: options.numberValues ? [...options.numberValues] : [],
+      },
+    ],
+    meta: {
+      type: DataFrameType.TimeSeriesMulti,
+      typeVersion: [0, 1],
+      custom: {
+        calculatedMinStep: options.query.stepMs,
+        resultType: options.resultType,
+      },
+      executedQueryString: `Expr: ${options.query.expr}\nStep: ${rangeUtil.secondsToHms(options.query.stepMs / 1000)}`,
+    },
+  };
+}
+
+function parseTimeValue(value: unknown): number {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+
+  if (typeof value === 'string') {
+    const numeric = Number(value);
+    if (value.trim() !== '' && !Number.isNaN(numeric)) {
+      return parseUnixTime(numeric);
+    }
+
+    const timestamp = Date.parse(value);
+    if (!Number.isNaN(timestamp)) {
+      return timestamp;
+    }
+
+    throw new Error(`Invalid Prometheus multi-batch time value: ${value}`);
+  }
+
+  if (typeof value === 'number') {
+    return parseUnixTime(value);
+  }
+
+  throw new Error(`Invalid Prometheus multi-batch time value: ${typeof value}`);
+}
+
+function parseUnixTime(value: number): number {
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid Prometheus multi-batch time value: ${value}`);
+  }
+
+  return Math.abs(value) > 1e12 ? Math.trunc(value) : Math.trunc(value * 1000);
+}
+
+function parseNumberValue(value: unknown): number {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid Prometheus multi-batch numeric value: ${typeof value}`);
+  }
+
+  if (value === '') {
+    return Number.NaN;
+  }
+
+  if (/^\+?inf(?:inity)?$/i.test(value)) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  if (/^-inf(?:inity)?$/i.test(value)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const parsed = Number(value);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid Prometheus multi-batch numeric value: ${value}`);
+  }
+  return parsed;
+}
+
+function mergeFrameKey(frame: DataFrame): string {
+  const valueField = frame.fields[1];
+  const labels = valueField?.labels ?? {};
+  const labelKeys = Object.keys(labels).sort();
+  return [
+    frame.refId ?? '',
+    frame.name ?? '',
+    valueField?.name ?? '',
+    ...labelKeys.flatMap((key) => [key, labels[key]]),
+  ].join('\x00');
+}
+
+function mergeTimeSeriesFrame(base: DataFrame, delta: DataFrame): DataFrame {
+  const points = new Map<number, number>();
+  for (let index = 0; index < base.fields[0].values.length; index++) {
+    points.set(Number(base.fields[0].values[index]), Number(base.fields[1].values[index]));
+  }
+  for (let index = 0; index < delta.fields[0].values.length; index++) {
+    points.set(Number(delta.fields[0].values[index]), Number(delta.fields[1].values[index]));
+  }
+
+  const timestamps = [...points.keys()].sort((a, b) => a - b);
+  const merged = cloneFrame(delta);
+  merged.name = base.name;
+  merged.refId = base.refId;
+  merged.fields[0].values = timestamps;
+  merged.fields[1].values = timestamps.map((timestamp) => points.get(timestamp)!);
+  merged.length = timestamps.length;
+  return merged;
+}
+
+function cloneFrame(frame: DataFrame): DataFrame {
+  return {
+    ...frame,
+    fields: frame.fields.map((field) => ({
+      ...field,
+      config: { ...field.config },
+      labels: field.labels ? cloneLabels(field.labels) : undefined,
+      values: [...field.values],
+    })),
+    meta: frame.meta
+      ? {
+          ...frame.meta,
+          custom:
+            frame.meta.custom && typeof frame.meta.custom === 'object' && !Array.isArray(frame.meta.custom)
+              ? { ...frame.meta.custom }
+              : frame.meta.custom,
+          notices: frame.meta.notices ? [...frame.meta.notices] : undefined,
+        }
+      : undefined,
+  };
+}
+
+function cloneLabels(labels: Record<string, string>): Record<string, string> {
+  return { ...labels };
+}
+
+function legendDisplayName(legendFormat: string | undefined, labels: Record<string, string>): string | undefined {
+  let legend = metricNameFromLabels(labels);
+  if (legendFormat === '__auto') {
+    if (Object.keys(labels).length > 0) {
+      legend = '';
+    }
+  } else if (legendFormat) {
+    legend = renderLegendFormat(legendFormat, labels);
+  }
+
+  if (!legend && Object.keys(labels).length === 1) {
+    legend = Object.values(labels)[0];
+  }
+
+  return legend || undefined;
+}
+
+function metricNameFromLabels(labels: Record<string, string>): string {
+  const metricName = labels.__name__ ?? '';
+  const labelKeys = Object.keys(labels)
+    .filter((key) => key !== '__name__')
+    .sort();
+  if (labelKeys.length === 0) {
+    return metricName || '{}';
+  }
+
+  const labelString = labelKeys.map((key) => `${key}="${labels[key]}"`).join(', ');
+  return `${metricName}{${labelString}}`;
+}
+
 export async function decodeMultiBatchFrames(chunks: Uint8Array[], onBatch: BatchHandler): Promise<void> {
   const frameDecoder = new MultiBatchFrameDecoder();
   const payloadDecoder = new ZstdPayloadDecoder();
@@ -175,7 +773,7 @@ export async function decodeMultiBatchFrames(chunks: Uint8Array[], onBatch: Batc
   for (const chunk of chunks) {
     for (const frame of frameDecoder.push(chunk)) {
       const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
-      await onBatch(payload, (frame.flags & FINAL_BATCH_FLAG) !== 0);
+      await onBatch(payload, (frame.flags & FINAL_BATCH_FLAG) !== 0, frame.payloadType);
     }
   }
 
@@ -226,27 +824,42 @@ async function streamQueryRange(
   emit: (response: DataQueryResponse) => void
 ) {
   const method = options.httpMethod.toUpperCase();
+  const requestCompactResponse = request.preferredQueryResultFormat === QUERY_DATA_COMPACT_VERSION;
+  const queryContext = buildMultiBatchQueryContext(request, target, options);
+  const headers: Record<string, string> = {
+    Accept: MULTIBATCH_ACCEPT_HEADER,
+    ...(method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+  };
+  if (requestCompactResponse) {
+    headers[QUERY_DATA_COMPACT_HEADER] = QUERY_DATA_COMPACT_VERSION;
+    headers[MULTIBATCH_REF_ID_HEADER] = target.refId ?? 'A';
+    headers[MULTIBATCH_LEGEND_FORMAT_HEADER] = target.legendFormat ?? '';
+    headers[MULTIBATCH_UTC_OFFSET_HEADER] = String(target.utcOffsetSec ?? 0);
+  }
+
   const response = await fetch(buildResourceUrl(datasourceUid, request, target, options), {
     body: method === 'POST' ? buildQueryParams(request, target, options).toString() : undefined,
     credentials: 'same-origin',
-    headers: {
-      Accept: MULTIBATCH_ACCEPT_HEADER,
-      [QUERY_DATA_COMPACT_HEADER]: QUERY_DATA_COMPACT_VERSION,
-      [MULTIBATCH_REF_ID_HEADER]: target.refId ?? 'A',
-      [MULTIBATCH_LEGEND_FORMAT_HEADER]: target.legendFormat ?? '',
-      [MULTIBATCH_UTC_OFFSET_HEADER]: String(target.utcOffsetSec ?? 0),
-      ...(method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
-    },
+    headers,
     method,
     signal,
   });
 
   if (!isMultiBatchContentType(response.headers.get('Content-Type'))) {
-    const body = await response.arrayBuffer();
-    if (!response.ok && !isCompactContentType(response.headers.get('Content-Type'))) {
+    const body = new Uint8Array(await response.arrayBuffer());
+    if (requestCompactResponse || isCompactContentType(response.headers.get('Content-Type'))) {
+      if (!response.ok && !isCompactContentType(response.headers.get('Content-Type'))) {
+        throw new Error(new TextDecoder().decode(body));
+      }
+      emit(decodeCompactQueryDataResponse(body, response.headers, request, target, LoadingState.Done));
+      return;
+    }
+
+    if (!response.ok) {
       throw new Error(new TextDecoder().decode(body));
     }
-    emit(decodeCompactQueryDataResponse(body, response.headers, request, target, LoadingState.Done));
+
+    emit(new JsonlMultiBatchAccumulator().decode(body, queryContext, LoadingState.Done));
     return;
   }
 
@@ -256,6 +869,7 @@ async function streamQueryRange(
 
   const frameDecoder = new MultiBatchFrameDecoder();
   const payloadDecoder = new ZstdPayloadDecoder();
+  const jsonlAccumulator = new JsonlMultiBatchAccumulator();
   const reader = response.body.getReader();
 
   try {
@@ -277,7 +891,16 @@ async function streamQueryRange(
     }
 
     for (const chunk of initialChunks) {
-      await processMultiBatchChunk(chunk, frameDecoder, payloadDecoder, request, target, emit);
+      await processMultiBatchChunk(
+        chunk,
+        frameDecoder,
+        payloadDecoder,
+        request,
+        target,
+        queryContext,
+        jsonlAccumulator,
+        emit
+      );
     }
 
     while (true) {
@@ -286,7 +909,16 @@ async function streamQueryRange(
         break;
       }
 
-      await processMultiBatchChunk(result.value, frameDecoder, payloadDecoder, request, target, emit);
+      await processMultiBatchChunk(
+        result.value,
+        frameDecoder,
+        payloadDecoder,
+        request,
+        target,
+        queryContext,
+        jsonlAccumulator,
+        emit
+      );
     }
   } finally {
     reader.releaseLock();
@@ -301,20 +933,19 @@ async function processMultiBatchChunk(
   payloadDecoder: ZstdPayloadDecoder,
   request: DataQueryRequest<PromQuery>,
   target: PromQuery,
+  queryContext: MultiBatchQueryContext,
+  jsonlAccumulator: JsonlMultiBatchAccumulator,
   emit: (response: DataQueryResponse) => void
 ) {
   for (const frame of frameDecoder.push(chunk)) {
     const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
     const isFinal = (frame.flags & FINAL_BATCH_FLAG) !== 0;
-    emit(
-      decodeCompactQueryDataResponse(
-        payload,
-        compactHeaders(),
-        request,
-        target,
-        isFinal ? LoadingState.Done : LoadingState.Streaming
-      )
-    );
+    const state = isFinal ? LoadingState.Done : LoadingState.Streaming;
+    if (frame.payloadType === PAYLOAD_TYPE_COMPACT_V1) {
+      emit(decodeCompactQueryDataResponse(payload, compactHeaders(), request, target, state));
+    } else {
+      emit(jsonlAccumulator.decode(payload, queryContext, state));
+    }
 
     if (!isFinal) {
       await yieldToBrowser();
@@ -462,6 +1093,21 @@ function buildQueryParams(
     params.set('timeout', options.queryTimeout);
   }
   return params;
+}
+
+function buildMultiBatchQueryContext(
+  request: DataQueryRequest<PromQuery>,
+  target: PromQuery,
+  options: {
+    minInterval?: string;
+  }
+): MultiBatchQueryContext {
+  return {
+    expr: target.expr,
+    legendFormat: target.legendFormat,
+    refId: target.refId ?? 'A',
+    stepMs: getPrometheusStepSeconds(request, target, options.minInterval) * 1000,
+  };
 }
 
 export function getPrometheusStepSeconds(

@@ -174,6 +174,7 @@ func sendCompactDataResponseFrame(ctx context.Context, sender backend.CallResour
 }
 
 func encodeCompactMultiBatchResponse(ctx context.Context, query compactMultiBatchQuery, response backend.DataResponse) (*compact.QueryDataResponse, error) {
+	response = sanitizeCompactMultiBatchNoDataResponse(response)
 	qdr := &backend.QueryDataResponse{Responses: backend.Responses{query.RefID: response}}
 	return compact.NewQueryDataResponseContext(ctx, qdr, map[string]compact.QueryRequest{
 		query.RefID: {
@@ -182,6 +183,29 @@ func encodeCompactMultiBatchResponse(ctx context.Context, query compactMultiBatc
 			UTCOffsetSec: query.UTCOffsetSec,
 		},
 	})
+}
+
+func sanitizeCompactMultiBatchNoDataResponse(response backend.DataResponse) backend.DataResponse {
+	if !onlyNoDataFramesForResource(response.Frames) {
+		return response
+	}
+	var hasNoDataNotices bool
+	for _, frame := range response.Frames {
+		if frame != nil && frame.Meta != nil && len(frame.Meta.Notices) > 0 {
+			hasNoDataNotices = true
+			break
+		}
+	}
+	if !hasNoDataNotices {
+		return response
+	}
+	response.Frames = cloneFrames(response.Frames)
+	for _, frame := range response.Frames {
+		if frame != nil && frame.Meta != nil {
+			frame.Meta.Notices = nil
+		}
+	}
+	return response
 }
 
 func multiBatchResponseHeader() []byte {
@@ -263,13 +287,18 @@ func decodeMultiBatchPayload(frame multiBatchFrame) ([]byte, error) {
 	case multiBatchPayloadEncodingIdentity:
 		return frame.payload, nil
 	case multiBatchPayloadEncodingZstd:
-		var header zstd.Header
-		if err := header.Decode(frame.payload); err != nil {
-			return nil, fmt.Errorf("decode zstd payload header: %w", err)
-		}
-		if !header.HasFCS {
-			return nil, errors.New("zstd payload is missing frame content size")
-		}
+		return decodeZstdMultiBatchPayload(frame.payload)
+	default:
+		return nil, fmt.Errorf("unsupported Prometheus multi-batch payload encoding: %d", frame.payloadEncoding)
+	}
+}
+
+func decodeZstdMultiBatchPayload(payload []byte) ([]byte, error) {
+	var header zstd.Header
+	if err := header.Decode(payload); err != nil {
+		return nil, fmt.Errorf("decode zstd payload header: %w", err)
+	}
+	if header.HasFCS {
 		if header.FrameContentSize > maxZstdDecodedPayloadSize {
 			return nil, fmt.Errorf("zstd payload content size %d exceeds limit %d", header.FrameContentSize, maxZstdDecodedPayloadSize)
 		}
@@ -279,7 +308,7 @@ func decodeMultiBatchPayload(frame multiBatchFrame) ([]byte, error) {
 		}
 		defer decoder.Close()
 		dst := make([]byte, 0, int(header.FrameContentSize))
-		decoded, err := decoder.DecodeAll(frame.payload, dst)
+		decoded, err := decoder.DecodeAll(payload, dst)
 		if err != nil {
 			return nil, err
 		}
@@ -287,9 +316,22 @@ func decodeMultiBatchPayload(frame multiBatchFrame) ([]byte, error) {
 			return nil, fmt.Errorf("zstd decoded payload size %d did not match frame content size %d", len(decoded), header.FrameContentSize)
 		}
 		return decoded, nil
-	default:
-		return nil, fmt.Errorf("unsupported Prometheus multi-batch payload encoding: %d", frame.payloadEncoding)
 	}
+
+	decoder, err := zstd.NewReader(bytes.NewReader(payload), zstd.WithDecoderMaxMemory(maxZstdDecodedPayloadSize))
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+	var decoded bytes.Buffer
+	written, err := io.Copy(&decoded, io.LimitReader(decoder, maxZstdDecodedPayloadSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if written > maxZstdDecodedPayloadSize {
+		return nil, fmt.Errorf("zstd decoded payload exceeds limit %d", maxZstdDecodedPayloadSize)
+	}
+	return decoded.Bytes(), nil
 }
 
 func compactMultiBatchQueryFromRequest(req *backend.CallResourceRequest) (compactMultiBatchQuery, error) {

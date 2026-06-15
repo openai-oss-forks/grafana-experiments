@@ -656,13 +656,6 @@ export class PrometheusDatasource
       return [];
     }
 
-    if (
-      request.preferredQueryResultFormat !== 'compact-v1' ||
-      !this.shouldRequestCompactQueryResponse(request, visibleTargets)
-    ) {
-      return [];
-    }
-
     if ((request.scopes?.length ?? 0) > 0 || (request.groupByKeys?.length ?? 0) > 0) {
       return [];
     }
@@ -683,7 +676,8 @@ export class PrometheusDatasource
   }
 
   private isPrometheusMultiBatchTarget(target: PromQuery): boolean {
-    if (target.instant || target.range === false || target.exemplar || target.format === 'heatmap') {
+    const responseFormat = target.format || 'time_series';
+    if (target.instant || target.range === false || target.exemplar || responseFormat !== 'time_series') {
       return false;
     }
 
