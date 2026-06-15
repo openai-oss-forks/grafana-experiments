@@ -8,9 +8,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 )
 
-// responseHeadersMetaKey stores query-level response headers on the first
-// frame, at results.<refId>.frames[0].schema.meta.custom.responseHeaders.
-const responseHeadersMetaKey = "responseHeaders"
+const proxiedUpstreamHeadersMetaKey = "proxied_upstream_headers"
 
 // proxiedResponseHeaderPrefixes lists the upstream response header families
 // exposed in query result metadata. Add new prefixes here when panels need
@@ -66,5 +64,5 @@ func addResponseHeadersToDataResponse(response *backend.DataResponse, headers ht
 	if !ok {
 		return
 	}
-	custom[responseHeadersMetaKey] = headers
+	custom[proxiedUpstreamHeadersMetaKey] = headers
 }

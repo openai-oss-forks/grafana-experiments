@@ -1,7 +1,6 @@
 package querydata
 
 import (
-	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -30,28 +29,15 @@ func TestResponseHeadersAreGroupedByRefID(t *testing.T) {
 		queryResponse.Responses[refID] = response
 	}
 
-	encoded, err := json.Marshal(queryResponse)
-	require.NoError(t, err)
-
-	var payload struct {
-		Results map[string]struct {
-			Frames []struct {
-				Schema struct {
-					Meta struct {
-						Custom struct {
-							ResponseHeaders http.Header `json:"responseHeaders"`
-						} `json:"custom"`
-					} `json:"meta"`
-				} `json:"schema"`
-			} `json:"frames"`
-		} `json:"results"`
+	headersFor := func(refID string) http.Header {
+		custom := queryResponse.Responses[refID].Frames[0].Meta.Custom.(map[string]any)
+		return custom[proxiedUpstreamHeadersMetaKey].(http.Header)
 	}
-	require.NoError(t, json.Unmarshal(encoded, &payload))
 
-	require.Equal(t, "cache-hit", payload.Results["A"].Frames[0].Schema.Meta.Custom.ResponseHeaders.Get("X-Trickster-Result"))
-	require.Equal(t, "1", payload.Results["A"].Frames[0].Schema.Meta.Custom.ResponseHeaders.Get("X-Trickster-Metric"))
-	require.Empty(t, payload.Results["A"].Frames[0].Schema.Meta.Custom.ResponseHeaders.Get("X-Not-Proxied"))
-	require.Equal(t, "proxy-miss", payload.Results["B"].Frames[0].Schema.Meta.Custom.ResponseHeaders.Get("X-Trickster-Result"))
+	require.Equal(t, "cache-hit", headersFor("A").Get("X-Trickster-Result"))
+	require.Equal(t, "1", headersFor("A").Get("X-Trickster-Metric"))
+	require.Empty(t, headersFor("A").Get("X-Not-Proxied"))
+	require.Equal(t, "proxy-miss", headersFor("B").Get("X-Trickster-Result"))
 }
 
 func TestResponseHeadersPreserveMultipleUpstreamValues(t *testing.T) {
@@ -63,5 +49,5 @@ func TestResponseHeadersPreserveMultipleUpstreamValues(t *testing.T) {
 	addResponseHeadersToDataResponse(&response, headers)
 
 	custom := response.Frames[0].Meta.Custom.(map[string]any)
-	require.Equal(t, []string{"cache-hit", "proxy-miss"}, custom[responseHeadersMetaKey].(http.Header).Values("X-Trickster-Result"))
+	require.Equal(t, []string{"cache-hit", "proxy-miss"}, custom[proxiedUpstreamHeadersMetaKey].(http.Header).Values("X-Trickster-Result"))
 }

@@ -96,7 +96,7 @@ func TestRangeResponseIncludesProxiedHeadersInResultMetadata(t *testing.T) {
 	require.NotEmpty(t, frames)
 	custom, ok := frames[0].Meta.Custom.(map[string]any)
 	require.True(t, ok)
-	responseHeaders, ok := custom["responseHeaders"].(http.Header)
+	responseHeaders, ok := custom["proxied_upstream_headers"].(http.Header)
 	require.True(t, ok)
 	require.Equal(t, "cache-hit", responseHeaders.Get("X-Trickster-Result"))
 	require.Equal(t, "1", responseHeaders.Get("X-Trickster-Metric"))
