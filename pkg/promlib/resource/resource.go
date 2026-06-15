@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/grafana/grafana/pkg/promlib/client"
+	"github.com/grafana/grafana/pkg/promlib/compact"
 	"github.com/grafana/grafana/pkg/promlib/models"
 	"github.com/grafana/grafana/pkg/promlib/utils"
 )
@@ -27,6 +28,13 @@ import (
 const multiBatchContentType = "application/prometheus.multibatch"
 const preferredMultiBatchContentType = "application/com.openai.prometheus.multibatch"
 const streamBufferSize = 32 * 1024
+
+var browserOnlyResourceHeaders = []string{
+	compact.Header,
+	compactMultiBatchRefIDHeader,
+	compactMultiBatchLegendFormatHeader,
+	compactMultiBatchUTCOffsetHeader,
+}
 
 type Resource struct {
 	promClient *client.Client
@@ -57,7 +65,7 @@ func New(
 
 func (r *Resource) Execute(ctx context.Context, req *backend.CallResourceRequest) (*backend.CallResourceResponse, error) {
 	r.log.FromContext(ctx).Debug("Sending resource query", "URL", req.URL)
-	resp, err := r.promClient.QueryResource(ctx, req)
+	resp, err := r.queryResource(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("error querying resource: %v", err)
 	}
@@ -93,7 +101,7 @@ func (r *Resource) Execute(ctx context.Context, req *backend.CallResourceRequest
 
 func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	r.log.FromContext(ctx).Debug("Sending resource query", "URL", req.URL)
-	resp, err := r.promClient.QueryResource(ctx, req)
+	resp, err := r.queryResource(ctx, req)
 	if err != nil {
 		return fmt.Errorf("error querying resource: %v", err)
 	}
@@ -187,6 +195,40 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 	}
 
 	return nil
+}
+
+func (r *Resource) queryResource(ctx context.Context, req *backend.CallResourceRequest) (*http.Response, error) {
+	restoreHeaders := stripBrowserOnlyResourceHeaders(req)
+	defer restoreHeaders()
+
+	return r.promClient.QueryResource(ctx, req)
+}
+
+func stripBrowserOnlyResourceHeaders(req *backend.CallResourceRequest) func() {
+	if req == nil || req.Headers == nil {
+		return func() {}
+	}
+
+	type strippedHeader struct {
+		key    string
+		values []string
+	}
+	stripped := make([]strippedHeader, 0, len(browserOnlyResourceHeaders))
+	for _, header := range browserOnlyResourceHeaders {
+		for key, values := range req.Headers {
+			if !strings.EqualFold(key, header) {
+				continue
+			}
+			stripped = append(stripped, strippedHeader{key: key, values: append([]string(nil), values...)})
+			delete(req.Headers, key)
+		}
+	}
+
+	return func() {
+		for _, header := range stripped {
+			req.Headers[header.key] = header.values
+		}
+	}
 }
 
 func isMultiBatchContentType(contentType string) bool {

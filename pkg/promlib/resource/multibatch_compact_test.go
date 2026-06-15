@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/klauspost/compress/zstd"
@@ -134,6 +135,68 @@ func TestExecuteCompactMultiBatchStreamDecodesZstdWithoutContentSize(t *testing.
 	require.Equal(t, "MBBF", string(final.Body[:4]))
 	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), final.Body[5])
 	require.Equal(t, byte(multiBatchFinalFlag), final.Body[6]&multiBatchFinalFlag)
+}
+
+func TestExecuteCompactMultiBatchStreamDoesNotForwardBrowserOnlyHeaders(t *testing.T) {
+	var forwarded http.Header
+	upstreamResponse := append(
+		multiBatchResponseHeader(),
+		multiBatchPayloadFrame(multiBatchPayloadTypeJSONL, multiBatchFinalFlag, multiBatchPayloadEncodingIdentity, []byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))...,
+	)
+	finalRoundTripper := sdkhttpclient.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		forwarded = req.Header.Clone()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{preferredMultiBatchContentType + "; version=1"}},
+			Body:       io.NopCloser(bytes.NewReader(upstreamResponse)),
+		}, nil
+	})
+	transport := sdkhttpclient.ContextualMiddleware().CreateMiddleware(sdkhttpclient.Options{}, finalRoundTripper)
+	res, err := New(&http.Client{Transport: transport}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
+	require.NoError(t, err)
+
+	req := &backend.CallResourceRequest{
+		Method: http.MethodPost,
+		Path:   "api/v1/query_range",
+		URL:    "/api/v1/query_range",
+		Body:   []byte("query=up&start=0&end=120&step=60"),
+		Headers: map[string][]string{
+			"Accept":                              {preferredMultiBatchContentType + "; version=1, " + multiBatchContentType + "; version=1, application/jsonl"},
+			"Content-Type":                        {"application/x-www-form-urlencoded"},
+			"X-Grafana-Query-Format":              {"compact-v1"},
+			"X-OQP-Source":                        {"grafana-prometheus"},
+			compactMultiBatchRefIDHeader:          {"A"},
+			compactMultiBatchLegendFormatHeader:   {"{{job}}"},
+			compactMultiBatchUTCOffsetHeader:      {"0"},
+			"X-Grafana-Prometheus-Unrelated-Test": {"keep"},
+		},
+	}
+	forwardPluginHeaders := sdkhttpclient.NamedMiddlewareFunc("test-forward-plugin-headers", func(opts sdkhttpclient.Options, next http.RoundTripper) http.RoundTripper {
+		return sdkhttpclient.RoundTripperFunc(func(httpReq *http.Request) (*http.Response, error) {
+			for key, values := range req.GetHTTPHeaders() {
+				if httpReq.Header.Get(key) == "" {
+					httpReq.Header[key] = values
+				}
+			}
+			return next.RoundTrip(httpReq)
+		})
+	})
+	ctx := sdkhttpclient.WithContextualMiddleware(context.Background(), forwardPluginHeaders)
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 4)}
+	require.NoError(t, res.ExecuteStream(ctx, req, sender))
+
+	receiveResponse(t, sender.responses)
+	receiveResponse(t, sender.responses)
+	require.Equal(t, "compact-v1", req.GetHTTPHeaders().Get("X-Grafana-Query-Format"))
+	require.Equal(t, "A", req.GetHTTPHeaders().Get(compactMultiBatchRefIDHeader))
+	require.Equal(t, preferredMultiBatchContentType+"; version=1, "+multiBatchContentType+"; version=1, application/jsonl", forwarded.Get("Accept"))
+	require.Equal(t, "application/x-www-form-urlencoded", forwarded.Get("Content-Type"))
+	require.Equal(t, "grafana-prometheus", forwarded.Get("X-Oqp-Source"))
+	require.Equal(t, "keep", forwarded.Get("X-Grafana-Prometheus-Unrelated-Test"))
+	require.Empty(t, forwarded.Get("X-Grafana-Query-Format"))
+	require.Empty(t, forwarded.Get(compactMultiBatchRefIDHeader))
+	require.Empty(t, forwarded.Get(compactMultiBatchLegendFormatHeader))
+	require.Empty(t, forwarded.Get(compactMultiBatchUTCOffsetHeader))
 }
 
 func TestExecuteMultiBatchStreamPassesThroughJSONLBeforeFinalArrives(t *testing.T) {
