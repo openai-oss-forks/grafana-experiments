@@ -41,8 +41,13 @@ func TestReverseProxy(t *testing.T) {
 		req.Header.Set("Referer", "https://test.com/api")
 		req.RemoteAddr = "10.0.0.1"
 
-		req = req.WithContext(contexthandler.WithAuthHTTPHeaders(req.Context(), setting.NewCfg()))
+		cfg := setting.NewCfg()
+		cfg.AuthProxy.Enabled = true
+		cfg.AuthProxy.SharedSecret = "secret"
+		cfg.AuthProxy.SharedSecretHeader = "X-Auth-Proxy-Secret"
+		req = req.WithContext(contexthandler.WithAuthHTTPHeaders(req.Context(), cfg))
 		req.Header.Set("Authorization", "val")
+		req.Header.Set("X-Auth-Proxy-Secret", "secret")
 
 		rp := NewReverseProxy(log.New("test"),
 			func(req *http.Request) {
@@ -67,6 +72,7 @@ func TestReverseProxy(t *testing.T) {
 		require.Equal(t, "https://test.com/api", actualReq.Header.Get("X-Grafana-Referer"))
 		require.Equal(t, "value", actualReq.Header.Get("X-KEY"))
 		require.Empty(t, actualReq.Header.Get("Authorization"))
+		require.Empty(t, actualReq.Header.Get("X-Auth-Proxy-Secret"))
 		resp := rec.Result()
 		require.Empty(t, resp.Cookies())
 		require.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))

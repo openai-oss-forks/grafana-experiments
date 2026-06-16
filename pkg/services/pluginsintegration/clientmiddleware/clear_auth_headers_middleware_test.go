@@ -20,6 +20,9 @@ func TestClearAuthHeadersMiddleware(t *testing.T) {
 
 	t.Run("When requests are for a datasource", func(t *testing.T) {
 		cfg := setting.NewCfg()
+		cfg.AuthProxy.Enabled = true
+		cfg.AuthProxy.SharedSecret = "secret"
+		cfg.AuthProxy.SharedSecretHeader = "X-Auth-Proxy-Secret"
 		cdt := handlertest.NewHandlerMiddlewareTest(t,
 			WithReqContext(req, &user.SignedInUser{}),
 			handlertest.WithMiddlewares(NewClearAuthHeadersMiddleware(&cfg.JWTAuth, &cfg.AuthProxy)),
@@ -35,6 +38,7 @@ func TestClearAuthHeadersMiddleware(t *testing.T) {
 				Headers: map[string]string{
 					otherHeader:           "test",
 					"Authorization":       "secret",
+					"X-Auth-Proxy-Secret": "secret",
 					"X-Grafana-Device-Id": "secret",
 				},
 			})

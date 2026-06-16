@@ -119,6 +119,8 @@ func TestContextHandler(t *testing.T) {
 		cfg.JWTAuth.HeaderName = "jwt-header"
 		cfg.AuthProxy.Enabled = true
 		cfg.AuthProxy.HeaderName = "proxy-header"
+		cfg.AuthProxy.SharedSecret = "secret"
+		cfg.AuthProxy.SharedSecretHeader = "proxy-secret-header"
 		cfg.AuthProxy.Headers = map[string]string{
 			"name": "proxy-header-name",
 		}
@@ -137,6 +139,7 @@ func TestContextHandler(t *testing.T) {
 
 			assert.Contains(t, list.Items, "jwt-header")
 			assert.Contains(t, list.Items, "proxy-header")
+			assert.Contains(t, list.Items, "proxy-secret-header")
 			assert.Contains(t, list.Items, "proxy-header-name")
 			assert.Contains(t, list.Items, "Authorization")
 		})
