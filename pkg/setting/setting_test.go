@@ -278,6 +278,21 @@ func TestLoadingSettings(t *testing.T) {
 		require.Equal(t, 2, cfg.AuthProxy.SyncTTL)
 	})
 
+	t.Run("Auth proxy shared secret settings can be configured", func(t *testing.T) {
+		cfg := NewCfg()
+		err := cfg.Load(CommandLineArgs{
+			HomePath: "../../",
+			Args: []string{
+				"cfg:auth.proxy.shared_secret=secret",
+				"cfg:auth.proxy.shared_secret_header=X-Auth-Proxy-Secret",
+			},
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, "secret", cfg.AuthProxy.SharedSecret)
+		require.Equal(t, "X-Auth-Proxy-Secret", cfg.AuthProxy.SharedSecretHeader)
+	})
+
 	t.Run("Test reading string values from .ini file", func(t *testing.T) {
 		cfg := NewCfg()
 		err := cfg.Load(CommandLineArgs{HomePath: "../../"})

@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -30,14 +31,18 @@ const (
 	proxyFieldRole   = "Role"
 	proxyFieldGroups = "Groups"
 	proxyCachePrefix = "authn-proxy-sync-ttl"
+
+	proxyPriority             = 50
+	sharedSecretProxyPriority = 12
 )
 
 var proxyFields = [...]string{proxyFieldName, proxyFieldEmail, proxyFieldLogin, proxyFieldRole, proxyFieldGroups}
 
 var (
-	errNotAcceptedIP      = errutil.Unauthorized("auth-proxy.invalid-ip")
-	errEmptyProxyHeader   = errutil.Unauthorized("auth-proxy.empty-header")
-	errInvalidProxyHeader = errutil.Internal("auth-proxy.invalid-proxy-header")
+	errNotAcceptedIP       = errutil.Unauthorized("auth-proxy.invalid-ip")
+	errEmptyProxyHeader    = errutil.Unauthorized("auth-proxy.empty-header")
+	errInvalidProxyHeader  = errutil.Internal("auth-proxy.invalid-proxy-header")
+	errInvalidSharedSecret = errutil.Unauthorized("auth-proxy.invalid-shared-secret")
 )
 
 var (
@@ -77,6 +82,9 @@ func (c *Proxy) Authenticate(ctx context.Context, r *authn.Request) (*authn.Iden
 	defer span.End()
 	if !c.isAllowedIP(r) {
 		return nil, errNotAcceptedIP.Errorf("request ip is not in the configured accept list")
+	}
+	if c.sharedSecretConfigured() && !c.hasValidSharedSecret(r) {
+		return nil, errInvalidSharedSecret.Errorf("request does not include a valid auth proxy shared secret")
 	}
 
 	username := getProxyHeader(r, c.cfg.AuthProxy.HeaderName, c.cfg.AuthProxy.HeadersEncoded)
@@ -145,11 +153,30 @@ func (c *Proxy) retrieveIDFromCache(ctx context.Context, cacheKey string, r *aut
 }
 
 func (c *Proxy) Test(ctx context.Context, r *authn.Request) bool {
-	return len(getProxyHeader(r, c.cfg.AuthProxy.HeaderName, c.cfg.AuthProxy.HeadersEncoded)) != 0
+	if len(getProxyHeader(r, c.cfg.AuthProxy.HeaderName, c.cfg.AuthProxy.HeadersEncoded)) == 0 {
+		return false
+	}
+
+	return !c.sharedSecretConfigured() || c.hasValidSharedSecret(r)
 }
 
 func (c *Proxy) Priority() uint {
-	return 50
+	if c.sharedSecretConfigured() {
+		// A valid shared secret explicitly selects auth proxy authentication. Run
+		// before JWT and API key clients so those credentials cannot shadow it.
+		return sharedSecretProxyPriority
+	}
+
+	return proxyPriority
+}
+
+func (c *Proxy) sharedSecretConfigured() bool {
+	return c.cfg.AuthProxy.SharedSecret != ""
+}
+
+func (c *Proxy) hasValidSharedSecret(r *authn.Request) bool {
+	provided := getProxyHeader(r, c.cfg.AuthProxy.SharedSecretHeader, false)
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(c.cfg.AuthProxy.SharedSecret)) == 1
 }
 
 func (c *Proxy) Hook(ctx context.Context, id *authn.Identity, r *authn.Request) error {

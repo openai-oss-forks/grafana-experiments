@@ -24,6 +24,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/auth/authtest"
 	"github.com/grafana/grafana/pkg/services/authn"
 	"github.com/grafana/grafana/pkg/services/authn/authntest"
+	"github.com/grafana/grafana/pkg/services/authn/clients"
 	"github.com/grafana/grafana/pkg/setting"
 )
 
@@ -257,6 +258,54 @@ func TestService_Authenticate(t *testing.T) {
 				}
 				assert.Nil(t, identity)
 			}
+		})
+	}
+}
+
+func TestService_Authenticate_AuthProxySharedSecretSelection(t *testing.T) {
+	cfg := setting.NewCfg()
+	cfg.AuthProxy.HeaderName = "Proxy-Header"
+	cfg.AuthProxy.SharedSecret = "secret"
+	cfg.AuthProxy.SharedSecretHeader = "Secret-Header"
+
+	proxy, err := clients.ProvideProxy(cfg, nil, tracing.InitializeTracerForTest())
+	require.NoError(t, err)
+
+	proxyIdentity := &authn.Identity{ID: "proxy", Type: claims.TypeUser}
+	existingIdentity := &authn.Identity{ID: "existing", Type: claims.TypeUser}
+	service := setupTests(t, func(svc *Service) {
+		svc.RegisterClient(&authntest.MockClient{
+			NameFunc:         proxy.Name,
+			TestFunc:         proxy.Test,
+			PriorityFunc:     proxy.Priority,
+			AuthenticateFunc: func(context.Context, *authn.Request) (*authn.Identity, error) { return proxyIdentity, nil },
+		})
+		svc.RegisterClient(&authntest.FakeClient{
+			ExpectedName:     "existing",
+			ExpectedPriority: (&clients.ExtendedJWT{}).Priority(),
+			ExpectedTest:     true,
+			ExpectedIdentity: existingIdentity,
+		})
+	})
+
+	for _, tc := range []struct {
+		name             string
+		secretHeader     string
+		expectedIdentity *authn.Identity
+	}{
+		{name: "uses existing authentication without the shared secret", expectedIdentity: existingIdentity},
+		{name: "uses existing authentication with an invalid shared secret", secretHeader: "wrong secret", expectedIdentity: existingIdentity},
+		{name: "selects auth proxy with a valid shared secret", secretHeader: "secret", expectedIdentity: proxyIdentity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := http.Header{"Proxy-Header": {"username"}}
+			if tc.secretHeader != "" {
+				headers.Set("Secret-Header", tc.secretHeader)
+			}
+
+			identity, err := service.Authenticate(context.Background(), &authn.Request{HTTPRequest: &http.Request{Header: headers, URL: &url.URL{}}})
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedIdentity, identity)
 		})
 	}
 }

@@ -44,6 +44,10 @@ sync_ttl = 15
 # This can be used to prevent users spoofing the X-WEBAUTH-USER header.
 # Example `whitelist = 192.168.1.1, 192.168.1.0/24, 2001::23, 2001::0/120`
 whitelist =
+# Optional shared secret required on auth proxy requests
+shared_secret =
+# HTTP header that contains the shared secret
+shared_secret_header = X-WEBAUTH-SECRET
 # Optionally define more headers to sync other user attributes
 # Example `headers = Name:X-WEBAUTH-NAME Role:X-WEBAUTH-ROLE Email:X-WEBAUTH-EMAIL Groups:X-WEBAUTH-GROUPS`
 headers =
@@ -52,6 +56,22 @@ headers =
 # Check out docs on this for more details on the below setting
 enable_login_token = false
 ```
+
+## Protect auth proxy headers with a shared secret
+
+Set `shared_secret` to require callers to prove that they are trusted before Grafana accepts the user identity header. Store the secret outside the configuration file and use a [configuration provider](../../../configure-grafana/#variable-expansion) to load it. For example:
+
+```ini
+[auth.proxy]
+enabled = true
+header_name = X-WEBAUTH-USER
+shared_secret = $__file{/run/secrets/auth-proxy/shared-secret}
+shared_secret_header = X-WEBAUTH-SECRET
+```
+
+When `shared_secret` is set, Grafana uses Auth Proxy only when both the user identity header and a matching shared secret header are present. A matching request selects Auth Proxy before other configured authentication methods. Requests without a matching secret continue through other configured authentication methods, such as OAuth, JWT, service account tokens, and session cookies.
+
+Use HTTPS between the trusted proxy and Grafana. Restrict access to the shared secret and don't send it in the `Authorization` header, because Grafana uses that header for other authentication methods.
 
 ## Interacting with Grafana’s AuthProxy via curl
 
