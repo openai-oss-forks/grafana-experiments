@@ -34,6 +34,48 @@ func TestQueryDataResponseGroupsProxiedHeadersByRefID(t *testing.T) {
 	}, decoded["proxied_upstream_headers"])
 }
 
+func TestQueryDataResponseUnmarshalsProxiedHeaders(t *testing.T) {
+	encoded := []byte(`{
+		"apiVersion": "query.grafana.app/v0alpha1",
+		"kind": "QueryDataResponse",
+		"results": {
+			"A": {
+				"status": 200,
+				"frames": []
+			}
+		},
+		"proxied_upstream_headers": {
+			"A": {
+				"X-Trickster-Result": "cache-hit"
+			}
+		}
+	}`)
+
+	response := query.QueryDataResponse{}
+	require.NoError(t, json.Unmarshal(encoded, &response))
+	require.Equal(t, "query.grafana.app/v0alpha1", response.APIVersion)
+	require.Equal(t, "QueryDataResponse", response.Kind)
+	require.Contains(t, response.Responses, "A")
+	require.Equal(t, "cache-hit", response.ProxiedUpstreamHeaders["A"]["X-Trickster-Result"])
+}
+
+func TestQueryDataResponseRoundTripsProxiedHeaders(t *testing.T) {
+	frame := sdkdata.NewFrame("")
+	frame.Meta = &sdkdata.FrameMeta{Custom: map[string]any{
+		querydataresponse.MetadataKey: http.Header{"X-Trickster-Result": {"cache-hit"}},
+	}}
+
+	encoded, err := json.Marshal(query.NewQueryDataResponse(&backend.QueryDataResponse{Responses: backend.Responses{
+		"A": {Frames: sdkdata.Frames{frame}},
+	}}))
+	require.NoError(t, err)
+
+	response := query.QueryDataResponse{}
+	require.NoError(t, json.Unmarshal(encoded, &response))
+	require.Contains(t, response.Responses, "A")
+	require.Equal(t, "cache-hit", response.ProxiedUpstreamHeaders["A"]["X-Trickster-Result"])
+}
+
 func TestParseQueriesIntoQueryDataRequest(t *testing.T) {
 	request := []byte(`{
 		"queries": [

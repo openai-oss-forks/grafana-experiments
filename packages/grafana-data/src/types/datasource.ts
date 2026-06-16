@@ -519,7 +519,7 @@ export interface DataQueryResponse {
    */
   data: DataQueryResponseData[];
 
-  /** Response headers proxied from upstream services, grouped by query ref ID. */
+  /** Allowlisted upstream response headers, grouped by query ref ID. */
   proxied_upstream_headers?: Record<string, Record<string, string>>;
 
   /** Buffer-backed time series used by the dashboard rendering fast path. @internal */

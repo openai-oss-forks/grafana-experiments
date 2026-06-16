@@ -10,9 +10,8 @@ import (
 	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 )
 
-// proxiedResponseHeaderPrefixes lists the upstream response header families
-// exposed in query result metadata. Add new prefixes here when panels need
-// another family of data source response headers.
+// proxiedResponseHeaderPrefixes lists the only upstream response header
+// families exposed in query result metadata.
 var proxiedResponseHeaderPrefixes = []string{
 	"X-Trickster-",
 }

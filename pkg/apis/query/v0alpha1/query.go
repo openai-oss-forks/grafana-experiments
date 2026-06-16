@@ -59,6 +59,21 @@ func (r QueryDataResponse) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (r *QueryDataResponse) UnmarshalJSON(data []byte) error {
+	decoded := struct {
+		metav1.TypeMeta        `json:",inline"`
+		Results                backend.Responses                        `json:"results"`
+		ProxiedUpstreamHeaders querydataresponse.ProxiedUpstreamHeaders `json:"proxied_upstream_headers,omitempty"`
+	}{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	r.TypeMeta = decoded.TypeMeta
+	r.QueryDataResponse = backend.QueryDataResponse{Responses: decoded.Results}
+	r.ProxiedUpstreamHeaders = decoded.ProxiedUpstreamHeaders
+	return nil
+}
+
 func (QueryDataResponse) OpenAPIModelName() string {
 	return OpenAPIPrefix + "QueryDataResponse"
 }

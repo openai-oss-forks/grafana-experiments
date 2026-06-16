@@ -22,3 +22,15 @@ func TestResponseHeadersPreserveMultipleUpstreamValues(t *testing.T) {
 	custom := response.Frames[0].Meta.Custom.(map[string]any)
 	require.Equal(t, []string{"cache-hit", "proxy-miss"}, custom[querydataresponse.MetadataKey].(http.Header).Values("X-Trickster-Result"))
 }
+
+func TestExtractProxiedResponseHeadersOnlyAllowsTricksterPrefix(t *testing.T) {
+	headers := extractProxiedResponseHeaders(http.Header{
+		"X-Trickster-Result": {"cache-hit"},
+		"X-Not-Proxied":      {"secret"},
+		"Content-Type":       {"application/json"},
+	})
+
+	require.Equal(t, "cache-hit", headers.Get("X-Trickster-Result"))
+	require.Empty(t, headers.Get("X-Not-Proxied"))
+	require.Empty(t, headers.Get("Content-Type"))
+}
