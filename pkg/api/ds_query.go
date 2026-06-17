@@ -13,6 +13,7 @@ import (
 	"github.com/grafana/grafana/pkg/api/routing"
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/middleware/requestmeta"
+	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 	"github.com/grafana/grafana/pkg/services/apiserver/endpoints/request"
 	"github.com/grafana/grafana/pkg/services/contexthandler"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
@@ -174,7 +175,7 @@ func (hs *HTTPServer) toJsonStreamingResponse(ctx context.Context, qdr *backend.
 		requestmeta.WithDownstreamStatusSource(ctx)
 	}
 
-	return response.JSONStreaming(statusCode, qdr)
+	return response.JSONStreaming(statusCode, querydataresponse.New(qdr))
 }
 
 // swagger:parameters queryMetricsWithExpressions
@@ -188,5 +189,5 @@ type QueryMetricsWithExpressionsBodyParams struct {
 type QueryMetricsWithExpressionsRespons struct {
 	// The response message
 	// in: body
-	Body *backend.QueryDataResponse `json:"body"`
+	Body querydataresponse.Response `json:"body"`
 }

@@ -4,10 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/grafana/grafana-plugin-sdk-go/backend"
-
 	"github.com/grafana/grafana/pkg/api/dtos"
 	"github.com/grafana/grafana/pkg/api/response"
+	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	. "github.com/grafana/grafana/pkg/services/publicdashboards/models"
 	"github.com/grafana/grafana/pkg/services/publicdashboards/validation"
@@ -120,7 +119,7 @@ type ViewPublicDashboardParams struct {
 // swagger:response queryPublicDashboardResponse
 type QueryPublicDashboardResponse struct {
 	// in: body
-	Body backend.QueryDataResponse `json:"body"`
+	Body querydataresponse.Response `json:"body"`
 }
 
 // swagger:parameters queryPublicDashboard

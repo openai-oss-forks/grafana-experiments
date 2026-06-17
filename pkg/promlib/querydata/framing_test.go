@@ -72,6 +72,37 @@ func TestRangeResponseDatasourceTimeIntervalFloorsStep(t *testing.T) {
 	require.Equal(t, "Expr: \nStep: 1m0s", dr.Frames[0].Meta.ExecutedQueryString)
 }
 
+func TestRangeResponseIncludesProxiedHeadersInResultMetadata(t *testing.T) {
+	query, err := loadStoredQuery(filepath.Join("../testdata", "range_simple.query.json"))
+	require.NoError(t, err)
+
+	//nolint:gosec
+	responseBytes, err := os.ReadFile(filepath.Join("../testdata", "range_simple.result.json"))
+	require.NoError(t, err)
+
+	result, err := runQueryWithJSONDataAndHeaders(
+		responseBytes,
+		query,
+		json.RawMessage(`{"timeInterval": "15s"}`),
+		http.Header{
+			"X-Trickster-Result": {"cache-hit"},
+			"X-Trickster-Metric": {"1"},
+			"X-Not-Proxied":      {"secret"},
+		},
+	)
+	require.NoError(t, err)
+
+	frames := result.Responses["A"].Frames
+	require.NotEmpty(t, frames)
+	custom, ok := frames[0].Meta.Custom.(map[string]any)
+	require.True(t, ok)
+	responseHeaders, ok := custom["proxied_upstream_headers"].(http.Header)
+	require.True(t, ok)
+	require.Equal(t, "cache-hit", responseHeaders.Get("X-Trickster-Result"))
+	require.Equal(t, "1", responseHeaders.Get("X-Trickster-Metric"))
+	require.Empty(t, responseHeaders.Get("X-Not-Proxied"))
+}
+
 func TestExemplarResponses(t *testing.T) {
 	tt := []struct {
 		name     string
@@ -175,6 +206,10 @@ func runQuery(response []byte, q *backend.QueryDataRequest) (*backend.QueryDataR
 }
 
 func runQueryWithJSONData(response []byte, q *backend.QueryDataRequest, jsonData json.RawMessage) (*backend.QueryDataResponse, error) {
+	return runQueryWithJSONDataAndHeaders(response, q, jsonData, nil)
+}
+
+func runQueryWithJSONDataAndHeaders(response []byte, q *backend.QueryDataRequest, jsonData json.RawMessage, responseHeaders http.Header) (*backend.QueryDataResponse, error) {
 	tCtx, err := setupWithJSONData(jsonData)
 	if err != nil {
 		return nil, err
@@ -183,6 +218,7 @@ func runQueryWithJSONData(response []byte, q *backend.QueryDataRequest, jsonData
 	// Create initial response
 	res := &http.Response{
 		StatusCode: 200,
+		Header:     responseHeaders.Clone(),
 		Body:       io.NopCloser(bytes.NewReader(response)),
 		Request: &http.Request{
 			URL: &url.URL{
@@ -194,6 +230,7 @@ func runQueryWithJSONData(response []byte, q *backend.QueryDataRequest, jsonData
 	// Create a proper clone for the exemplar response with a different path
 	exemplarRes := &http.Response{
 		StatusCode: 200,
+		Header:     responseHeaders.Clone(),
 		Body:       io.NopCloser(bytes.NewReader(response)),
 		Request: &http.Request{
 			URL: &url.URL{
