@@ -4,6 +4,7 @@ import {
   COMPACT_TIME_SERIES_FORMAT,
   DataQueryRequest,
   DataSourceApi,
+  FieldConfigSource,
   getDefaultTimeRange,
   LoadingState,
   PanelPlugin,
@@ -173,10 +174,59 @@ describe('PanelEditor', () => {
       expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
+    it('starts one full-format query when incompatible compact data is present on activation', async () => {
+      const { dashboard, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor({
+        clearSpies: false,
+        fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
+      });
+
+      expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps a compact query when changed panel options remain compatible', async () => {
       const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
 
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Points } }, overrides: [] }, true);
+
+      expect(cancelQuery).not.toHaveBeenCalled();
+      expect(runQueries).not.toHaveBeenCalled();
+    });
+
+    it('reruns a compact query in full format when table view opens', async () => {
+      const { panelEditor, dashboard, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+
+      panelEditor.onToggleTableView();
+
+      expect(panelEditor.state.tableView).toBeDefined();
+      expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+    });
+
+    it('reruns a compact query in full format when a transformation is enabled', async () => {
+      const { panel, dashboard, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+      const transformer = panel.state.$data;
+      expect(transformer).toBeInstanceOf(SceneDataTransformer);
+
+      (transformer as SceneDataTransformer).setState({
+        transformations: [{ id: 'organize', options: {} }],
+      });
+
+      expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a compact query when a disabled transformation is added', async () => {
+      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+      const transformer = panel.state.$data;
+      expect(transformer).toBeInstanceOf(SceneDataTransformer);
+
+      (transformer as SceneDataTransformer).setState({
+        transformations: [{ id: 'organize', options: {}, disabled: true }],
+      });
 
       expect(cancelQuery).not.toHaveBeenCalled();
       expect(runQueries).not.toHaveBeenCalled();
@@ -662,7 +712,15 @@ function createTimeSeriesTestPlugin() {
   });
 }
 
-async function setupCompactTimeSeriesEditor({ withCompactData = true } = {}) {
+async function setupCompactTimeSeriesEditor({
+  withCompactData = true,
+  fieldConfig = { defaults: {}, overrides: [] },
+  clearSpies = true,
+}: {
+  withCompactData?: boolean;
+  fieldConfig?: FieldConfigSource;
+  clearSpies?: boolean;
+} = {}) {
   pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
   const queryRunner = new DashboardSceneQueryRunner({ queries: [{ refId: 'A' }] });
   if (withCompactData) {
@@ -677,7 +735,7 @@ async function setupCompactTimeSeriesEditor({ withCompactData = true } = {}) {
   }
   const cancelQuery = jest.spyOn(queryRunner, 'cancelQuery').mockImplementation(() => {});
   const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
-  const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+  const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', fieldConfig, $data: queryRunner });
   const gridItem = new DashboardGridItem({ body: panel });
   const panelEditor = buildPanelEditScene(panel);
   const dashboard = new DashboardScene({
@@ -689,10 +747,12 @@ async function setupCompactTimeSeriesEditor({ withCompactData = true } = {}) {
 
   deactivate = activateFullSceneTree(dashboard);
   await new Promise((resolve) => setTimeout(resolve, 1));
-  cancelQuery.mockClear();
-  runQueries.mockClear();
+  if (clearSpies) {
+    cancelQuery.mockClear();
+    runQueries.mockClear();
+  }
 
-  return { panel, dashboard, queryRunner, cancelQuery, runQueries };
+  return { panel, panelEditor, dashboard, queryRunner, cancelQuery, runQueries };
 }
 
 function prepareDashboardQuery(queryRunner: DashboardSceneQueryRunner) {

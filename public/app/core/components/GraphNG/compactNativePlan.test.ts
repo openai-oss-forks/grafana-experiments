@@ -4,8 +4,10 @@ import {
   CompactTimeSeriesData,
   CompactTimeSeriesSeriesCollection,
   createTheme,
+  dateTime,
   Field,
   FieldColorModeId,
+  FieldConfigProperty,
   FieldConfigOptionsRegistry,
   FieldOverrideContext,
   FieldMatcherID,
@@ -15,17 +17,21 @@ import {
   NullValueMode,
   ReducerID,
   reduceField,
+  ThresholdsMode,
 } from '@grafana/data';
 import {
   AxisColorMode,
   ComparisonOperation,
   GraphDrawStyle,
   GraphGradientMode,
+  GraphThresholdsStyleMode,
   GraphTransform,
   ScaleDistribution,
   StackingMode,
 } from '@grafana/schema';
 import { CompactSeriesFlag } from '@grafana/ui/internal';
+
+import { prepareCompactPlotConfigBuilder } from '../TimeSeries/utils';
 
 import {
   CompactNativeSeriesFlag,
@@ -277,6 +283,77 @@ describe('CompactNativeRenderPlan', () => {
 
     expect(hasSameCompactNativeTopology(equivalent, first)).toBe(true);
     expect(hasSameCompactNativeTopology(changed, first)).toBe(false);
+  });
+
+  test('owns threshold overlay configuration on compact scales', () => {
+    const defaultThresholds = {
+      mode: ThresholdsMode.Absolute,
+      steps: [
+        { color: 'green', value: -Infinity },
+        { color: 'red', value: 10 },
+      ],
+    };
+    const overrideThresholds = {
+      mode: ThresholdsMode.Absolute,
+      steps: [
+        { color: 'blue', value: -Infinity },
+        { color: 'orange', value: 20 },
+      ],
+    };
+    const { source } = columnarSource([series('A', 'requests', [1, 2]), series('A', 'errors', [3, 4])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty(FieldConfigProperty.Thresholds, 'thresholds', false),
+        compactProperty('custom.thresholdsStyle', 'thresholdsStyle', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          thresholds: defaultThresholds,
+          custom: { thresholdsStyle: { mode: GraphThresholdsStyleMode.Off } },
+        },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'errors' },
+            properties: [
+              { id: FieldConfigProperty.Thresholds, value: overrideThresholds },
+              { id: 'custom.thresholdsStyle', value: { mode: GraphThresholdsStyleMode.Area } },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(plan.scales).toHaveLength(2);
+    expect(plan.styles).toHaveLength(1);
+    expect(plan.source.scales).toHaveLength(1);
+    expect(plan.getScale(0).config).toMatchObject({
+      thresholds: defaultThresholds,
+      custom: { thresholdsStyle: { mode: GraphThresholdsStyleMode.Off } },
+    });
+    expect(plan.getScale(1).config).toMatchObject({
+      thresholds: overrideThresholds,
+      custom: { thresholdsStyle: { mode: GraphThresholdsStyleMode.Area } },
+    });
+    expect(plan.getStyle(0).config.thresholds).toBeUndefined();
+    expect(plan.getStyle(0).config.custom?.thresholdsStyle).toBeUndefined();
+
+    defaultThresholds.steps[1].value = 99;
+    overrideThresholds.steps[1].value = 99;
+    expect(plan.getScale(0).config.thresholds?.steps[1].value).toBe(10);
+    expect(plan.getScale(1).config.thresholds?.steps[1].value).toBe(20);
+
+    const builder = prepareCompactPlotConfigBuilder({
+      plan,
+      theme: baseOptions.theme,
+      timeZones: ['utc'],
+      getTimeRange: () => ({
+        from: dateTime(1000),
+        to: dateTime(2000),
+        raw: { from: dateTime(1000), to: dateTime(2000) },
+      }),
+    });
+    expect(builder.getConfig().hooks?.drawClear).toHaveLength(1);
   });
 
   test('rejects malformed value matcher options at the descriptor boundary', () => {

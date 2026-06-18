@@ -54,9 +54,13 @@ describe('compact dashboard query policy', () => {
     { app: CoreApp.Explore, panelPluginId: 'timeseries' },
     { app: CoreApp.Dashboard, panelPluginId: 'table' },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isInspecting: true },
+    { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isTableView: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isPublicDashboard: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', hasTimeComparison: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', panelOptions: { orientation: VizOrientation.Vertical } },
+    { app: CoreApp.Dashboard, panelPluginId: 'timeseries', panelOptions: null },
+    { app: CoreApp.Dashboard, panelPluginId: 'timeseries', panelOptions: { legend: null } },
+    { app: CoreApp.Dashboard, panelPluginId: 'timeseries', panelOptions: { legend: 'all' } },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', transformations: [{ id: 'reduce' }] },
     {
       app: CoreApp.Dashboard,
@@ -106,6 +110,16 @@ describe('compact dashboard query policy', () => {
     },
   ])('keeps unsupported request context on JSON: %p', (context) => {
     expect(getPreferredDashboardQueryFormat(context)).toBeUndefined();
+  });
+
+  test.each([null, 'last', {}, [null]])('rejects malformed legend calculations: %p', (legendCalcs) => {
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        legendCalcs,
+      })
+    ).toBeUndefined();
   });
 
   test('supports median in legends, value matchers, and color reducers', () => {

@@ -56,4 +56,26 @@ describe('getRenderableCompactSeries', () => {
       )
     ).toBeUndefined();
   });
+
+  it('withholds stale compact data while a full-format request is pending', () => {
+    expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options, true)).toBeUndefined();
+  });
+
+  it('withholds compact data for malformed legend calculations', () => {
+    expect(
+      getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, {
+        ...options,
+        legend: { ...options.legend, calcs: null },
+      } as unknown as Options)
+    ).toBeUndefined();
+  });
+
+  it('withholds compact data without throwing for a malformed legend container', () => {
+    expect(
+      getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, {
+        ...options,
+        legend: null,
+      } as unknown as Options)
+    ).toBeUndefined();
+  });
 });

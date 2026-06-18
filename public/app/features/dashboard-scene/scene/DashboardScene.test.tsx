@@ -992,6 +992,20 @@ describe('DashboardScene', () => {
 
         expect(scene.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBe('compact-v1');
       });
+
+      test('requests full data for panel editor table view', () => {
+        const panel = findVizPanelByKey(scene, 'panel-1')!;
+        panel.setState({ pluginId: 'timeseries' });
+        const editPanel = buildPanelEditScene(panel);
+        scene.setState({ editPanel });
+        const queryRunner = editPanel.getPanel().state.$data!;
+
+        expect(scene.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBe('compact-v1');
+
+        editPanel.onToggleTableView();
+
+        expect(scene.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
+      });
     });
 
     it('Should hash the key of the cloned panels and set it as panelId', () => {

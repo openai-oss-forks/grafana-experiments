@@ -124,6 +124,8 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
 
     let compatibilityRunner: SceneQueryRunner | undefined;
     let compatibilityRunnerSubscription: Unsubscribable | undefined;
+    let compatibilityTransformer: SceneDataTransformer | undefined;
+    let compatibilityTransformerSubscription: Unsubscribable | undefined;
     let compactFallbackPending = false;
 
     const ensureCompatibleQueryFormat = (currentRunner: SceneQueryRunner) => {
@@ -185,7 +187,32 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       return currentRunner;
     };
 
+    const updateCompatibilityTransformer = () => {
+      const dataProvider = panel.state.$data;
+      const currentTransformer = dataProvider instanceof SceneDataTransformer ? dataProvider : undefined;
+      if (currentTransformer === compatibilityTransformer) {
+        return;
+      }
+
+      compatibilityTransformerSubscription?.unsubscribe();
+      compatibilityTransformer = currentTransformer;
+      if (currentTransformer) {
+        compatibilityTransformerSubscription = currentTransformer.subscribeToState((newState, prevState) => {
+          if (newState.transformations === prevState.transformations) {
+            return;
+          }
+
+          const currentRunner = updateCompatibilityRunner();
+          if (currentRunner) {
+            ensureCompatibleQueryFormat(currentRunner);
+          }
+        });
+        this._subs.add(compatibilityTransformerSubscription);
+      }
+    };
+
     updateCompatibilityRunner();
+    updateCompatibilityTransformer();
     this._subs.add(
       panel.subscribeToState((newState, prevState) => {
         // Existing compact data cannot be reused after the panel moves outside compact capabilities.
@@ -198,6 +225,10 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
           return;
         }
 
+        if (newState.$data !== prevState.$data) {
+          updateCompatibilityTransformer();
+        }
+
         const currentRunner = updateCompatibilityRunner();
         if (!currentRunner) {
           return;
@@ -206,9 +237,22 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         ensureCompatibleQueryFormat(currentRunner);
       })
     );
+    this._subs.add(
+      this.subscribeToState((newState, prevState) => {
+        if (newState.tableView === prevState.tableView) {
+          return;
+        }
+
+        const currentRunner = updateCompatibilityRunner();
+        if (currentRunner) {
+          ensureCompatibleQueryFormat(currentRunner);
+        }
+      })
+    );
 
     const deactivateParents = activateSceneObjectAndParentTree(panel);
     if (queryRunner && (hasCompactData || queryRunner.state.data?.state === LoadingState.Loading)) {
+      compactFallbackPending = true;
       queryRunner.cancelQuery();
       queryRunner.runQueries();
     }

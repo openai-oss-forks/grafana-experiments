@@ -81,6 +81,7 @@ const scaleCustomProperties = new Set<keyof GraphFieldConfig>([
   'axisSoftMin',
   'axisWidth',
   'scaleDistribution',
+  'thresholdsStyle',
 ]);
 
 const reducerValues = Object.values(ReducerID);
@@ -1514,6 +1515,8 @@ function splitConfig(config: FieldConfig<GraphFieldConfig>): {
   copyDefined(scaleConfig, config, 'min');
   copyDefined(scaleConfig, config, 'max');
   copyDefined(scaleConfig, config, 'fieldMinMax');
+  copyDefined(scaleConfig, config, 'thresholds');
+  delete styleConfig.thresholds;
 
   if (config.custom) {
     const scaleCustom: GraphFieldConfig = {};

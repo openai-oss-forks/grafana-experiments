@@ -932,15 +932,17 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
       panel?.state.$timeRange instanceof PanelTimeRange && Boolean(panel.state.$timeRange.state.compareWith);
     const legend = panel?.state.options ? Reflect.get(panel.state.options, 'legend') : undefined;
     const legendCalcs = typeof legend === 'object' && legend !== null ? Reflect.get(legend, 'calcs') : undefined;
+    const isTableView = Boolean(dashboard.state.editPanel?.state.tableView);
     const preferredQueryResultFormat = getPreferredDashboardQueryFormat({
       app: CoreApp.Dashboard,
       panelPluginId: panel?.state.pluginId,
       transformations,
       isInspecting: dashboard.state.overlay instanceof PanelInspectDrawer,
+      isTableView,
       isPublicDashboard: Boolean(config.publicDashboardAccessToken),
       hasTimeComparison,
       fieldConfig: panel?.state.fieldConfig,
-      legendCalcs: Array.isArray(legendCalcs) ? legendCalcs : undefined,
+      legendCalcs,
       panelOptions: panel?.state.options,
     });
 

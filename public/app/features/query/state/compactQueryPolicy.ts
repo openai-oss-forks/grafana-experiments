@@ -10,22 +10,23 @@ interface CompactDashboardQueryContext {
   panelPluginId?: string;
   transformations?: readonly unknown[];
   isInspecting?: boolean;
+  isTableView?: boolean;
   isPublicDashboard?: boolean;
   hasTimeComparison?: boolean;
   fieldConfig?: FieldConfigSource;
-  legendCalcs?: readonly string[];
+  legendCalcs?: unknown;
   panelOptions?: unknown;
 }
 
 interface CompactTimeSeriesPanelConfiguration {
   fieldConfig?: FieldConfigSource;
-  legendCalcs?: readonly string[];
+  legendCalcs?: unknown;
   panelOptions?: unknown;
 }
 
 export function isCompactTimeSeriesPanelConfigurationSupported({
   fieldConfig,
-  legendCalcs = [],
+  legendCalcs,
   panelOptions,
 }: CompactTimeSeriesPanelConfiguration): boolean {
   return (
@@ -40,16 +41,18 @@ export function getPreferredDashboardQueryFormat({
   panelPluginId,
   transformations = [],
   isInspecting = false,
+  isTableView = false,
   isPublicDashboard = false,
   hasTimeComparison = false,
   fieldConfig,
-  legendCalcs = [],
+  legendCalcs,
   panelOptions,
 }: CompactDashboardQueryContext): DataQueryRequest['preferredQueryResultFormat'] {
   if (
     app !== CoreApp.Dashboard ||
     panelPluginId !== 'timeseries' ||
     isInspecting ||
+    isTableView ||
     isPublicDashboard ||
     hasTimeComparison ||
     transformations.some(isEnabledTransformation) ||
@@ -62,7 +65,17 @@ export function getPreferredDashboardQueryFormat({
 }
 
 function hasUnsupportedPanelOptions(options: unknown): boolean {
-  return getObjectProperty(options, 'orientation') === VizOrientation.Vertical;
+  if (options === undefined) {
+    return false;
+  }
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    return true;
+  }
+
+  const legend = getObjectProperty(options, 'legend');
+  const hasMalformedLegend =
+    legend !== undefined && (typeof legend !== 'object' || legend === null || Array.isArray(legend));
+  return hasMalformedLegend || getObjectProperty(options, 'orientation') === VizOrientation.Vertical;
 }
 
 function getObjectProperty(value: unknown, property: string): unknown {
@@ -75,6 +88,12 @@ function isEnabledTransformation(transformation: unknown): boolean {
   );
 }
 
-function hasUnsupportedLegendReducer(reducers: readonly string[]): boolean {
+function hasUnsupportedLegendReducer(reducers: unknown): boolean {
+  if (reducers === undefined) {
+    return false;
+  }
+  if (!Array.isArray(reducers)) {
+    return true;
+  }
   return reducers.some((reducer) => !isCompactReducerSupported(reducer));
 }
