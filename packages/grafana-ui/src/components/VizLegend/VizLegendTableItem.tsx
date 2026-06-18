@@ -104,9 +104,10 @@ export const LegendTableItem = ({
         </span>
       </td>
       {(displayValues ?? item.getDisplayValues?.())?.map((stat, index) => {
+        const text = formattedValueToString(stat);
         return (
-          <td className={styles.value} key={`${stat.title}-${index}`}>
-            {formattedValueToString(stat)}
+          <td className={styles.value} key={`${stat.title}-${index}`} title={text}>
+            {text}
           </td>
         );
       })}

@@ -15,6 +15,8 @@ const naturalCompare = new Intl.Collator(undefined, { numeric: true, sensitivity
 const VIRTUALIZE_THRESHOLD = 200;
 const VIRTUAL_ROW_HEIGHT = 28;
 const VIRTUAL_OVERSCAN = 12;
+const VIRTUAL_NAME_COLUMN_MIN_WIDTH = 160;
+const VIRTUAL_VALUE_COLUMN_WIDTH = 88;
 
 /**
  * @internal
@@ -301,7 +303,6 @@ function renderIndexedTableRows<T>(
 }
 
 function LegendTableHeader({
-  gridTemplateColumns,
   header,
   isSortable,
   onToggleSort,
@@ -309,7 +310,6 @@ function LegendTableHeader({
   sortKey,
   virtual = false,
 }: {
-  gridTemplateColumns?: string;
   header: Record<string, string>;
   isSortable?: boolean;
   onToggleSort?: (sortBy: string) => void;
@@ -320,10 +320,10 @@ function LegendTableHeader({
   const styles = useStyles2(getStyles);
   return (
     <thead className={virtual ? styles.virtualHeader : undefined}>
-      <tr style={gridTemplateColumns ? { gridTemplateColumns } : undefined}>
+      <tr>
         {Object.keys(header).map((columnTitle) => (
           <th
-            title={header[columnTitle]}
+            title={header[columnTitle] ? `${columnTitle}: ${header[columnTitle]}` : columnTitle}
             key={columnTitle}
             className={cx(styles.header, {
               [styles.headerSortable]: Boolean(onToggleSort),
@@ -333,8 +333,14 @@ function LegendTableHeader({
             })}
             onClick={() => onToggleSort && isSortable && onToggleSort(columnTitle)}
           >
-            {columnTitle}
-            {sortKey === columnTitle && <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />}
+            <span className={styles.headerContent}>
+              <span className={styles.headerLabel}>{columnTitle}</span>
+              {sortKey === columnTitle && (
+                <span className={styles.headerSortIcon}>
+                  <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />
+                </span>
+              )}
+            </span>
           </th>
         ))}
       </tr>
@@ -383,7 +389,14 @@ function VirtualizedIndexedVizLegendTable<T>({
     overscan: VIRTUAL_OVERSCAN,
     initialViewportSize: VIRTUAL_ROW_HEIGHT * 12,
   });
-  const gridTemplateColumns = `minmax(0, 1fr) repeat(${Math.max(Object.keys(header).length - 1, 0)}, max-content)`;
+  const columnCount = Object.keys(header).length;
+  const firstVirtualItem = virtualItems[0];
+  const lastVirtualItem = virtualItems[virtualItems.length - 1];
+  const topSpacerSize = firstVirtualItem?.start ?? 0;
+  const bottomSpacerSize = lastVirtualItem
+    ? Math.max(0, totalSize - lastVirtualItem.start - VIRTUAL_ROW_HEIGHT)
+    : totalSize;
+  const valueColumnCount = Math.max(0, columnCount - 1);
   const focusItem = useCallback(
     (index: number) => {
       const nextIndex = Math.max(0, Math.min(itemSource.length - 1, index));
@@ -426,9 +439,16 @@ function VirtualizedIndexedVizLegendTable<T>({
 
   return (
     <div ref={scrollRef} className={cx(styles.virtualScroll, className)}>
-      <table className={cx(styles.table, styles.virtualTable)} aria-rowcount={itemSource.length + 1}>
+      <table
+        className={cx(styles.table, styles.virtualTable)}
+        aria-rowcount={itemSource.length + 1}
+        style={{ minWidth: VIRTUAL_NAME_COLUMN_MIN_WIDTH + valueColumnCount * VIRTUAL_VALUE_COLUMN_WIDTH }}
+      >
+        <colgroup>
+          <col />
+          {valueColumnCount > 0 && <col span={valueColumnCount} style={{ width: VIRTUAL_VALUE_COLUMN_WIDTH }} />}
+        </colgroup>
         <LegendTableHeader
-          gridTemplateColumns={gridTemplateColumns}
           header={header}
           isSortable={isSortable}
           onToggleSort={onToggleSort}
@@ -436,7 +456,8 @@ function VirtualizedIndexedVizLegendTable<T>({
           sortKey={sortKey}
           virtual
         />
-        <tbody className={styles.virtualBody} style={{ height: totalSize }}>
+        <tbody>
+          <VirtualTableSpacer columnCount={columnCount} size={topSpacerSize} />
           {virtualItems.map((row) => {
             const sourceIndex = sortedOrder?.[row.index] ?? row.index;
             const item = itemSource.getItem(sourceIndex);
@@ -451,13 +472,25 @@ function VirtualizedIndexedVizLegendTable<T>({
                 displayValues={getDisplayValues(sourceIndex, item)}
                 className={styles.virtualRow}
                 rowIndex={row.index + 2}
-                style={{ gridTemplateColumns, transform: `translateY(${row.start}px)` }}
               />
             );
           })}
+          <VirtualTableSpacer columnCount={columnCount} size={bottomSpacerSize} />
         </tbody>
       </table>
     </div>
+  );
+}
+
+function VirtualTableSpacer({ columnCount, size }: { columnCount: number; size: number }) {
+  if (size <= 0) {
+    return null;
+  }
+
+  return (
+    <tr aria-hidden style={{ height: size }}>
+      <td colSpan={columnCount} style={{ border: 0, height: size, padding: 0 }} />
+    </tr>
   );
 }
 
@@ -489,6 +522,19 @@ const getStyles = (theme: GrafanaTheme2) => ({
   headerSortable: css({
     cursor: 'pointer',
   }),
+  headerContent: css({
+    alignItems: 'center',
+    display: 'flex',
+    minWidth: 0,
+  }),
+  headerLabel: css({
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  }),
+  headerSortIcon: css({
+    display: 'inline-flex',
+    flexShrink: 0,
+  }),
   virtualScroll: css({
     height: '100%',
     minHeight: VIRTUAL_ROW_HEIGHT * 3,
@@ -496,28 +542,29 @@ const getStyles = (theme: GrafanaTheme2) => ({
     width: '100%',
   }),
   virtualTable: css({
-    display: 'block',
-  }),
-  virtualHeader: css({
-    display: 'block',
-    position: 'sticky',
-    top: 0,
-    zIndex: 1,
-    tr: {
-      display: 'grid',
+    borderSpacing: 0,
+    tableLayout: 'fixed',
+    'td:first-child': {
+      overflow: 'hidden',
+    },
+    'th:not(:first-child)': {
+      overflow: 'hidden',
+    },
+    'td:not(:first-child)': {
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
     },
   }),
-  virtualBody: css({
-    display: 'block',
-    position: 'relative',
-    width: '100%',
+  virtualHeader: css({
+    background: theme.colors.background.primary,
+    'th:not(.sr-only)': {
+      background: theme.colors.background.primary,
+      position: 'sticky',
+      top: 0,
+      zIndex: 1,
+    },
   }),
   virtualRow: css({
-    display: 'grid',
-    left: 0,
-    minHeight: VIRTUAL_ROW_HEIGHT,
-    position: 'absolute',
-    top: 0,
-    width: '100%',
+    height: VIRTUAL_ROW_HEIGHT,
   }),
 });

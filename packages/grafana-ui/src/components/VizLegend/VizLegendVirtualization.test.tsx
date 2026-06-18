@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import { LegendDisplayMode } from '@grafana/schema';
 
@@ -67,8 +68,71 @@ describe('high-cardinality visualization UI', () => {
     expect(source.getItem).toHaveBeenCalled();
     expect(source.getItem.mock.calls.length).toBeLessThan(40);
     expect(source.getItem).toHaveBeenNthCalledWith(1, 0);
-    expect(screen.getByRole('table')).toHaveAttribute('aria-rowcount', '1001');
+    const table = screen.getByRole('table');
+    const hiddenHeader = table.querySelector('th')!;
+    expect(table).toHaveAttribute('aria-rowcount', '1001');
+    expect(hiddenHeader).toHaveClass('sr-only');
+    expect(getComputedStyle(hiddenHeader).position).not.toBe('sticky');
     expect(screen.getAllByRole('row')[1]).toHaveAttribute('aria-rowindex', '2');
+  });
+
+  test('keeps virtualized table rows in one opaque table layout while scrolling', () => {
+    const longColumnTitle = 'Maximum statistical difference';
+    const source = createItemSource(1_000);
+    source.getDisplayValues = (index) => [
+      { title: 'Last', text: String(index), numeric: index },
+      { title: 'Mean', text: `${index}.123`, numeric: index + 0.123 },
+      {
+        title: longColumnTitle,
+        text: `maximum-value-${index}-with-extra-precision`,
+        numeric: index * 1_000_000,
+      },
+    ];
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        isSortable
+        sortBy={longColumnTitle}
+        displayValueColumns={[
+          { title: 'Last', description: 'Last value' },
+          { title: 'Mean', description: 'Mean value' },
+          { title: longColumnTitle, description: 'Maximum value' },
+        ]}
+      />
+    );
+
+    const table = screen.getByRole('table');
+    const scrollContainer = table.parentElement!;
+    const firstHeaderCell = table.querySelector('th')!;
+    const valueColumns = table.querySelector('col[span="3"]');
+    expect(table).toHaveStyle({ minWidth: '424px' });
+    expect(getComputedStyle(table).tableLayout).toBe('fixed');
+    expect(valueColumns).toHaveStyle({ width: '88px' });
+    expect(getComputedStyle(firstHeaderCell).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(firstHeaderCell).position).toBe('sticky');
+    const sortedHeader = screen.getByTitle(`${longColumnTitle}: Maximum value`);
+    const headerContent = sortedHeader.firstElementChild!;
+    const headerLabel = headerContent.firstElementChild!;
+    const sortIcon = headerContent.lastElementChild!;
+    expect(headerContent).toHaveStyle({ display: 'flex' });
+    expect(headerLabel).toHaveStyle({ overflow: 'hidden' });
+    expect(sortIcon).toHaveStyle({ flexShrink: 0 });
+    expect(screen.getByText('maximum-value-0-with-extra-precision')).toHaveAttribute(
+      'title',
+      'maximum-value-0-with-extra-precision'
+    );
+    expect(getComputedStyle(screen.getAllByRole('row')[1]).display).toBe('table-row');
+
+    scrollContainer.scrollTop = 560;
+    fireEvent.scroll(scrollContainer);
+
+    const spacer = table.querySelector<HTMLTableRowElement>('tbody > tr[aria-hidden="true"]');
+    expect(spacer).toHaveStyle({ height: '224px' });
+    expect(spacer?.firstElementChild).toHaveAttribute('colspan', '4');
+    expect(screen.getAllByRole('row')[1]).not.toHaveAttribute('style');
   });
 
   test('recovers the visible window when an indexed source shrinks', () => {
@@ -84,6 +148,7 @@ describe('high-cardinality visualization UI', () => {
   });
 
   test('supports keyboard navigation to offscreen indexed table rows', async () => {
+    const user = userEvent.setup();
     const source = createItemSource(1_000);
     render(
       <VizLegendTable
@@ -93,10 +158,8 @@ describe('high-cardinality visualization UI', () => {
         displayValueColumns={[{ title: 'Last', description: 'Last value' }]}
       />
     );
-    const scrollContainer = screen.getByRole('table').parentElement!;
-
-    scrollContainer.focus();
-    fireEvent.keyDown(scrollContainer, { key: 'End' });
+    screen.getByRole('button', { name: 'series-0' }).focus();
+    await user.keyboard('{End}');
 
     await waitFor(() => expect(document.activeElement).toHaveTextContent('series-999'));
   });
