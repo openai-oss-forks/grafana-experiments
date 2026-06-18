@@ -75,7 +75,7 @@ export const VizLayout: VizLayoutComponentType = ({ width, height, legend, child
       containerStyle.flexDirection = 'row';
       legendStyle.maxWidth = maxWidth;
 
-      if (legend.props.width) {
+      if (legend.props.width !== undefined) {
         const legendWidth = getConstrainedLegendWidth(legend.props.width, maxWidth, width);
         legendStyle.width = legendWidth;
         size = { width: width - legendWidth, height };
@@ -87,7 +87,7 @@ export const VizLayout: VizLayoutComponentType = ({ width, height, legend, child
 
   // This happens when position is switched from bottom to right
   // Then we preserve old with for one render cycle until legend is measured in it's new position
-  if (size?.width === 0) {
+  if (size?.width === 0 && (placement !== 'right' || legend.props.width === undefined)) {
     size.width = width;
   }
 

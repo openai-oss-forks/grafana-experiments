@@ -87,25 +87,33 @@ describe('high-cardinality visualization UI', () => {
   });
 
   test('keeps value columns visible in materialized tables with long names', () => {
+    const longColumnTitle = 'Maximum statistical difference';
     const items: VizLegendItem[] = [
       {
         label: `series-${'long-name-'.repeat(20)}`,
         yAxis: 1,
         getDisplayValues: () => [
           { title: 'Min', description: 'Minimum value', text: '1', numeric: 1 },
-          { title: 'Max', description: 'Maximum value', text: '2', numeric: 2 },
+          { title: longColumnTitle, description: 'Maximum value', text: '2', numeric: 2 },
         ],
       },
     ];
 
-    render(<VizLegendTable items={items} placement="right" isSortable />);
+    render(<VizLegendTable items={items} placement="right" isSortable sortBy={longColumnTitle} />);
 
     const table = screen.getByRole('table');
     expect(table).toHaveStyle({ minWidth: '336px' });
     expect(getComputedStyle(table).tableLayout).toBe('fixed');
     expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
     expect(screen.getByTitle('Minimum value')).toHaveTextContent('Min');
-    expect(screen.getByTitle('Maximum value')).toHaveTextContent('Max');
+    const sortedHeader = screen.getByTitle('Maximum value');
+    const headerContent = sortedHeader.firstElementChild!;
+    const headerLabel = headerContent.firstElementChild!;
+    const sortIcon = headerContent.lastElementChild!;
+    expect(sortedHeader).toHaveTextContent(longColumnTitle);
+    expect(headerContent).toHaveStyle({ display: 'flex' });
+    expect(headerLabel).toHaveStyle({ overflow: 'hidden' });
+    expect(sortIcon).toHaveStyle({ flexShrink: 0 });
   });
 
   test('preserves auto table layout for custom materialized rows', () => {

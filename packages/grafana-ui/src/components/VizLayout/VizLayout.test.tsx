@@ -128,4 +128,54 @@ describe('VizLayout', () => {
     expect(renderViz).toHaveBeenCalledWith(1120, 400);
     expect(container.firstElementChild?.lastElementChild).toHaveStyle({ width: '0px' });
   });
+
+  it('applies an explicit zero legend width instead of using its measured width', () => {
+    useMeasureMock.mockReturnValue([
+      jest.fn(),
+      { bottom: 400, height: 400, left: 820, right: 1120, top: 0, width: 300, x: 820, y: 0 },
+    ]);
+    const renderViz = jest.fn(() => null);
+
+    const { container } = render(
+      <VizLayout
+        width={1120}
+        height={400}
+        legend={
+          <VizLayout.Legend placement="right" width={0}>
+            Legend
+          </VizLayout.Legend>
+        }
+      >
+        {renderViz}
+      </VizLayout>
+    );
+
+    expect(renderViz).toHaveBeenCalledWith(1120, 400);
+    expect(container.firstElementChild?.lastElementChild).toHaveStyle({ width: '0px' });
+  });
+
+  it('preserves an intentional zero-width plot when the legend fills the container', () => {
+    useMeasureMock.mockReturnValue([
+      jest.fn(),
+      { bottom: 400, height: 400, left: 0, right: 1120, top: 0, width: 1120, x: 0, y: 0 },
+    ]);
+    const renderViz = jest.fn(() => null);
+
+    const { container } = render(
+      <VizLayout
+        width={1120}
+        height={400}
+        legend={
+          <VizLayout.Legend placement="right" width={2000} maxWidth="100%">
+            Legend
+          </VizLayout.Legend>
+        }
+      >
+        {renderViz}
+      </VizLayout>
+    );
+
+    expect(renderViz).toHaveBeenCalledWith(0, 400);
+    expect(container.firstElementChild?.lastElementChild).toHaveStyle({ width: '1120px' });
+  });
 });

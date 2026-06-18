@@ -144,8 +144,7 @@ export const VizLegendTable = <T extends unknown>({
                 }
               }}
             >
-              {columnTitle}
-              {sortKey === columnTitle && <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />}
+              <LegendTableHeaderContent columnTitle={columnTitle} sortDesc={sortDesc} sortKey={sortKey} />
             </th>
           ))}
         </tr>
@@ -323,6 +322,28 @@ function renderIndexedTableRows<T>(
   return rows;
 }
 
+function LegendTableHeaderContent({
+  columnTitle,
+  sortDesc,
+  sortKey,
+}: {
+  columnTitle: string;
+  sortDesc?: boolean;
+  sortKey?: string;
+}) {
+  const styles = useStyles2(getStyles);
+  return (
+    <span className={styles.headerContent}>
+      <span className={styles.headerLabel}>{columnTitle}</span>
+      {sortKey === columnTitle && (
+        <span className={styles.headerSortIcon}>
+          <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 function LegendTableHeader({
   header,
   isSortable,
@@ -354,14 +375,7 @@ function LegendTableHeader({
             })}
             onClick={() => onToggleSort && isSortable && onToggleSort(columnTitle)}
           >
-            <span className={styles.headerContent}>
-              <span className={styles.headerLabel}>{columnTitle}</span>
-              {sortKey === columnTitle && (
-                <span className={styles.headerSortIcon}>
-                  <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />
-                </span>
-              )}
-            </span>
+            <LegendTableHeaderContent columnTitle={columnTitle} sortDesc={sortDesc} sortKey={sortKey} />
           </th>
         ))}
       </tr>
