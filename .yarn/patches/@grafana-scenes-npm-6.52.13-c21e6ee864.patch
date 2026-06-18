@@ -1,5 +1,5 @@
 diff --git a/dist/esm/packages/scenes/src/core/SceneObjectBase.js b/dist/esm/packages/scenes/src/core/SceneObjectBase.js
-index a26c64b2e71f44b18487aa529ff46d13429d9b46..1523775082e7e7df8cfd2493fc41041322182df0 100644
+index 6ea4a1e03e2..bd529efcc1e 100644
 --- a/dist/esm/packages/scenes/src/core/SceneObjectBase.js
 +++ b/dist/esm/packages/scenes/src/core/SceneObjectBase.js
 @@ -1,4 +1,4 @@
@@ -17,7 +17,7 @@ index a26c64b2e71f44b18487aa529ff46d13429d9b46..1523775082e7e7df8cfd2493fc410413
    const shouldActivateOrKeepAlive = (_a = options == null ? void 0 : options.shouldActivateOrKeepAlive) != null ? _a : false;
    useEffect(() => {
      let unactivate;
-@@ -302,7 +302,9 @@ function useSceneObjectState(model, options) {
+@@ -301,7 +301,9 @@ function useSceneObjectState(model, options) {
      const s = model.subscribeToState((state) => {
        setState(state);
      });
@@ -29,7 +29,7 @@ index a26c64b2e71f44b18487aa529ff46d13429d9b46..1523775082e7e7df8cfd2493fc410413
      }
      return () => {
 diff --git a/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js b/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
-index a08e6f4cb91f4714d649a39bd7d8ca166bcfd351..6b1400d4fc6436ce3f011f8a503fe084c3a40e49 100644
+index a08e6f4cb91..6b1400d4fc6 100644
 --- a/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
 +++ b/dist/esm/packages/scenes/src/querying/SceneDataTransformer.js
 @@ -114,8 +114,8 @@ class SceneDataTransformer extends SceneObjectBase {
@@ -44,7 +44,7 @@ index a08e6f4cb91f4714d649a39bd7d8ca166bcfd351..6b1400d4fc6436ce3f011f8a503fe084
          this.setState({ data: { ...this.state.data, state: data.state } });
        }
 diff --git a/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js b/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js
-index e67aed0ac602d179795ee9efb4c6f10eef8b83c7..95e0233bf34fc29d1f0f963972e9dd41c64a2ffe 100644
+index e67aed0ac60..95e0233bf34 100644
 --- a/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js
 +++ b/dist/esm/packages/scenes/src/variables/VariableDependencyConfig.js
 @@ -54,11 +54,15 @@ class VariableDependencyConfig {
@@ -76,8 +76,83 @@ index e67aed0ac602d179795ee9efb4c6f10eef8b83c7..95e0233bf34fc29d1f0f963972e9dd41
    }
    scanStateForDependencies(state) {
      this._dependencies.clear();
+diff --git a/dist/esm/packages/scenes/src/components/layout/LazyLoader.js b/dist/esm/packages/scenes/src/components/layout/LazyLoader.js
+index 82b134261cb..5217d586d9e 100644
+--- a/dist/esm/packages/scenes/src/components/layout/LazyLoader.js
++++ b/dist/esm/packages/scenes/src/components/layout/LazyLoader.js
+@@ -12,7 +12,7 @@ function useUniqueId() {
+   return idRefLazy.current;
+ }
+ const LazyLoader = React.forwardRef(
+-  ({ children, onLoad, onChange, className, ...rest }, ref) => {
++  ({ children, onLoad, onChange, className, placeholder, ...rest }, ref) => {
+     const id = useUniqueId();
+     const { hideEmpty } = useStyles2(getStyles);
+     const [loaded, setLoaded] = useState(false);
+@@ -40,7 +40,7 @@ const LazyLoader = React.forwardRef(
+         }
+       };
+     });
+-    return /* @__PURE__ */ React.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
++    return /* @__PURE__ */ React.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? placeholder != null ? placeholder : t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
+   }
+ );
+ function getStyles() {
+diff --git a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js
+index e3835916144..0c827ec4c6b 100644
+--- a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js
++++ b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js
+@@ -77,10 +77,11 @@ const gridWrapperClass = css({
+   width: "100%"
+ });
+ const GridItemWrapper = React.forwardRef((props, ref) => {
+-  var _a;
++  var _a, _b;
+   const { grid, layoutItem, index, totalCount, isLazy, style, onLoad, onChange, children, ...divProps } = props;
+   const sceneChild = grid.getSceneLayoutChild(layoutItem.i);
+   const className = (_a = sceneChild.getClassName) == null ? void 0 : _a.call(sceneChild);
++  const placeholder = (_b = sceneChild.getLazyLoaderPlaceholder) == null ? void 0 : _b.call(sceneChild);
+   const innerContent = /* @__PURE__ */ React.createElement(sceneChild.Component, { model: sceneChild, key: sceneChild.state.key });
+   if (isLazy) {
+     return /* @__PURE__ */ React.createElement(
+@@ -91,7 +92,8 @@ const GridItemWrapper = React.forwardRef((props, ref) => {
+         "data-griditem-key": sceneChild.state.key,
+         className: cx(className, props.className),
+         style,
+-        ref
++        ref,
++        placeholder
+       },
+       innerContent,
+       children
+diff --git a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js
+index 3471bc98bc8..cd2af84541d 100644
+--- a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js
++++ b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js
+@@ -58,6 +58,9 @@ class SceneGridRow extends SceneObjectBase {
+     }
+     return count;
+   }
++  getLazyLoaderPlaceholder() {
++    return /* @__PURE__ */ React.createElement(SceneGridRowLazyLoaderPlaceholder, { model: this });
++  }
+ }
+ SceneGridRow.Component = SceneGridRowRenderer;
+ function SceneGridRowRenderer({ model }) {
+@@ -80,6 +83,11 @@ function SceneGridRowRenderer({ model }) {
+     /* @__PURE__ */ React.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text"))
+   ), /* @__PURE__ */ React.createElement("span", { className: cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), actions && /* @__PURE__ */ React.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React.createElement("div", { className: cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React.createElement(Icon, { name: "draggabledots" })));
+ }
++function SceneGridRowLazyLoaderPlaceholder({ model }) {
++  const styles = useStyles2(getSceneGridRowStyles);
++  const { title } = model.useState();
++  return /* @__PURE__ */ React.createElement("div", { className: styles.row }, /* @__PURE__ */ React.createElement("div", { className: styles.rowTitleAndActionsGroup }, /* @__PURE__ */ React.createElement("div", { className: styles.rowTitleButton }, /* @__PURE__ */ React.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text")))));
++}
+ const getSceneGridRowStyles = (theme) => {
+   return {
+     row: css({
 diff --git a/dist/index.js b/dist/index.js
-index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e951732f6b6 100644
+index c261ca847a4..feb635043f9 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -442,7 +442,7 @@ class SceneObjectBase {
@@ -89,7 +164,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
    const shouldActivateOrKeepAlive = (_a = options == null ? void 0 : options.shouldActivateOrKeepAlive) != null ? _a : false;
    React.useEffect(() => {
      let unactivate;
-@@ -453,7 +453,9 @@ function useSceneObjectState(model, options) {
+@@ -452,7 +452,9 @@ function useSceneObjectState(model, options) {
      const s = model.subscribeToState((state) => {
        setState(state);
      });
@@ -100,7 +175,25 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
        setState(model.state);
      }
      return () => {
-@@ -8730,8 +8730,8 @@ class SceneDataTransformer extends SceneObjectBase {
+@@ -7554,7 +7556,7 @@ function useUniqueId() {
+   return idRefLazy.current;
+ }
+ const LazyLoader = React__default.default.forwardRef(
+-  ({ children, onLoad, onChange, className, ...rest }, ref) => {
++  ({ children, onLoad, onChange, className, placeholder, ...rest }, ref) => {
+     const id = useUniqueId();
+     const { hideEmpty } = ui.useStyles2(getStyles$8);
+     const [loaded, setLoaded] = React.useState(false);
+@@ -7582,7 +7584,7 @@ const LazyLoader = React__default.default.forwardRef(
+         }
+       };
+     });
+-    return /* @__PURE__ */ React__default.default.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? i18n.t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React__default.default.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
++    return /* @__PURE__ */ React__default.default.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? placeholder != null ? placeholder : i18n.t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React__default.default.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
+   }
+ );
+ function getStyles$8() {
+@@ -8730,8 +8732,8 @@ class SceneDataTransformer extends SceneObjectBase {
      if (data === this._prevDataFromSource) {
        return true;
      }
@@ -111,7 +204,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
        if (this.state.data && data.state !== this.state.data.state) {
          this.setState({ data: { ...this.state.data, state: data.state } });
        }
-@@ -10099,11 +10099,11 @@ class VariableDependencyConfig {
+@@ -10099,11 +10101,11 @@ class VariableDependencyConfig {
    }
    getNames() {
      const prevState = this._state;
@@ -128,7 +221,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
        this.scanStateForDependencies(newState);
      }
      return this._dependencies;
-@@ -10117,6 +10117,7 @@ class VariableDependencyConfig {
+@@ -10117,6 +10119,7 @@ class VariableDependencyConfig {
    }
    setPaths(paths) {
      this._statePaths = paths;
@@ -136,3 +229,61 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
    }
    scanStateForDependencies(state) {
      this._dependencies.clear();
+@@ -13744,10 +13747,11 @@ const gridWrapperClass = css.css({
+   width: "100%"
+ });
+ const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
+-  var _a;
++  var _a, _b;
+   const { grid, layoutItem, index, totalCount, isLazy, style, onLoad, onChange, children, ...divProps } = props;
+   const sceneChild = grid.getSceneLayoutChild(layoutItem.i);
+   const className = (_a = sceneChild.getClassName) == null ? void 0 : _a.call(sceneChild);
++  const placeholder = (_b = sceneChild.getLazyLoaderPlaceholder) == null ? void 0 : _b.call(sceneChild);
+   const innerContent = /* @__PURE__ */ React__default.default.createElement(sceneChild.Component, { model: sceneChild, key: sceneChild.state.key });
+   if (isLazy) {
+     return /* @__PURE__ */ React__default.default.createElement(
+@@ -13758,7 +13762,8 @@ const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
+         "data-griditem-key": sceneChild.state.key,
+         className: css.cx(className, props.className),
+         style,
+-        ref
++        ref,
++        placeholder
+       },
+       innerContent,
+       children
+@@ -14199,6 +14204,9 @@ class SceneGridRow extends SceneObjectBase {
+     }
+     return count;
+   }
++  getLazyLoaderPlaceholder() {
++    return /* @__PURE__ */ React__default.default.createElement(SceneGridRowLazyLoaderPlaceholder, { model: this });
++  }
+ }
+ SceneGridRow.Component = SceneGridRowRenderer;
+ function SceneGridRowRenderer({ model }) {
+@@ -14221,6 +14229,11 @@ function SceneGridRowRenderer({ model }) {
+     /* @__PURE__ */ React__default.default.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text"))
+   ), /* @__PURE__ */ React__default.default.createElement("span", { className: css.cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), actions && /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React__default.default.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React__default.default.createElement("div", { className: css.cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React__default.default.createElement(ui.Icon, { name: "draggabledots" })));
+ }
++function SceneGridRowLazyLoaderPlaceholder({ model }) {
++  const styles = ui.useStyles2(getSceneGridRowStyles);
++  const { title } = model.useState();
++  return /* @__PURE__ */ React__default.default.createElement("div", { className: styles.row }, /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowTitleAndActionsGroup }, /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowTitleButton }, /* @__PURE__ */ React__default.default.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text")))));
++}
+ const getSceneGridRowStyles = (theme) => {
+   return {
+     row: css.css({
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index c7c24191c3d..39ac7e505c3 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -3148,6 +3148,7 @@ declare class SplitLayout extends SceneObjectBase<SplitLayoutState> {
+-interface Props$1 extends Omit<React__default.HTMLProps<HTMLDivElement>, 'onChange' | 'children'> {
++interface Props$1 extends Omit<React__default.HTMLProps<HTMLDivElement>, 'onChange' | 'children' | 'placeholder'> {
+     children: React__default.ReactNode;
+     key: string;
++    placeholder?: React__default.ReactNode;
+     onLoad?: () => void;
+     onChange?: (isInView: boolean) => void;
+ }

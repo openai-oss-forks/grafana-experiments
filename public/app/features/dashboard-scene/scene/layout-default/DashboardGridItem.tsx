@@ -20,6 +20,7 @@ import { OptionsPaneCategoryDescriptor } from 'app/features/dashboard/components
 import { DashboardStateChangedEvent, RepeatsUpdatedEvent } from '../../edit-pane/shared';
 import { getCloneKey, getLocalVariableValueSet } from '../../utils/clone';
 import { getMultiVariableValues } from '../../utils/utils';
+import { DashboardPanelTitlePlaceholder } from '../layouts-shared/DashboardPanelTitlePlaceholder';
 import { scrollCanvasElementIntoView, scrollIntoView } from '../layouts-shared/scrollCanvasElementIntoView';
 import { DashboardLayoutItem } from '../types/DashboardLayoutItem';
 
@@ -107,6 +108,10 @@ export class DashboardGridItem
 
   public getClassName(): string {
     return this.state.variableName ? 'panel-repeater-grid-item' : '';
+  }
+
+  public getLazyLoaderPlaceholder(): React.ReactNode {
+    return <DashboardPanelTitlePlaceholder panel={this.state.body} />;
   }
 
   public getOptions(): OptionsPaneCategoryDescriptor[] {

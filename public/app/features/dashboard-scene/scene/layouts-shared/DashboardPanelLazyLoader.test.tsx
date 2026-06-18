@@ -14,18 +14,37 @@ import {
 
 let mockOnChange: (isInView: boolean) => void = () => {};
 let mockOnRetentionChange: (isInView: boolean) => void = () => {};
+let mockLazyLoaderStartsLoaded = true;
+let mockLoadLazyLoader: () => void = () => {};
 
 jest.mock('@grafana/scenes', () => {
   const React = jest.requireActual('react');
   return {
     LazyLoader: React.forwardRef(
       (
-        { children, ...props }: { children: ReactNode; onFocusCapture?: () => void; onBlurCapture?: () => void },
+        {
+          children,
+          placeholder,
+          onLoad,
+          ...props
+        }: {
+          children: ReactNode;
+          placeholder?: ReactNode;
+          onLoad?: () => void;
+          onFocusCapture?: () => void;
+          onBlurCapture?: () => void;
+        },
         ref: Ref<HTMLDivElement>
       ) => {
+        const [loaded, setLoaded] = React.useState(mockLazyLoaderStartsLoaded);
+        mockLoadLazyLoader = () => {
+          setLoaded(true);
+          onLoad?.();
+        };
+
         return (
           <div ref={ref} {...props}>
-            {children}
+            {loaded ? children : placeholder}
           </div>
         );
       }
@@ -39,6 +58,8 @@ describe('DashboardPanelLazyLoader', () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
+    mockLazyLoaderStartsLoaded = true;
+    mockLoadLazyLoader = () => {};
     let observerIndex = 0;
     jest.spyOn(global, 'IntersectionObserver').mockImplementation((callback, options) => {
       const currentObserverIndex = observerIndex++;
@@ -109,6 +130,26 @@ describe('DashboardPanelLazyLoader', () => {
     const graphNGRendererActive = useGraphNGRenderVisibility();
     return <button data-graphng-active={graphNGRendererActive}>focused control</button>;
   }
+
+  test('renders a searchable placeholder without mounting panel content', () => {
+    mockLazyLoaderStartsLoaded = false;
+
+    render(
+      <DashboardPanelLazyLoader placeholder={<div>Searchable panel title</div>}>
+        <PanelLifecycleProbe />
+      </DashboardPanelLazyLoader>
+    );
+
+    expect(screen.getByText('Searchable panel title')).toBeInTheDocument();
+    expect(screen.queryByTestId('panel')).not.toBeInTheDocument();
+    expect(onPanelMount).not.toHaveBeenCalled();
+
+    act(() => mockLoadLazyLoader());
+
+    expect(screen.queryByText('Searchable panel title')).not.toBeInTheDocument();
+    expect(screen.getByTestId('panel')).toBeInTheDocument();
+    expect(onPanelMount).toHaveBeenCalledTimes(1);
+  });
 
   test('suspends GraphNG without unmounting the panel and restores it on reentry', () => {
     render(

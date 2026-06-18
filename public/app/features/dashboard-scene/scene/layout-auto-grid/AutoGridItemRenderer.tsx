@@ -11,6 +11,7 @@ import { useDashboardState } from '../../utils/utils';
 import { SoloPanelContextValueWithSearchStringFilter } from '../PanelSearchLayout';
 import { useSoloPanelContext, renderMatchingSoloPanels } from '../SoloPanelContext';
 import { DashboardPanelLazyLoader, DashboardPanelRenderSuspender } from '../layouts-shared/DashboardPanelLazyLoader';
+import { DashboardPanelTitlePlaceholder } from '../layouts-shared/DashboardPanelTitlePlaceholder';
 import { getIsLazy, shouldSuspendGraphNGOffscreen } from '../layouts-shared/utils';
 import { AUTO_GRID_ITEM_DROP_TARGET_ATTR } from '../types/DashboardDropTarget';
 
@@ -81,6 +82,7 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
                     key={item.state.key!}
                     suspendGraphNGOffscreen={suspendGraphNGOffscreen}
                     className={wrapperClassName}
+                    placeholder={<DashboardPanelTitlePlaceholder panel={item} />}
                   >
                     {panelContent}
                   </DashboardPanelLazyLoader>
