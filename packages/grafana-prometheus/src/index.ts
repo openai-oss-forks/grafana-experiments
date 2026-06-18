@@ -66,6 +66,7 @@ export { getQueryHints, getInitHints } from './query_hints';
 export { transformV2, transformDFToTable, parseSampleValue, sortSeriesByLabel } from './result_transformer';
 export {
   type PromQuery,
+  type PromQueryBuilderParseErrorHelp,
   PrometheusCacheLevel,
   PromApplication,
   type PromOptions,

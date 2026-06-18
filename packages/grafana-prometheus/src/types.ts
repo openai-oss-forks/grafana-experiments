@@ -33,6 +33,15 @@ export enum PromApplication {
   Thanos = 'Thanos',
 }
 
+export interface PromQueryBuilderParseErrorHelp {
+  /** Guidance to display when a query cannot be represented completely in builder mode. */
+  text: string;
+  /** Optional label for a link appended to the guidance. Requires `url`. */
+  linkText?: string;
+  /** Optional external help URL. Requires `linkText`. */
+  url?: string;
+}
+
 export interface PromOptions extends DataSourceJsonData {
   timeInterval?: string;
   queryTimeout?: string;
@@ -52,6 +61,8 @@ export interface PromOptions extends DataSourceJsonData {
   oauthPassThru?: boolean;
   seriesEndpoint?: boolean;
   seriesLimit?: number;
+  /** Optional guidance shown in the builder-mode parsing warning. */
+  builderParseErrorHelp?: PromQueryBuilderParseErrorHelp;
 }
 
 export type ExemplarTraceIdDestination = {

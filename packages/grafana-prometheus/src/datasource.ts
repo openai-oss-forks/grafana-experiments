@@ -64,6 +64,7 @@ import {
   PrometheusCacheLevel,
   PromOptions,
   PromQuery,
+  PromQueryBuilderParseErrorHelp,
   PromQueryRequest,
   RawRecordingRules,
   RuleQueryMapping,
@@ -97,6 +98,7 @@ export class PrometheusDatasource
   url: string;
   withCredentials: boolean;
   defaultEditor?: QueryEditorMode;
+  builderParseErrorHelp?: PromQueryBuilderParseErrorHelp;
 
   constructor(
     instanceSettings: DataSourceInstanceSettings<PromOptions>,
@@ -131,6 +133,7 @@ export class PrometheusDatasource
     this.url = instanceSettings.url!;
     this.withCredentials = Boolean(instanceSettings.withCredentials);
     this.defaultEditor = instanceSettings.jsonData.defaultEditor;
+    this.builderParseErrorHelp = instanceSettings.jsonData.builderParseErrorHelp;
 
     // INHERITED PROPERTIES
     this.annotations = PrometheusAnnotationSupport(this);

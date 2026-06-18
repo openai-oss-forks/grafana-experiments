@@ -36,6 +36,8 @@ const defaultQuery = {
   expr: 'metric{label1="foo", label2="bar"}',
 };
 
+const queryUnsupportedByBuilder = 'foo / (bar + baz)';
+
 const defaultMeta: PluginMeta = {
   id: '',
   name: '',
@@ -134,6 +136,79 @@ describe('PromQueryEditorSelector', () => {
       range: true,
       editorMode: QueryEditorMode.Builder,
     });
+  });
+
+  it('shows configured help when the query cannot be visualized in builder mode', async () => {
+    const datasource = getDefaultDatasource({
+      builderParseErrorHelp: {
+        text: 'Use an external query editor to update this query.',
+        linkText: 'Learn more',
+        url: 'https://example.com/query-editor-help',
+      },
+    });
+    const { onChange } = renderWithProps(
+      {
+        expr: queryUnsupportedByBuilder,
+        editorMode: QueryEditorMode.Code,
+      },
+      { datasource }
+    );
+
+    await switchToMode(QueryEditorMode.Builder);
+
+    expect(screen.getByText('Use an external query editor to update this query.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Learn more/ })).toHaveAttribute(
+      'href',
+      'https://example.com/query-editor-help'
+    );
+    expect(onChange).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(onChange).toHaveBeenCalledWith({
+      refId: 'A',
+      expr: queryUnsupportedByBuilder,
+      range: true,
+      editorMode: QueryEditorMode.Builder,
+    });
+  });
+
+  it('keeps the existing warning unchanged when parse-error help is not configured', async () => {
+    const { onChange } = renderWithProps({
+      expr: queryUnsupportedByBuilder,
+      editorMode: QueryEditorMode.Code,
+    });
+
+    await switchToMode(QueryEditorMode.Builder);
+
+    expect(
+      screen.getByText(
+        'There is a syntax error, or the query structure cannot be visualized when switching to the builder mode. Parts of the query may be lost.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Learn more/ })).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes the configured help URL', async () => {
+    const datasource = getDefaultDatasource({
+      builderParseErrorHelp: {
+        text: 'Use an external query editor to update this query.',
+        linkText: 'Learn more',
+        url: 'javascript:alert(document.domain)',
+      },
+    });
+    renderWithProps(
+      {
+        expr: queryUnsupportedByBuilder,
+        editorMode: QueryEditorMode.Code,
+      },
+      { datasource }
+    );
+
+    await switchToMode(QueryEditorMode.Builder);
+
+    expect(screen.queryByRole('link', { name: /Learn more/ })).not.toBeInTheDocument();
   });
 
   it('Should show raw query', async () => {
