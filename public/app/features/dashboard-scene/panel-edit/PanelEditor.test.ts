@@ -21,13 +21,14 @@ import {
   SceneVariableSet,
   VizPanel,
 } from '@grafana/scenes';
-import { VizOrientation } from '@grafana/schema';
+import { GraphDrawStyle, VizOrientation } from '@grafana/schema';
 import { mockDataSource } from 'app/features/alerting/unified/mocks';
 import { setupDataSources } from 'app/features/alerting/unified/testSetup/datasources';
 import { DataSourceType } from 'app/features/alerting/unified/utils/datasource';
 import * as libAPI from 'app/features/library-panels/state/api';
 
 import { DashboardScene } from '../scene/DashboardScene';
+import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 import { LibraryPanelBehavior } from '../scene/LibraryPanelBehavior';
 import { DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
 import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
@@ -132,26 +133,7 @@ describe('PanelEditor', () => {
           state: LoadingState.Done,
           series: [],
           timeRange: getDefaultTimeRange(),
-          compactSeries: {
-            kind: 'compact-response-view',
-            format: COMPACT_TIME_SERIES_FORMAT,
-            buffer: new ArrayBuffer(0),
-            metadata: {
-              getLabel: () => undefined,
-              forEachLabel: () => undefined,
-              materializeLabels: () => undefined,
-            },
-            decodeStats: {
-              responseBytes: 0,
-              axisCount: 0,
-              resultCount: 0,
-              stringCount: 0,
-              stringBytes: 0,
-              seriesCount: 0,
-            },
-            axes: [],
-            series: [],
-          },
+          compactSeries: createCompactSeries(),
         },
       });
       const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
@@ -174,6 +156,110 @@ describe('PanelEditor', () => {
       deactivate = undefined;
 
       expect(panel.state.$data).toBe(queryRunner);
+    });
+
+    it('reruns a compact query when field configuration requires the full response format', async () => {
+      const { panel, dashboard, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+
+      expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a compact query when changed panel options remain compatible', async () => {
+      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Points } }, overrides: [] }, true);
+
+      expect(cancelQuery).not.toHaveBeenCalled();
+      expect(runQueries).not.toHaveBeenCalled();
+    });
+
+    it('does not rerun a compact query when switching to a panel that skips data queries', async () => {
+      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
+
+      await panel.changePluginType('text');
+
+      expect(cancelQuery).not.toHaveBeenCalled();
+      expect(runQueries).not.toHaveBeenCalled();
+    });
+
+    it('does not restart a full-format request that retains stale compact data while loading', async () => {
+      const { panel, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+      queryRunner.setState({
+        data: {
+          ...queryRunner.state.data!,
+          state: LoadingState.Loading,
+          request: { preferredQueryResultFormat: undefined } as DataQueryRequest,
+        },
+      });
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+
+      expect(cancelQuery).not.toHaveBeenCalled();
+      expect(runQueries).not.toHaveBeenCalled();
+    });
+
+    it('restarts an unreported in-flight request when configuration requires the full format', async () => {
+      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor({ withCompactData: false });
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+    });
+
+    it('restarts a compact refresh that still exposes the previous full-format response', async () => {
+      const { panel, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+      queryRunner.setState({
+        data: {
+          ...queryRunner.state.data!,
+          compactSeries: undefined,
+          request: { preferredQueryResultFormat: undefined } as DataQueryRequest,
+        },
+      });
+      cancelQuery.mockClear();
+      runQueries.mockClear();
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] }, true);
+      prepareDashboardQuery(queryRunner);
+      expect(queryRunner.getLastPreparedRequest()?.preferredQueryResultFormat).toBe('compact-v1');
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses a replacement compact query runner added after the panel editor activates', async () => {
+      const { panel } = await setupCompactTimeSeriesEditor();
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries: createCompactSeries(),
+        },
+      });
+      const cancelQuery = jest.spyOn(queryRunner, 'cancelQuery').mockImplementation(() => {});
+      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      panel.setState({ $data: queryRunner });
+      cancelQuery.mockClear();
+      runQueries.mockClear();
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
     it('wraps eligible compact dashboard data before the first response arrives', () => {
@@ -232,26 +318,7 @@ describe('PanelEditor', () => {
           state: LoadingState.Done,
           series: [],
           timeRange: getDefaultTimeRange(),
-          compactSeries: {
-            kind: 'compact-response-view',
-            format: COMPACT_TIME_SERIES_FORMAT,
-            buffer: new ArrayBuffer(0),
-            metadata: {
-              getLabel: () => undefined,
-              forEachLabel: () => undefined,
-              materializeLabels: () => undefined,
-            },
-            decodeStats: {
-              responseBytes: 0,
-              axisCount: 0,
-              resultCount: 0,
-              stringCount: 0,
-              stringBytes: 0,
-              seriesCount: 0,
-            },
-            axes: [],
-            series: [],
-          },
+          compactSeries: createCompactSeries(),
         },
       });
       jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
@@ -559,6 +626,87 @@ describe('PanelEditor', () => {
     });
   });
 });
+
+function createCompactSeries() {
+  return {
+    kind: 'compact-response-view' as const,
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer: new ArrayBuffer(0),
+    metadata: {
+      getLabel: () => undefined,
+      forEachLabel: () => undefined,
+      materializeLabels: () => undefined,
+    },
+    decodeStats: {
+      responseBytes: 0,
+      axisCount: 0,
+      resultCount: 0,
+      stringCount: 0,
+      stringBytes: 0,
+      seriesCount: 0,
+    },
+    axes: [],
+    series: [],
+  };
+}
+
+function createTimeSeriesTestPlugin() {
+  return getPanelPlugin({ id: 'timeseries', skipDataQuery: false }).useFieldConfig({
+    useCustomConfig: (builder) => {
+      builder.addTextInput({
+        name: 'Draw style',
+        path: 'drawStyle',
+        defaultValue: GraphDrawStyle.Line,
+      });
+    },
+  });
+}
+
+async function setupCompactTimeSeriesEditor({ withCompactData = true } = {}) {
+  pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
+  const queryRunner = new DashboardSceneQueryRunner({ queries: [{ refId: 'A' }] });
+  if (withCompactData) {
+    queryRunner.setState({
+      data: {
+        state: LoadingState.Done,
+        series: [],
+        timeRange: getDefaultTimeRange(),
+        compactSeries: createCompactSeries(),
+      },
+    });
+  }
+  const cancelQuery = jest.spyOn(queryRunner, 'cancelQuery').mockImplementation(() => {});
+  const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+  const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+  const gridItem = new DashboardGridItem({ body: panel });
+  const panelEditor = buildPanelEditScene(panel);
+  const dashboard = new DashboardScene({
+    editPanel: panelEditor,
+    isEditing: true,
+    $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+    body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+  });
+
+  deactivate = activateFullSceneTree(dashboard);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  cancelQuery.mockClear();
+  runQueries.mockClear();
+
+  return { panel, dashboard, queryRunner, cancelQuery, runQueries };
+}
+
+function prepareDashboardQuery(queryRunner: DashboardSceneQueryRunner) {
+  const prepareRequests = Reflect.get(queryRunner, 'prepareRequests') as (
+    timeRange: ReturnType<typeof sceneGraph.getTimeRange>,
+    dataSource: DataSourceApi
+  ) => unknown;
+  const dataSource = {
+    interval: '',
+    meta: {},
+    getRef: () => ({ uid: 'ds1', type: DataSourceType.Prometheus }),
+  } as DataSourceApi;
+  prepareRequests.call(queryRunner, sceneGraph.getTimeRange(queryRunner), dataSource);
+}
 
 interface SetupOptions {
   isNewPanel?: boolean;

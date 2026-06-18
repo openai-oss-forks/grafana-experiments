@@ -1,5 +1,6 @@
 import * as H from 'history';
 import { debounce } from 'lodash';
+import { Unsubscribable } from 'rxjs';
 
 import { LoadingState, NavIndex, PanelPlugin } from '@grafana/data';
 import { t } from '@grafana/i18n';
@@ -118,6 +119,91 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       this._layoutItem.subscribeToEvent(DashboardEditActionEvent, ({ payload }) => {
         // TODO add support for undo/redo within panel edit
         payload.perform();
+      })
+    );
+
+    let compatibilityRunner: SceneQueryRunner | undefined;
+    let compatibilityRunnerSubscription: Unsubscribable | undefined;
+    let compactFallbackPending = false;
+
+    const ensureCompatibleQueryFormat = (currentRunner: SceneQueryRunner) => {
+      if (currentRunner !== getQueryRunnerFor(panel)) {
+        return;
+      }
+
+      if (panel.getPlugin()?.meta.skipDataQuery) {
+        compactFallbackPending = false;
+        return;
+      }
+
+      const prefersCompact = dashboard.enrichDataRequest(currentRunner).preferredQueryResultFormat === 'compact-v1';
+      if (prefersCompact) {
+        compactFallbackPending = false;
+        return;
+      }
+
+      const currentData = currentRunner.state.data;
+      const preparedRequest =
+        currentRunner instanceof DashboardSceneQueryRunner ? currentRunner.getLastPreparedRequest() : undefined;
+      const activeRequest = preparedRequest ?? currentData?.request;
+      if (activeRequest && activeRequest.preferredQueryResultFormat !== 'compact-v1') {
+        compactFallbackPending = false;
+        return;
+      }
+
+      const hasCompactRequest = activeRequest
+        ? activeRequest.preferredQueryResultFormat === 'compact-v1'
+        : currentData?.compactSeries !== undefined;
+      const hasUnknownInFlightRequest =
+        currentData == null || (currentData.state === LoadingState.Loading && currentData.request == null);
+
+      if ((hasCompactRequest || hasUnknownInFlightRequest) && !compactFallbackPending) {
+        compactFallbackPending = true;
+        currentRunner.cancelQuery();
+        currentRunner.runQueries();
+      }
+    };
+
+    const updateCompatibilityRunner = () => {
+      const currentRunner = getQueryRunnerFor(panel);
+      if (currentRunner === compatibilityRunner) {
+        return currentRunner;
+      }
+
+      compatibilityRunnerSubscription?.unsubscribe();
+      compatibilityRunner = currentRunner;
+      compactFallbackPending = false;
+      if (currentRunner) {
+        compatibilityRunnerSubscription = currentRunner.subscribeToState((newState, prevState) => {
+          if (newState.data !== prevState.data) {
+            ensureCompatibleQueryFormat(currentRunner);
+          }
+        });
+        this._subs.add(compatibilityRunnerSubscription);
+      }
+
+      return currentRunner;
+    };
+
+    updateCompatibilityRunner();
+    this._subs.add(
+      panel.subscribeToState((newState, prevState) => {
+        // Existing compact data cannot be reused after the panel moves outside compact capabilities.
+        const queryCompatibilityMayHaveChanged =
+          newState.pluginId !== prevState.pluginId ||
+          newState.options !== prevState.options ||
+          newState.fieldConfig !== prevState.fieldConfig ||
+          newState.$data !== prevState.$data;
+        if (!queryCompatibilityMayHaveChanged) {
+          return;
+        }
+
+        const currentRunner = updateCompatibilityRunner();
+        if (!currentRunner) {
+          return;
+        }
+
+        ensureCompatibleQueryFormat(currentRunner);
       })
     );
 

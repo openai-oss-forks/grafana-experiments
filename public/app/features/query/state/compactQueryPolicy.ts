@@ -17,6 +17,24 @@ interface CompactDashboardQueryContext {
   panelOptions?: unknown;
 }
 
+interface CompactTimeSeriesPanelConfiguration {
+  fieldConfig?: FieldConfigSource;
+  legendCalcs?: readonly string[];
+  panelOptions?: unknown;
+}
+
+export function isCompactTimeSeriesPanelConfigurationSupported({
+  fieldConfig,
+  legendCalcs = [],
+  panelOptions,
+}: CompactTimeSeriesPanelConfiguration): boolean {
+  return (
+    !hasUnsupportedLegendReducer(legendCalcs) &&
+    !hasUnsupportedPanelOptions(panelOptions) &&
+    isCompactFieldConfigSupported(fieldConfig)
+  );
+}
+
 export function getPreferredDashboardQueryFormat({
   app,
   panelPluginId,
@@ -35,9 +53,7 @@ export function getPreferredDashboardQueryFormat({
     isPublicDashboard ||
     hasTimeComparison ||
     transformations.some(isEnabledTransformation) ||
-    hasUnsupportedLegendReducer(legendCalcs) ||
-    hasUnsupportedPanelOptions(panelOptions) ||
-    !isCompactFieldConfigSupported(fieldConfig)
+    !isCompactTimeSeriesPanelConfigurationSupported({ fieldConfig, legendCalcs, panelOptions })
   ) {
     return undefined;
   }

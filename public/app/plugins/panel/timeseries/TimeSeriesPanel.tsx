@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import {
+  CompactTimeSeriesData,
   PanelProps,
   DataFrameType,
   DashboardCursorSync,
@@ -8,6 +9,7 @@ import {
   alignTimeRangeCompareData,
   shouldAlignTimeCompare,
   useDataLinksContext,
+  FieldConfigSource,
   FieldType,
 } from '@grafana/data';
 import { config, getPluginImportUtils, PanelDataErrorView } from '@grafana/runtime';
@@ -22,6 +24,7 @@ import {
 } from '@grafana/ui';
 import { FILTER_OUT_OPERATOR, TimeRange2, TooltipHoverMode } from '@grafana/ui/internal';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
+import { isCompactTimeSeriesPanelConfigurationSupported } from 'app/features/query/state/compactQueryPolicy';
 
 import { CompactTooltipPlugin } from './CompactTooltipPlugin';
 import { TimeSeriesTooltip } from './TimeSeriesTooltip';
@@ -36,6 +39,21 @@ import { getPrepareTimeseriesSuggestion } from './suggestions';
 import { getGroupedFilters, getTimezones, prepareGraphableFields } from './utils';
 
 interface TimeSeriesPanelProps extends PanelProps<Options> {}
+
+export function getRenderableCompactSeries(
+  compactSeries: CompactTimeSeriesData | undefined,
+  fieldConfig: FieldConfigSource,
+  options: Options
+): CompactTimeSeriesData | undefined {
+  return compactSeries &&
+    isCompactTimeSeriesPanelConfigurationSupported({
+      fieldConfig,
+      legendCalcs: options.legend.calcs,
+      panelOptions: options,
+    })
+    ? compactSeries
+    : undefined;
+}
 
 export const TimeSeriesPanel = ({
   data,
@@ -66,12 +84,13 @@ export const TimeSeriesPanel = ({
   const theme = useTheme2();
 
   const userCanExecuteActions = useMemo(() => canExecuteActions?.() ?? false, [canExecuteActions]);
-  const hasCompactSeries = Boolean(data.compactSeries);
+  const compactSeries = getRenderableCompactSeries(data.compactSeries, fieldConfig, options);
+  const hasCompactSeries = Boolean(compactSeries);
   // Vertical orientation is not available for users through config.
   // It is simplified version of horizontal time series panel and it does not support all plugins.
   const isVerticallyOriented = options.orientation === VizOrientation.Vertical;
   const { frames, compareDiffMs } = useMemo(() => {
-    if (data.compactSeries) {
+    if (compactSeries) {
       return { frames: [] };
     }
     let frames = prepareGraphableFields(data.series, theme, timeRange);
@@ -102,7 +121,7 @@ export const TimeSeriesPanel = ({
     }
 
     return { frames };
-  }, [data.compactSeries, data.series, theme, timeRange]);
+  }, [compactSeries, data.series, theme, timeRange]);
 
   const compactFieldConfig = useMemo(() => {
     if (!hasCompactSeries) {
@@ -149,7 +168,7 @@ export const TimeSeriesPanel = ({
   const [newAnnotationRange, setNewAnnotationRange] = useState<TimeRange2 | null>(null);
   const cursorSync = sync?.() ?? DashboardCursorSync.Off;
 
-  if ((!frames && !data.compactSeries) || suggestions) {
+  if ((!frames && !compactSeries) || suggestions) {
     return (
       <PanelDataErrorView
         panelId={id}
@@ -166,7 +185,7 @@ export const TimeSeriesPanel = ({
   return (
     <TimeSeries
       frames={frames ?? []}
-      compactSeries={data.compactSeries}
+      compactSeries={compactSeries}
       compactFieldConfig={compactFieldConfig}
       structureRev={data.structureRev}
       timeRange={timeRange}

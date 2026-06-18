@@ -14,11 +14,15 @@ interface PreparedRequests {
   processors: Map<string, unknown>;
 }
 
+type PreparedRequestSnapshot = Pick<DataQueryRequest, 'requestId' | 'preferredQueryResultFormat'>;
+
 /**
  * Dashboard panels can query from a persisted variable selection while an
  * initial refresh is still hydrating the dropdown candidates.
  */
 export class DashboardSceneQueryRunner extends SceneQueryRunner {
+  private lastPreparedRequest?: PreparedRequestSnapshot;
+
   public constructor(initialState: DashboardSceneQueryRunnerState) {
     super(initialState);
     this.wrapPrepareRequests();
@@ -33,7 +37,12 @@ export class DashboardSceneQueryRunner extends SceneQueryRunner {
     runWithSelectedQueryValues(() => super.runQueries());
   }
 
+  public getLastPreparedRequest(): Readonly<PreparedRequestSnapshot> | undefined {
+    return this.lastPreparedRequest;
+  }
+
   private wrapPrepareRequests() {
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- SceneQueryRunner keeps request preparation private.
     const runner = this as unknown as {
       prepareRequests?: (timeRange: unknown, ds: DataSourceApi) => PreparedRequests;
     };
@@ -52,19 +61,26 @@ export class DashboardSceneQueryRunner extends SceneQueryRunner {
         this.applyStepSizeToRequest(request, resolvedMinInterval);
         return request;
       });
+      this.lastPreparedRequest = {
+        requestId: prepared.primary.requestId,
+        preferredQueryResultFormat: prepared.primary.preferredQueryResultFormat,
+      };
 
       return prepared;
     };
   }
 
   private getResolvedMinInterval(ds: DataSourceApi): string | undefined {
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- The base runner state omits subclass state fields.
     const state = this.state as DashboardSceneQueryRunnerState;
     return state.minInterval ? sceneGraph.interpolate(this, state.minInterval) : ds.interval;
   }
 
   private applyStepSizeToRequest(request: DataQueryRequest, minInterval: string | undefined) {
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- The base runner state omits subclass state fields.
     const state = this.state as DashboardSceneQueryRunnerState;
     const norm = resolveQueryIntervalWithStepSize({
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions -- Prepared dashboard requests always have an evaluated range.
       range: request.range as TimeRange,
       maxDataPoints: request.maxDataPoints ?? 500,
       minInterval,
