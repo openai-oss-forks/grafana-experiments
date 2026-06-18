@@ -145,7 +145,11 @@ function IndexedVizLegendList<T>({
     return (
       <div className={cx(styles.bottomWrapper, className)}>
         {axisSources[0].length > 0 && (
-          <div className={styles.section}>
+          <div
+            className={cx(styles.section, {
+              [styles.virtualSection]: axisSources[0].length > VIRTUALIZE_THRESHOLD,
+            })}
+          >
             <IndexedVizLegendGroup<T>
               itemSource={axisSources[0]}
               itemRenderer={(item, index) => renderItem(axisSources[0], item, index)}
@@ -154,7 +158,11 @@ function IndexedVizLegendList<T>({
           </div>
         )}
         {axisSources[1].length > 0 && (
-          <div className={cx(styles.section, styles.sectionRight)}>
+          <div
+            className={cx(styles.section, styles.sectionRight, {
+              [styles.virtualSection]: axisSources[1].length > VIRTUALIZE_THRESHOLD,
+            })}
+          >
             <IndexedVizLegendGroup<T>
               itemSource={axisSources[1]}
               itemRenderer={(item, index) => renderItem(axisSources[1], item, index)}
@@ -342,6 +350,10 @@ const getStyles = (theme: GrafanaTheme2) => {
     }),
     section: css({
       display: 'flex',
+    }),
+    virtualSection: css({
+      flex: '1 1 0',
+      minWidth: 0,
     }),
     sectionRight: css({
       justifyContent: 'flex-end',

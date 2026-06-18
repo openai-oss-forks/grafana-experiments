@@ -15,8 +15,8 @@ const naturalCompare = new Intl.Collator(undefined, { numeric: true, sensitivity
 const VIRTUALIZE_THRESHOLD = 200;
 const VIRTUAL_ROW_HEIGHT = 28;
 const VIRTUAL_OVERSCAN = 12;
-const VIRTUAL_NAME_COLUMN_MIN_WIDTH = 160;
-const VIRTUAL_VALUE_COLUMN_WIDTH = 88;
+const TABLE_NAME_COLUMN_MIN_WIDTH = 160;
+const TABLE_VALUE_COLUMN_WIDTH = 88;
 
 /**
  * @internal
@@ -99,6 +99,7 @@ export const VizLegendTable = <T extends unknown>({
     }
   }
 
+  const hasCustomItemRenderer = Boolean(itemRenderer);
   if (!itemRenderer) {
     /* eslint-disable-next-line react/display-name */
     itemRenderer = (item, index) => (
@@ -113,8 +114,18 @@ export const VizLegendTable = <T extends unknown>({
     );
   }
 
+  const valueColumnCount = Math.max(0, Object.keys(header).length - 1);
+
   return (
-    <table className={cx(styles.table, className)}>
+    <table
+      className={cx(styles.table, !hasCustomItemRenderer && styles.fixedTable, className)}
+      style={
+        hasCustomItemRenderer
+          ? undefined
+          : { minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }
+      }
+    >
+      {!hasCustomItemRenderer && <LegendTableColGroup valueColumnCount={valueColumnCount} />}
       <thead>
         <tr>
           {Object.keys(header).map((columnTitle) => (
@@ -248,8 +259,18 @@ function IndexedVizLegendTable<T>({
     );
   }
 
+  const valueColumnCount = Math.max(0, Object.keys(header).length - 1);
+
   return (
-    <table className={cx(styles.table, className)}>
+    <table
+      className={cx(styles.table, !itemRenderer && styles.fixedTable, className)}
+      style={
+        itemRenderer
+          ? undefined
+          : { minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }
+      }
+    >
+      {!itemRenderer && <LegendTableColGroup valueColumnCount={valueColumnCount} />}
       <LegendTableHeader
         header={header}
         isSortable={isSortable}
@@ -440,14 +461,11 @@ function VirtualizedIndexedVizLegendTable<T>({
   return (
     <div ref={scrollRef} className={cx(styles.virtualScroll, className)}>
       <table
-        className={cx(styles.table, styles.virtualTable)}
+        className={cx(styles.table, styles.fixedTable)}
         aria-rowcount={itemSource.length + 1}
-        style={{ minWidth: VIRTUAL_NAME_COLUMN_MIN_WIDTH + valueColumnCount * VIRTUAL_VALUE_COLUMN_WIDTH }}
+        style={{ minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }}
       >
-        <colgroup>
-          <col />
-          {valueColumnCount > 0 && <col span={valueColumnCount} style={{ width: VIRTUAL_VALUE_COLUMN_WIDTH }} />}
-        </colgroup>
+        <LegendTableColGroup valueColumnCount={valueColumnCount} />
         <LegendTableHeader
           header={header}
           isSortable={isSortable}
@@ -479,6 +497,15 @@ function VirtualizedIndexedVizLegendTable<T>({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function LegendTableColGroup({ valueColumnCount }: { valueColumnCount: number }) {
+  return (
+    <colgroup>
+      <col />
+      {valueColumnCount > 0 && <col span={valueColumnCount} style={{ width: TABLE_VALUE_COLUMN_WIDTH }} />}
+    </colgroup>
   );
 }
 
@@ -541,7 +568,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
     overflow: 'auto',
     width: '100%',
   }),
-  virtualTable: css({
+  fixedTable: css({
     borderSpacing: 0,
     tableLayout: 'fixed',
     'td:first-child': {

@@ -75,13 +75,12 @@ export const VizLayout: VizLayoutComponentType = ({ width, height, legend, child
       containerStyle.flexDirection = 'row';
       legendStyle.maxWidth = maxWidth;
 
-      if (legendMeasure.width) {
-        size = { width: width - legendMeasure.width, height };
-      }
-
       if (legend.props.width) {
-        legendStyle.width = legend.props.width;
-        size = { width: width - legend.props.width, height };
+        const legendWidth = getConstrainedLegendWidth(legend.props.width, maxWidth, width);
+        legendStyle.width = legendWidth;
+        size = { width: width - legendWidth, height };
+      } else if (legendMeasure.width) {
+        size = { width: width - legendMeasure.width, height };
       }
       break;
   }
@@ -118,6 +117,21 @@ export const getVizStyles = (theme: GrafanaTheme2) => {
 interface VizSize {
   width: number;
   height: number;
+}
+
+function getConstrainedLegendWidth(configuredWidth: number, maxWidth: string, containerWidth: number): number {
+  const normalizedMaxWidth = maxWidth.trim();
+  let resolvedMaxWidth: number | undefined;
+  if (normalizedMaxWidth.endsWith('%')) {
+    resolvedMaxWidth = (containerWidth * Number.parseFloat(normalizedMaxWidth)) / 100;
+  } else if (normalizedMaxWidth.endsWith('px')) {
+    resolvedMaxWidth = Number.parseFloat(normalizedMaxWidth);
+  }
+
+  const constrainedMaxWidth =
+    typeof resolvedMaxWidth === 'number' && Number.isFinite(resolvedMaxWidth) ? resolvedMaxWidth : configuredWidth;
+
+  return Math.max(0, Math.min(configuredWidth, constrainedMaxWidth, containerWidth));
 }
 
 /**

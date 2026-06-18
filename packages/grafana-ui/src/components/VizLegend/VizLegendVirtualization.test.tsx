@@ -27,6 +27,8 @@ describe('high-cardinality visualization UI', () => {
     const toolbars = screen.getAllByRole('toolbar');
     expect(toolbars).toHaveLength(2);
     expect(toolbars[0]).toHaveAttribute('aria-orientation', 'horizontal');
+    expect(toolbars[0].parentElement).toHaveStyle({ flex: '1 1 0', minWidth: 0 });
+    expect(toolbars[1].parentElement).toHaveStyle({ flex: '1 1 0', minWidth: 0 });
     expect(source.getItem).toHaveBeenCalled();
     expect(source.getItem.mock.calls.length).toBeLessThan(50);
     expect(source.getItem.mock.calls[0][0]).toBe(0);
@@ -50,6 +52,103 @@ describe('high-cardinality visualization UI', () => {
     expect(source.getItem).toHaveBeenCalled();
     expect(source.getItem.mock.calls.length).toBeLessThan(40);
     expect(source.getItem).toHaveBeenNthCalledWith(1, 999);
+  });
+
+  test('keeps value columns visible in small indexed tables with long names', () => {
+    const source = createItemSource(30);
+    source.getItem.mockImplementation((index) => ({
+      label: `series-${index}-${'long-name-'.repeat(20)}`,
+      yAxis: 1,
+    }));
+    source.getDisplayValues = (index) => [
+      { title: 'Min', text: String(index), numeric: index },
+      { title: 'Max', text: String(index + 1), numeric: index + 1 },
+    ];
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        isSortable
+        displayValueColumns={[
+          { title: 'Min', description: 'Minimum value' },
+          { title: 'Max', description: 'Maximum value' },
+        ]}
+      />
+    );
+
+    const table = screen.getByRole('table');
+    expect(table).toHaveStyle({ minWidth: '336px' });
+    expect(getComputedStyle(table).tableLayout).toBe('fixed');
+    expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
+    expect(screen.getByTitle('Min: Minimum value')).toBeInTheDocument();
+    expect(screen.getByTitle('Max: Maximum value')).toBeInTheDocument();
+  });
+
+  test('keeps value columns visible in materialized tables with long names', () => {
+    const items: VizLegendItem[] = [
+      {
+        label: `series-${'long-name-'.repeat(20)}`,
+        yAxis: 1,
+        getDisplayValues: () => [
+          { title: 'Min', description: 'Minimum value', text: '1', numeric: 1 },
+          { title: 'Max', description: 'Maximum value', text: '2', numeric: 2 },
+        ],
+      },
+    ];
+
+    render(<VizLegendTable items={items} placement="right" isSortable />);
+
+    const table = screen.getByRole('table');
+    expect(table).toHaveStyle({ minWidth: '336px' });
+    expect(getComputedStyle(table).tableLayout).toBe('fixed');
+    expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
+    expect(screen.getByTitle('Minimum value')).toHaveTextContent('Min');
+    expect(screen.getByTitle('Maximum value')).toHaveTextContent('Max');
+  });
+
+  test('preserves auto table layout for custom materialized rows', () => {
+    const items: VizLegendItem[] = [{ label: 'series-0', yAxis: 1 }];
+
+    render(
+      <VizLegendTable
+        items={items}
+        placement="right"
+        itemRenderer={(_, index) => (
+          <tr key={index}>
+            <td>Name</td>
+            <td>Custom value</td>
+          </tr>
+        )}
+      />
+    );
+
+    const table = screen.getByRole('table');
+    expect(getComputedStyle(table).tableLayout).not.toBe('fixed');
+    expect(table.querySelector('colgroup')).not.toBeInTheDocument();
+  });
+
+  test('preserves auto table layout for custom indexed rows', () => {
+    const source = createItemSource(30);
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        itemRenderer={(_, index) => (
+          <tr key={index}>
+            <td>Name</td>
+            <td>Custom value</td>
+          </tr>
+        )}
+      />
+    );
+
+    const table = screen.getByRole('table');
+    expect(getComputedStyle(table).tableLayout).not.toBe('fixed');
+    expect(table.querySelector('colgroup')).not.toBeInTheDocument();
   });
 
   test('does not build a sort order for unsorted indexed tables', () => {
