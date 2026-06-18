@@ -20,7 +20,7 @@ jobs:
       changed: ${{ steps.detect-changes.outputs.frontend }}
       devenv-changed: ${{ steps.detect-changes.outputs.devenv }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -47,7 +47,7 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         total: [16]
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         persist-credentials: false
     - name: Setup Node.js
@@ -79,7 +79,7 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         total: [16]
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         persist-credentials: false
     - name: Setup Enterprise
@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-x64-large
     name: "Decoupled plugin tests"
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         persist-credentials: false
     - name: Setup Node.js
@@ -133,7 +133,7 @@ jobs:
     runs-on: ubuntu-x64-large
     name: "Packages unit tests"
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         persist-credentials: false
     - name: Setup Node.js
@@ -167,7 +167,7 @@ jobs:
     name: All frontend unit tests complete
     runs-on: ubuntu-x64-small
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Check test suites
@@ -186,7 +186,7 @@ jobs:
     runs-on: ubuntu-x64-large
     name: "Devenv frontend-service build"
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
       with:
         persist-credentials: false
     - name: Setup Docker
