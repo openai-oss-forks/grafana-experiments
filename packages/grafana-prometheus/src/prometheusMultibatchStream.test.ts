@@ -331,6 +331,75 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[1].data[0].fields[1].values).toEqual([1, 2]);
   });
 
+  it('surfaces non-compact multibatch plain text error payloads without parsing them as JSONL', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const text = jest.fn();
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame('local_rate_limited', FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: false,
+      status: 429,
+      text,
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(text).not.toHaveBeenCalled();
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].error?.message).toBe('local_rate_limited');
+  });
+
+  it('surfaces non-compact multibatch JSON error payloads as response errors', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(
+            JSON.stringify({ error: { message: '401: Unauthorized', type: 'invalid_request_error' } }),
+            FINAL_BATCH_FLAG,
+            PAYLOAD_ENCODING_IDENTITY,
+            PAYLOAD_TYPE_JSONL
+          )
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: false,
+      status: 401,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].error?.message).toBe('401: Unauthorized');
+  });
+
   it('decodes regular JSON query response payload frames through the standard response decoder', async () => {
     const target: PromQuery = { expr: 'up', refId: 'A' };
     const request = requestForTarget(target);

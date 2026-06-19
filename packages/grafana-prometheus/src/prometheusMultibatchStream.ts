@@ -464,8 +464,9 @@ type PrometheusHistogramSample = [
 
 interface PrometheusApiPayload {
   status?: string;
-  error?: string;
+  error?: string | { message?: string; type?: string; code?: string };
   errorType?: string;
+  message?: string;
   infos?: string[];
   warnings?: string[];
   data?: {
@@ -486,6 +487,11 @@ class JsonlMultiBatchAccumulator {
     }
 
     if (isPrometheusApiPayload(text)) {
+      const error = prometheusApiPayloadError(text);
+      if (error) {
+        return { data: this.snapshot(), error, errors: [error], state };
+      }
+
       this.mergeFrames(decodePrometheusApiResponse(text, query));
       return { data: this.snapshot(), state };
     }
@@ -500,7 +506,14 @@ class JsonlMultiBatchAccumulator {
         continue;
       }
 
-      const event = JSON.parse(trimmed) as JsonlEvent;
+      let event: JsonlEvent;
+      try {
+        event = JSON.parse(trimmed) as JsonlEvent;
+      } catch {
+        const payloadError = dataQueryErrorFromText(trimmed);
+        return { data: this.snapshot(), error: payloadError, errors: [payloadError], state };
+      }
+
       const frameKey = jsonlFrameKey(event);
       switch (event.type) {
         case 'schema': {
@@ -605,10 +618,20 @@ function isPrometheusApiPayload(payload: string): boolean {
   return Boolean(parsed.status || parsed.error || parsed.data?.resultType);
 }
 
+function prometheusApiPayloadError(payload: string): DataQueryError | undefined {
+  const parsed = JSON.parse(payload) as PrometheusApiPayload;
+  if (parsed.status !== 'error' && !parsed.error) {
+    return undefined;
+  }
+  return {
+    message: prometheusApiErrorMessage(parsed),
+  };
+}
+
 function decodePrometheusApiResponse(payload: string, query: MultiBatchQueryContext): DataFrame[] {
   const parsed = JSON.parse(payload) as PrometheusApiPayload;
   if (parsed.status === 'error' || parsed.error) {
-    throw new Error(parsed.error || parsed.errorType || 'Prometheus multi-batch response returned an error');
+    throw new Error(prometheusApiErrorMessage(parsed));
   }
 
   const resultType = parsed.data?.resultType ?? 'matrix';
@@ -658,6 +681,33 @@ function decodePrometheusApiResponse(payload: string, query: MultiBatchQueryCont
     });
   }
   return notices.length > 0 ? frames.map((frame) => withNotices(frame, notices)) : frames;
+}
+
+function prometheusApiErrorMessage(payload: PrometheusApiPayload): string {
+  if (payload.message) {
+    return payload.message;
+  }
+
+  if (typeof payload.error === 'string' && payload.error) {
+    return payload.error;
+  }
+
+  if (payload.error && typeof payload.error === 'object') {
+    return (
+      payload.error.message ||
+      payload.error.type ||
+      payload.error.code ||
+      'Prometheus multi-batch response returned an error'
+    );
+  }
+
+  return payload.errorType || 'Prometheus multi-batch response returned an error';
+}
+
+function dataQueryErrorFromText(text: string): DataQueryError {
+  return {
+    message: text.length > 512 ? text.slice(0, 512) : text,
+  };
 }
 
 function prometheusNotices(payload: PrometheusApiPayload) {

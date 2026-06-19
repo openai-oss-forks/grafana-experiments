@@ -428,6 +428,34 @@ func TestSendCompactDataResponseFrameFallsBackToJSONForCompactUnsupported(t *tes
 	require.Contains(t, string(frame.Body[multiBatchFrameHeaderSize:]), `"A"`)
 }
 
+func TestCompactMultiBatchPayloadDecoderTreatsPlainNonOKPayloadAsError(t *testing.T) {
+	query := compactMultiBatchQuery{RefID: "A", Start: time.Unix(0, 0).UTC(), End: time.Unix(60, 0).UTC(), Step: time.Minute}
+	decoder := newCompactMultiBatchPayloadDecoder(query, backend.Status(http.StatusTooManyRequests))
+
+	response, err := decoder.decode([]byte("local_rate_limited"))
+	require.NoError(t, err)
+	require.Equal(t, backend.Status(http.StatusTooManyRequests), response.Status)
+	require.ErrorContains(t, response.Error, "local_rate_limited")
+
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 1)}
+	require.NoError(t, sendCompactDataResponseFrame(context.Background(), sender, http.StatusTooManyRequests, query, response, true))
+	frame := receiveResponse(t, sender.responses)
+	require.Equal(t, "MBBF", string(frame.Body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), frame.Body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), frame.Body[6]&multiBatchFinalFlag)
+	require.Contains(t, string(frame.Body[multiBatchFrameHeaderSize:]), "local_rate_limited")
+}
+
+func TestCompactMultiBatchPayloadDecoderTreatsJSONErrorObjectAsError(t *testing.T) {
+	query := compactMultiBatchQuery{RefID: "A", Start: time.Unix(0, 0).UTC(), End: time.Unix(60, 0).UTC(), Step: time.Minute}
+	decoder := newCompactMultiBatchPayloadDecoder(query, backend.Status(http.StatusUnauthorized))
+
+	response, err := decoder.decode([]byte(`{"error":{"message":"401: Unauthorized","type":"invalid_request_error"}}`))
+	require.NoError(t, err)
+	require.Equal(t, backend.Status(http.StatusUnauthorized), response.Status)
+	require.ErrorContains(t, response.Error, "401: Unauthorized")
+}
+
 func TestSendCompactDataResponseFrameKeepsNoDataWithNoticesAsNoData(t *testing.T) {
 	query := compactMultiBatchQuery{
 		RefID:        "A",

@@ -144,6 +144,10 @@ func compactMultiBatchResponseHeaders(upstream http.Header) http.Header {
 }
 
 func sendCompactDataResponseFrame(ctx context.Context, sender backend.CallResourceResponseSender, statusCode int, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) error {
+	if response.Error != nil {
+		return sendJSONDataResponseFrame(sender, statusCode, query, response, isFinal)
+	}
+
 	compactResponse, err := encodeCompactMultiBatchResponse(ctx, query, response)
 	if err != nil {
 		if !errors.Is(err, compact.ErrUnsupported) {
@@ -444,6 +448,9 @@ func (d *compactMultiBatchPayloadDecoder) decode(payload []byte) (backend.DataRe
 	if isPrometheusAPIJSONPayload(trimmed) {
 		return decodePrometheusPayload(trimmed, d.query, d.status)
 	}
+	if int(d.status) >= http.StatusBadRequest {
+		return decodePrometheusErrorPayload(trimmed, d.status), nil
+	}
 	return d.jsonlAccumulator.decode(trimmed, d.query, d.status)
 }
 
@@ -461,6 +468,60 @@ func isPrometheusAPIJSONPayload(payload []byte) bool {
 		return false
 	}
 	return envelope.Status != "" || envelope.Error != "" || bytes.Contains(envelope.Data, []byte(`"resultType"`))
+}
+
+func decodePrometheusErrorPayload(payload []byte, status backend.Status) backend.DataResponse {
+	message := prometheusErrorMessage(payload)
+	if message == "" {
+		message = http.StatusText(int(status))
+	}
+	if message == "" {
+		message = fmt.Sprintf("Prometheus multi-batch request failed with status %d", status)
+	}
+	return backend.DataResponse{Status: status, Error: errors.New(message)}
+}
+
+func prometheusErrorMessage(payload []byte) string {
+	var envelope struct {
+		Error     json.RawMessage `json:"error"`
+		ErrorType string          `json:"errorType"`
+		Message   string          `json:"message"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err == nil {
+		if envelope.Message != "" {
+			return envelope.Message
+		}
+		if len(envelope.Error) > 0 {
+			var errorString string
+			if err := json.Unmarshal(envelope.Error, &errorString); err == nil && errorString != "" {
+				return errorString
+			}
+			var errorObject struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
+			}
+			if err := json.Unmarshal(envelope.Error, &errorObject); err == nil {
+				switch {
+				case errorObject.Message != "":
+					return errorObject.Message
+				case errorObject.Type != "":
+					return errorObject.Type
+				case errorObject.Code != "":
+					return errorObject.Code
+				}
+			}
+		}
+		if envelope.ErrorType != "" {
+			return envelope.ErrorType
+		}
+	}
+
+	text := strings.TrimSpace(string(payload))
+	if len(text) > 512 {
+		return text[:512]
+	}
+	return text
 }
 
 type compactMultiBatchJSONLAccumulator struct {
