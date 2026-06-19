@@ -205,7 +205,7 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
     }
 
     // Handle preview suggestions
-    if (!options.withModKey && this.state.isVizPickerOpen) {
+    if (!state.pending && !options.withModKey && this.state.isVizPickerOpen) {
       this.setState({ isVizPickerOpen: false, hasPickedViz: true });
     }
   }

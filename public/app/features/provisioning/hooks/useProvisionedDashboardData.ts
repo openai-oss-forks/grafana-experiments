@@ -1,4 +1,4 @@
-import { Dispatch, SetStateAction, useState } from 'react';
+import { Dispatch, SetStateAction, useMemo, useState } from 'react';
 
 import { RepositoryView } from 'app/api/clients/provisioning/v0alpha1';
 import { useUrlParams } from 'app/core/navigation/hooks';
@@ -37,41 +37,54 @@ export function useDefaultValues({
     folderName: meta.folderUid,
   });
 
-  const timestamp = generateTimestamp();
   const folderPath = folder?.metadata?.annotations?.[AnnoKeySourcePath];
 
-  const dashboardPath = generatePath({
-    timestamp,
-    pathFromAnnotation: saveAsCopy ? undefined : sourcePath,
-    slug: saveAsCopy ? undefined : meta.slug,
-    folderPath,
-  });
+  return useMemo(() => {
+    if (isLoading || !repository) {
+      return null;
+    }
 
-  const defaultWorkflow = getDefaultWorkflow(repository, loadedFromRef);
+    const defaultWorkflow = getDefaultWorkflow(repository, loadedFromRef);
+    const dashboardPath = generatePath({
+      timestamp: generateTimestamp(),
+      pathFromAnnotation: saveAsCopy ? undefined : sourcePath,
+      slug: saveAsCopy ? undefined : meta.slug,
+      folderPath,
+    });
 
-  if (isLoading || !repository) {
-    return null;
-  }
-
-  return {
-    values: {
-      // When workflow is branch, we don't set a default ref, user will select from branches dropdown
-      ref: defaultWorkflow === 'branch' ? '' : (repository?.branch ?? ''),
-      path: dashboardPath,
-      repo: managerIdentity || repository?.name || '',
-      comment: '',
-      folder: {
-        uid: meta.folderUid,
-        title: '',
+    return {
+      values: {
+        // When workflow is branch, we don't set a default ref, user will select from branches dropdown
+        ref: defaultWorkflow === 'branch' ? '' : (repository.branch ?? ''),
+        path: dashboardPath,
+        repo: managerIdentity || repository.name || '',
+        comment: '',
+        folder: {
+          uid: meta.folderUid,
+          title: '',
+        },
+        title: saveAsCopy ? `${defaultTitle} Copy` : defaultTitle,
+        description: defaultDescription ?? '',
+        workflow: defaultWorkflow,
+        copyTags: saveAsCopy ? false : true,
       },
-      title: saveAsCopy ? `${defaultTitle} Copy` : defaultTitle,
-      description: defaultDescription ?? '',
-      workflow: getDefaultWorkflow(repository, loadedFromRef),
-      copyTags: saveAsCopy ? false : true,
-    },
-    isNew: !meta.k8s?.name,
+      isNew: !meta.k8s?.name,
+      repository,
+    };
+  }, [
+    defaultDescription,
+    defaultTitle,
+    folderPath,
+    isLoading,
+    loadedFromRef,
+    managerIdentity,
+    meta.folderUid,
+    meta.k8s?.name,
+    meta.slug,
     repository,
-  };
+    saveAsCopy,
+    sourcePath,
+  ]);
 }
 
 export interface ProvisionedDashboardData {

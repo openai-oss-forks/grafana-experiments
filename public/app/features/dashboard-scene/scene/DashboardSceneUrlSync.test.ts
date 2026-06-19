@@ -49,6 +49,7 @@ describe('DashboardSceneUrlSync', () => {
 
       scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
       expect(scene.state.editPanel).toBeUndefined();
+      expect(scene.urlSync?.getUrlState().editPanel).toBe('panel-1');
 
       scene.urlSync?.updateFromUrl({ editPanel: null });
       libraryPanel.setState({ isLoaded: true });
@@ -61,6 +62,20 @@ describe('DashboardSceneUrlSync', () => {
       const scene = buildTestScene(libraryPanel);
 
       scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
+      scene.urlSync?.updateFromUrl({ editPanel: 'panel-2' });
+      libraryPanel.setState({ isLoaded: true });
+
+      expect(scene.state.editPanel?.getUrlKey()).toBe('2');
+    });
+
+    it('reports a pending library panel ahead of the active editor', () => {
+      const libraryPanel = new LibraryPanelBehavior({ name: 'Library panel', uid: 'library-panel' });
+      const scene = buildTestScene(libraryPanel);
+
+      scene.urlSync?.updateFromUrl({ editPanel: 'panel-2' });
+      scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
+      expect(scene.urlSync?.getUrlState().editPanel).toBe('panel-1');
+
       scene.urlSync?.updateFromUrl({ editPanel: 'panel-2' });
       libraryPanel.setState({ isLoaded: true });
 

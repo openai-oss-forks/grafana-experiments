@@ -33,11 +33,7 @@ export function useSaveDashboard(isCopy = false) {
           getRawDashboardJSON?: () => Dashboard | DashboardV2Spec;
         }
     ) => {
-      const activePanelChange = scene.state.editPanel?.getPendingPanelChange();
-      if (activePanelChange) {
-        await activePanelChange;
-      }
-      await scene.waitForPendingPanelEditCompletion();
+      await scene.waitForPendingPanelEdits();
       let saveModel = options.getRawDashboardJSON?.() ?? options.rawDashboardJSON ?? scene.getSaveModel();
 
       if (options.saveAsCopy) {

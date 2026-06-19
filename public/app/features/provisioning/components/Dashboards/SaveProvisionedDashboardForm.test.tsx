@@ -119,9 +119,13 @@ function setup(props: Partial<Props> = {}) {
       getSaveAsModel: jest.fn().mockReturnValue(mockDashboard),
       setManager: jest.fn(),
       getRawJsonFromEditor: jest.fn().mockReturnValue(undefined),
+      waitForPendingPanelEdits: jest.fn().mockResolvedValue(undefined),
     } as unknown as DashboardScene,
     drawer: {
+      state: { isSaving: false },
       onClose: jest.fn(),
+      onSaveStarted: jest.fn(),
+      onSaveFinished: jest.fn(),
     } as unknown as SaveDashboardDrawer,
     changeInfo: {
       changedSaveModel: mockDashboard,
@@ -255,6 +259,52 @@ describe('SaveProvisionedDashboardForm', () => {
     });
   });
 
+  it('waits for pending panel edits before serializing a repository-backed dashboard', async () => {
+    let finishRequest!: () => void;
+    const requestCompletion = new Promise<void>((resolve) => {
+      finishRequest = resolve;
+    });
+    const mockAction = jest.fn().mockReturnValue(requestCompletion);
+    const mockRequest = { ...mockRequestBase, isSuccess: true };
+    (useCreateOrUpdateRepositoryFile as jest.Mock).mockReturnValue([mockAction, mockRequest]);
+    const { user, props } = setup();
+    let finishPanelEdits!: () => void;
+    props.dashboard.waitForPendingPanelEdits = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPanelEdits = resolve;
+        })
+    );
+    const savedResource = { apiVersion: 'dashboard.grafana.app/v1alpha1', kind: 'Dashboard' };
+    props.dashboard.getSaveResource = jest.fn().mockReturnValue(savedResource);
+
+    await user.type(screen.getByRole('textbox', { name: /comment/i }), 'Wait for panel edits');
+    const saveButton = screen.getByRole('button', { name: /save/i });
+    await user.click(saveButton);
+
+    await waitFor(() => expect(props.dashboard.waitForPendingPanelEdits).toHaveBeenCalledTimes(1));
+    expect((props.drawer.onSaveStarted as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+      (props.dashboard.waitForPendingPanelEdits as jest.Mock).mock.invocationCallOrder[0]
+    );
+    const cancelButton = screen.getByRole('button', { name: /cancel/i });
+    expect(saveButton).toBeDisabled();
+    expect(cancelButton).toBeDisabled();
+    await user.click(saveButton);
+    await user.click(cancelButton);
+    expect(props.drawer.onClose).not.toHaveBeenCalled();
+    expect(props.dashboard.getSaveResource).not.toHaveBeenCalled();
+    expect(mockAction).not.toHaveBeenCalled();
+
+    finishPanelEdits();
+    await waitFor(() => expect(mockAction).toHaveBeenCalledTimes(1));
+    expect(props.dashboard.waitForPendingPanelEdits).toHaveBeenCalledTimes(1);
+    expect(props.dashboard.getSaveResource).toHaveBeenCalledTimes(1);
+    expect(props.drawer.onSaveFinished).not.toHaveBeenCalled();
+
+    finishRequest();
+    await waitFor(() => expect(props.drawer.onSaveFinished).toHaveBeenCalledTimes(1));
+  });
+
   it('should update an existing dashboard successfully', async () => {
     const mockAction = jest.fn();
     const mockRequest = { ...mockRequestBase, isSuccess: true };
@@ -290,6 +340,7 @@ describe('SaveProvisionedDashboardForm', () => {
         getSaveResource: jest.fn().mockReturnValue(updatedDashboard),
         setManager: jest.fn(),
         getRawJsonFromEditor: jest.fn().mockReturnValue(undefined),
+        waitForPendingPanelEdits: jest.fn().mockResolvedValue(undefined),
       } as unknown as DashboardScene,
     });
 
@@ -385,6 +436,7 @@ describe('SaveProvisionedDashboardForm', () => {
         getSaveAsModel: jest.fn().mockReturnValue({}),
         setManager: jest.fn(),
         getRawJsonFromEditor: jest.fn().mockReturnValue(undefined),
+        waitForPendingPanelEdits: jest.fn().mockResolvedValue(undefined),
       } as unknown as DashboardScene,
     });
 
@@ -432,6 +484,7 @@ describe('SaveProvisionedDashboardForm', () => {
         getSaveAsModel: jest.fn().mockReturnValue({}),
         setManager: jest.fn(),
         getRawJsonFromEditor: jest.fn().mockReturnValue(undefined),
+        waitForPendingPanelEdits: jest.fn().mockResolvedValue(undefined),
       } as unknown as DashboardScene,
     });
 
@@ -490,6 +543,7 @@ describe('SaveProvisionedDashboardForm', () => {
         getSaveResourceFromSpec: jest.fn().mockReturnValue(dashboardFromRawJson),
         setManager: jest.fn(),
         getRawJsonFromEditor: jest.fn().mockReturnValue(rawJson),
+        waitForPendingPanelEdits: jest.fn().mockResolvedValue(undefined),
       } as unknown as DashboardScene,
     });
 

@@ -38,14 +38,15 @@ export function SaveDashboardForm({ dashboard, drawer, changeInfo }: Props) {
   });
 
   const onSave = async (overwrite: boolean) => {
+    const { saveTimeRange, saveVariables, saveRefresh } = drawer.state;
+    drawer.onSaveStarted();
     const result = await onSaveDashboard(dashboard, {
       ...options,
       rawDashboardJSON: changedSaveModel,
       getRawDashboardJSON: () =>
-        dashboard.getDashboardChanges(drawer.state.saveTimeRange, drawer.state.saveVariables, drawer.state.saveRefresh)
-          .changedSaveModel,
+        dashboard.getDashboardChanges(saveTimeRange, saveVariables, saveRefresh).changedSaveModel,
       overwrite,
-    });
+    }).finally(drawer.onSaveFinished);
     if (result.status === 'success') {
       dashboard.closeModal();
       drawer.state.onSaveSuccess?.();
@@ -53,13 +54,23 @@ export function SaveDashboardForm({ dashboard, drawer, changeInfo }: Props) {
   };
 
   const cancelButton = (
-    <Button variant="secondary" onClick={() => dashboard.closeModal()} fill="outline">
+    <Button
+      variant="secondary"
+      onClick={() => dashboard.closeModal()}
+      fill="outline"
+      disabled={state.loading || drawer.state.isSaving}
+    >
       <Trans i18nKey="dashboard-scene.save-dashboard-form.cancel-button.cancel">Cancel</Trans>
     </Button>
   );
 
   const saveButton = (overwrite: boolean) => (
-    <SaveButton isValid={hasChanges} isLoading={state.loading} onSave={onSave} overwrite={overwrite} />
+    <SaveButton
+      isValid={hasChanges}
+      isLoading={state.loading || Boolean(drawer.state.isSaving)}
+      onSave={onSave}
+      overwrite={overwrite}
+    />
   );
 
   const isMessageTooLongError = (message?: string) => {

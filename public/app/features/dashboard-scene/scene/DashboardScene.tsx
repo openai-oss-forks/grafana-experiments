@@ -190,6 +190,8 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
    */
   private _initialUrlState?: H.Location;
   private _pendingPanelEditCompletions = new Set<Promise<void>>();
+  private _pendingPanelEditAction?: Promise<void>;
+  private _pendingPanelEditActionCallback?: () => void;
   /**
    * Dashboard changes tracker
    */
@@ -340,8 +342,48 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
     }
   }
 
+  public async waitForPendingPanelEdits() {
+    const panelEditor = this.state.editPanel;
+    const activePanelChange = panelEditor?.getPendingPanelChange();
+    if (activePanelChange) {
+      await activePanelChange;
+    }
+    const libraryPanelSave = panelEditor?.getPendingLibraryPanelSave();
+    if (libraryPanelSave) {
+      await libraryPanelSave;
+    }
+    await this.waitForPendingPanelEditCompletion();
+  }
+
   public hasPendingPanelEditCompletion() {
     return this._pendingPanelEditCompletions.size > 0;
+  }
+
+  private runAfterPendingPanelEdits(action: () => void): boolean {
+    const panelEditor = this.state.editPanel;
+    const hasPendingPanelEdits = Boolean(
+      panelEditor?.getPendingPanelChange() ||
+        panelEditor?.getPendingLibraryPanelSave() ||
+        this.hasPendingPanelEditCompletion()
+    );
+    if (!hasPendingPanelEdits) {
+      return false;
+    }
+
+    this._pendingPanelEditActionCallback = action;
+    if (!this._pendingPanelEditAction) {
+      const clearPendingAction = () => {
+        this._pendingPanelEditAction = undefined;
+        this._pendingPanelEditActionCallback = undefined;
+      };
+      const runPendingAction = () => {
+        const pendingAction = this._pendingPanelEditActionCallback;
+        clearPendingAction();
+        pendingAction?.();
+      };
+      this._pendingPanelEditAction = this.waitForPendingPanelEdits().then(runPendingAction, clearPendingAction);
+    }
+    return true;
   }
 
   public exitEditMode({ skipConfirm, restoreInitialState }: { skipConfirm: boolean; restoreInitialState?: boolean }) {
@@ -402,6 +444,10 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
   }
 
   private exitEditModeConfirmed(restoreInitialState = true) {
+    if (this.runAfterPendingPanelEdits(() => this.exitEditModeConfirmed(true))) {
+      return;
+    }
+
     // No need to listen to changes anymore
     this._changeTracker.stopTrackingChanges();
 
@@ -449,6 +495,10 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
   public discardChangesAndKeepEditing() {
     if (!this.canDiscard()) {
       console.error('Trying to discard back to a state that does not exist, initialState undefined');
+      return;
+    }
+
+    if (this.runAfterPendingPanelEdits(() => this.discardChangesAndKeepEditing())) {
       return;
     }
 

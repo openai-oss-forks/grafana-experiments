@@ -29,7 +29,7 @@ export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
       autofitpanels: this.getAutoFitPanels(),
       viewPanel: state.viewPanel,
       editview: state.editview?.getUrlKey(),
-      editPanel: state.editPanel?.getUrlKey() || undefined,
+      editPanel: this.pendingLibraryPanelEdit?.editPanelKey || state.editPanel?.getUrlKey() || undefined,
       shareView: state.shareView,
       orgId: contextSrv.user.orgId.toString(),
     };

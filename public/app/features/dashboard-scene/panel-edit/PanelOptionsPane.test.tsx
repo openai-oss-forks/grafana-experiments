@@ -357,6 +357,34 @@ describe('PanelOptionsPane', () => {
       expect(panel.onOptionsChange).toHaveBeenNthCalledWith(2, { legend: { showLegend: false } }, true);
     });
 
+    it('lets the latest queued selection control whether the visualization picker closes', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      optionsPane.setState({ isVizPickerOpen: true });
+      const finishPluginChanges: Array<() => void> = [];
+      panel.changePluginType = jest.fn(
+        (pluginId: string) =>
+          new Promise<void>((resolve) => {
+            finishPluginChanges.push(() => {
+              panel.setState({ pluginId });
+              resolve();
+            });
+          })
+      );
+
+      const first = optionsPane.onChangePanel({ pluginId: 'barchart' });
+      await new Promise(process.nextTick);
+      const latest = optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey: true });
+
+      finishPluginChanges[0]();
+      await first;
+      await new Promise(process.nextTick);
+
+      expect(optionsPane.state.isVizPickerOpen).toBe(true);
+      finishPluginChanges[1]();
+      await latest;
+      expect(optionsPane.state.isVizPickerOpen).toBe(true);
+    });
+
     it('does not reopen the visualization picker when a pending change finishes after it was closed', async () => {
       const { optionsPane, panel } = setupTest('panel-1');
       optionsPane.setState({ isVizPickerOpen: true });

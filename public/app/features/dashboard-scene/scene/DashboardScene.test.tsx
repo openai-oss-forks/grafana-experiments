@@ -180,6 +180,77 @@ describe('DashboardScene', () => {
         expect(locationService.getLocation().pathname).toBe('/d/dash-1');
       });
 
+      it('waits for a library panel save before exiting edit mode', async () => {
+        const panel = findVizPanelByKey(scene, 'panel-1')!;
+        const editPanel = buildPanelEditScene(panel);
+        let finishLibrarySave!: () => void;
+        let isLibrarySavePending = true;
+        const librarySave = new Promise<boolean>((resolve) => {
+          finishLibrarySave = () => {
+            isLibrarySavePending = false;
+            resolve(true);
+          };
+        });
+        jest
+          .spyOn(editPanel, 'getPendingLibraryPanelSave')
+          .mockImplementation(() => (isLibrarySavePending ? librarySave : undefined));
+        scene.setState({ editPanel });
+
+        scene.exitEditMode({ skipConfirm: true });
+        expect(scene.state.isEditing).toBe(true);
+
+        finishLibrarySave();
+        await librarySave;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(scene.state.isEditing).toBe(false);
+      });
+
+      it('waits for an active panel change before exiting edit mode', async () => {
+        const panel = findVizPanelByKey(scene, 'panel-1')!;
+        const editPanel = buildPanelEditScene(panel);
+        let finishPanelChange!: () => void;
+        let isPanelChangePending = true;
+        const panelChange = new Promise<void>((resolve) => {
+          finishPanelChange = () => {
+            isPanelChangePending = false;
+            resolve();
+          };
+        });
+        jest
+          .spyOn(editPanel, 'getPendingPanelChange')
+          .mockImplementation(() => (isPanelChangePending ? panelChange : undefined));
+        scene.setState({ editPanel });
+
+        scene.exitEditMode({ skipConfirm: true });
+        expect(scene.state.isEditing).toBe(true);
+
+        finishPanelChange();
+        await panelChange;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(scene.state.isEditing).toBe(false);
+      });
+
+      it('restores initial state when a background panel edit dirties the dashboard before exit', async () => {
+        let finishPanelEdit!: () => void;
+        const panelEdit = new Promise<void>((resolve) => {
+          finishPanelEdit = () => {
+            scene.setState({ title: 'Late panel edit' });
+            resolve();
+          };
+        });
+        scene.setPendingPanelEditCompletion(panelEdit);
+
+        scene.exitEditMode({ skipConfirm: true });
+        expect(scene.state.isEditing).toBe(true);
+
+        finishPanelEdit();
+        await panelEdit;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(scene.state.isEditing).toBe(false);
+        expect(scene.state.title).toBe('hello');
+      });
+
       it('Can discard changes and keep editing', () => {
         // @ts-expect-error private property used for unit test
         const changeTracker = scene._changeTracker;
@@ -215,6 +286,35 @@ describe('DashboardScene', () => {
         // Resets tracking
         expect(stopSpy).toHaveBeenCalled();
         expect(startSpy).toHaveBeenCalled();
+      });
+
+      it('waits for an active panel change before discarding and keeping edit mode', async () => {
+        scene.setState({ title: 'Updated title' });
+        const panel = findVizPanelByKey(scene, 'panel-1')!;
+        const editPanel = buildPanelEditScene(panel);
+        let finishPanelChange!: () => void;
+        let isPanelChangePending = true;
+        const panelChange = new Promise<void>((resolve) => {
+          finishPanelChange = () => {
+            isPanelChangePending = false;
+            resolve();
+          };
+        });
+        jest
+          .spyOn(editPanel, 'getPendingPanelChange')
+          .mockImplementation(() => (isPanelChangePending ? panelChange : undefined));
+        scene.setState({ editPanel });
+
+        scene.discardChangesAndKeepEditing();
+        expect(scene.state.title).toBe('Updated title');
+        expect(scene.state.editPanel).toBe(editPanel);
+
+        finishPanelChange();
+        await panelChange;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(scene.state.title).toBe('hello');
+        expect(scene.state.editPanel).toBeUndefined();
+        expect(scene.state.isEditing).toBe(true);
       });
 
       it('Exiting already saved dashboard should not restore initial state', () => {

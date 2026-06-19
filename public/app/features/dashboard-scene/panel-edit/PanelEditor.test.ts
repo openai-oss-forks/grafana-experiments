@@ -10,7 +10,7 @@ import {
   PanelPlugin,
 } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
-import { config } from '@grafana/runtime';
+import { config, locationService } from '@grafana/runtime';
 import {
   CancelActivationHandler,
   CustomVariable,
@@ -807,6 +807,61 @@ describe('PanelEditor', () => {
       expect(libPanelBehavior.state.name).toBe('changed name');
       expect(panel.state.title).toBe('changed title');
       expect((gridItem.state.body as VizPanel).state.title).toBe('changed title');
+    });
+
+    it('coalesces concurrent library panel saves', async () => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'text' });
+      new DashboardGridItem({ body: panel });
+      const editScene = buildPanelEditScene(panel);
+      let finishSave!: () => void;
+      const saveLibPanel = jest.spyOn(libAPI, 'saveLibPanel').mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            finishSave = resolve;
+          })
+      );
+      saveLibPanel.mockClear();
+
+      const firstSave = editScene.onConfirmSaveLibraryPanel();
+      const secondSave = editScene.onConfirmSaveLibraryPanel();
+
+      expect(secondSave).toBe(firstSave);
+      expect(saveLibPanel).toHaveBeenCalledTimes(1);
+      finishSave();
+      await expect(firstSave).resolves.toBe(true);
+      await expect(secondSave).resolves.toBe(true);
+    });
+
+    it('does not discard while a library panel save is pending', async () => {
+      const { panelEditor } = await setup();
+      let finishPanelChange!: () => void;
+      const pendingPanelChange = new Promise<void>((resolve) => {
+        finishPanelChange = resolve;
+      });
+      jest.spyOn(panelEditor, 'getPendingPanelChange').mockReturnValue(pendingPanelChange);
+      const saveLibPanel = jest.spyOn(libAPI, 'saveLibPanel').mockImplementation(() => Promise.resolve());
+      saveLibPanel.mockClear();
+
+      const save = panelEditor.onConfirmSaveLibraryPanel();
+      expect(panelEditor.onDiscard()).toBe(false);
+      finishPanelChange();
+
+      await expect(save).resolves.toBe(true);
+      expect(saveLibPanel).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets the caller own navigation after a library panel save', async () => {
+      const { panelEditor } = await setup();
+      const saveLibPanel = jest.spyOn(libAPI, 'saveLibPanel').mockImplementation(() => Promise.resolve());
+      const partial = jest.spyOn(locationService, 'partial');
+      saveLibPanel.mockClear();
+      partial.mockClear();
+
+      await expect(panelEditor.onConfirmSaveLibraryPanel(false)).resolves.toBe(true);
+
+      expect(saveLibPanel).toHaveBeenCalledTimes(1);
+      expect(partial).not.toHaveBeenCalled();
     });
 
     it('unlinks library panel', () => {

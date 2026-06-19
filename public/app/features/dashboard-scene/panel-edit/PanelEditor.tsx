@@ -55,6 +55,7 @@ export interface PanelEditorState extends SceneObjectState {
   dataPane?: PanelDataPane | PanelDataPaneNext;
   panelRef: SceneObjectRef<VizPanel>;
   showLibraryPanelSaveModal?: boolean;
+  isLibraryPanelSaving?: boolean;
   showLibraryPanelUnlinkModal?: boolean;
   editPreview?: VizPanel;
   tableView?: VizPanel;
@@ -83,6 +84,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private _editorQueryRunner?: SceneQueryRunner;
   private _dataProviderBeforeSkip?: SceneDataProvider;
   private _skipCommitChanges = false;
+  private _libraryPanelSave?: Promise<boolean>;
 
   public constructor(state: PanelEditorState) {
     super(state);
@@ -280,7 +282,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
             this.updatePanelDataProvider(plugin, panel, dashboard);
           }
           this.restoreEditorDataSource(panel);
-          this.commitChanges(dashboard, true);
+          return this.commitChanges(dashboard, true);
         });
         dashboard.setPendingPanelEditCompletion(completion);
       } else {
@@ -325,7 +327,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this._editorQueryRunner = undefined;
   }
 
-  private commitChanges(dashboard = getDashboardSceneFor(this), publishImmediately = false) {
+  private commitChanges(dashboard = getDashboardSceneFor(this), publishImmediately = false): Promise<void> | undefined {
     if (this._skipCommitChanges) {
       return;
     }
@@ -364,10 +366,11 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     // is not active while panel edit is active so we have to let the edit pane (which owns undo/redo)
     // publish this event when it activates
     if (publishImmediately) {
-      dashboard.state.editPane.performPanelEditAction(editAction);
+      return dashboard.state.editPane.performPanelEditAction(editAction);
     } else {
       dashboard.state.editPane.setPanelEditAction(editAction);
     }
+    return undefined;
   }
 
   private waitForPlugin(retry = 0) {
@@ -598,7 +601,11 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     };
   }
 
-  public onDiscard = () => {
+  public onDiscard = (): boolean => {
+    if (this._libraryPanelSave) {
+      return false;
+    }
+
     this._skipCommitChanges = true;
     this.setState({ isDirty: false });
 
@@ -612,6 +619,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     }
 
     locationService.partial({ editPanel: null });
+    return true;
   };
 
   public dashboardSaved() {
@@ -626,10 +634,35 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this.setState({ showLibraryPanelSaveModal: true });
   };
 
-  public onConfirmSaveLibraryPanel = async (): Promise<boolean> => {
+  public onConfirmSaveLibraryPanel = (closeEditor = true): Promise<boolean> => {
+    if (this._libraryPanelSave) {
+      return this._libraryPanelSave;
+    }
+
+    const save = this.saveLibraryPanel(closeEditor);
+    this._libraryPanelSave = save;
+    this.setState({ isLibraryPanelSaving: true });
+    const clearSave = () => {
+      if (this._libraryPanelSave === save) {
+        this._libraryPanelSave = undefined;
+        this.setState({ isLibraryPanelSaving: false });
+      }
+    };
+    void save.then(clearSave, clearSave);
+    return save;
+  };
+
+  public getPendingLibraryPanelSave(): Promise<boolean> | undefined {
+    return this._libraryPanelSave;
+  }
+
+  private async saveLibraryPanel(closeEditor: boolean): Promise<boolean> {
     const pendingPanelChange = this.getPendingPanelChange();
     if (pendingPanelChange) {
       await pendingPanelChange;
+    }
+    if (this._skipCommitChanges) {
+      return false;
     }
 
     try {
@@ -640,11 +673,16 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
 
     this._skipCommitChanges = true;
     this.setState({ isDirty: false });
-    locationService.partial({ editPanel: null });
+    if (closeEditor) {
+      locationService.partial({ editPanel: null });
+    }
     return true;
-  };
+  }
 
   public onDismissLibraryPanelSaveModal = () => {
+    if (this._libraryPanelSave) {
+      return;
+    }
     this.setState({ showLibraryPanelSaveModal: false });
   };
 
