@@ -94,7 +94,7 @@ index 82b134261cb..5217d586d9e 100644
        };
      });
 -    return /* @__PURE__ */ React.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
-+    return /* @__PURE__ */ React.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? placeholder != null ? placeholder : t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
++    return /* @__PURE__ */ React.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest, "data-lazy-loaded": loaded || void 0 }, placeholder != null ? placeholder : !loaded ? t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : null, loaded && /* @__PURE__ */ React.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
    }
  );
  function getStyles() {
@@ -139,14 +139,15 @@ index 3471bc98bc8..cd2af84541d 100644
  }
  SceneGridRow.Component = SceneGridRowRenderer;
  function SceneGridRowRenderer({ model }) {
-@@ -80,6 +83,11 @@ function SceneGridRowRenderer({ model }) {
+@@ -80,6 +83,12 @@ function SceneGridRowRenderer({ model }) {
      /* @__PURE__ */ React.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text"))
    ), /* @__PURE__ */ React.createElement("span", { className: cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), actions && /* @__PURE__ */ React.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React.createElement("div", { className: cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React.createElement(Icon, { name: "draggabledots" })));
  }
 +function SceneGridRowLazyLoaderPlaceholder({ model }) {
 +  const styles = useStyles2(getSceneGridRowStyles);
-+  const { title } = model.useState();
-+  return /* @__PURE__ */ React.createElement("div", { className: styles.row }, /* @__PURE__ */ React.createElement("div", { className: styles.rowTitleAndActionsGroup }, /* @__PURE__ */ React.createElement("div", { className: styles.rowTitleButton }, /* @__PURE__ */ React.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text")))));
++  const { title, isCollapsible, isCollapsed } = model.useState();
++  const placeholderClassName = css({ "[data-lazy-loaded='true'] > &": { position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none" }, "[data-lazy-loaded='true'] > & ~ * button[data-testid] > svg, [data-lazy-loaded='true'] > & ~ * button[data-testid] > [role='heading']": { visibility: "hidden" } });
++  return /* @__PURE__ */ React.createElement("div", { className: cx(styles.row, placeholderClassName) }, /* @__PURE__ */ React.createElement("div", { className: styles.rowTitleAndActionsGroup }, /* @__PURE__ */ React.createElement("div", { className: styles.rowTitleButton }, isCollapsible && /* @__PURE__ */ React.createElement(Icon, { name: isCollapsed ? "angle-right" : "angle-down" }), /* @__PURE__ */ React.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text")))));
 +}
  const getSceneGridRowStyles = (theme) => {
    return {
@@ -189,7 +190,7 @@ index c261ca847a4..feb635043f9 100644
        };
      });
 -    return /* @__PURE__ */ React__default.default.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? i18n.t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React__default.default.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
-+    return /* @__PURE__ */ React__default.default.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? placeholder != null ? placeholder : i18n.t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React__default.default.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
++    return /* @__PURE__ */ React__default.default.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest, "data-lazy-loaded": loaded || void 0 }, placeholder != null ? placeholder : !loaded ? i18n.t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : null, loaded && /* @__PURE__ */ React__default.default.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
    }
  );
  function getStyles$8() {
@@ -262,14 +263,15 @@ index c261ca847a4..feb635043f9 100644
  }
  SceneGridRow.Component = SceneGridRowRenderer;
  function SceneGridRowRenderer({ model }) {
-@@ -14221,6 +14229,11 @@ function SceneGridRowRenderer({ model }) {
+@@ -14221,6 +14229,12 @@ function SceneGridRowRenderer({ model }) {
      /* @__PURE__ */ React__default.default.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text"))
    ), /* @__PURE__ */ React__default.default.createElement("span", { className: css.cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), actions && /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React__default.default.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React__default.default.createElement("div", { className: css.cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React__default.default.createElement(ui.Icon, { name: "draggabledots" })));
  }
 +function SceneGridRowLazyLoaderPlaceholder({ model }) {
 +  const styles = ui.useStyles2(getSceneGridRowStyles);
-+  const { title } = model.useState();
-+  return /* @__PURE__ */ React__default.default.createElement("div", { className: styles.row }, /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowTitleAndActionsGroup }, /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowTitleButton }, /* @__PURE__ */ React__default.default.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text")))));
++  const { title, isCollapsible, isCollapsed } = model.useState();
++  const placeholderClassName = css.css({ "[data-lazy-loaded='true'] > &": { position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none" }, "[data-lazy-loaded='true'] > & ~ * button[data-testid] > svg, [data-lazy-loaded='true'] > & ~ * button[data-testid] > [role='heading']": { visibility: "hidden" } });
++  return /* @__PURE__ */ React__default.default.createElement("div", { className: css.cx(styles.row, placeholderClassName) }, /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowTitleAndActionsGroup }, /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowTitleButton }, isCollapsible && /* @__PURE__ */ React__default.default.createElement(ui.Icon, { name: isCollapsed ? "angle-right" : "angle-down" }), /* @__PURE__ */ React__default.default.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text")))));
 +}
  const getSceneGridRowStyles = (theme) => {
    return {

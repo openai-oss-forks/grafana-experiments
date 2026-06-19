@@ -43,8 +43,9 @@ jest.mock('@grafana/scenes', () => {
         };
 
         return (
-          <div ref={ref} {...props}>
-            {loaded ? children : placeholder}
+          <div ref={ref} data-lazy-loaded={loaded || undefined} {...props}>
+            {placeholder}
+            {loaded && children}
           </div>
         );
       }
@@ -131,7 +132,7 @@ describe('DashboardPanelLazyLoader', () => {
     return <button data-graphng-active={graphNGRendererActive}>focused control</button>;
   }
 
-  test('renders a searchable placeholder without mounting panel content', () => {
+  test('keeps a searchable placeholder mounted while lazily mounting panel content', () => {
     mockLazyLoaderStartsLoaded = false;
 
     render(
@@ -140,13 +141,13 @@ describe('DashboardPanelLazyLoader', () => {
       </DashboardPanelLazyLoader>
     );
 
-    expect(screen.getByText('Searchable panel title')).toBeInTheDocument();
+    const title = screen.getByText('Searchable panel title');
     expect(screen.queryByTestId('panel')).not.toBeInTheDocument();
     expect(onPanelMount).not.toHaveBeenCalled();
 
     act(() => mockLoadLazyLoader());
 
-    expect(screen.queryByText('Searchable panel title')).not.toBeInTheDocument();
+    expect(title).toBeInTheDocument();
     expect(screen.getByTestId('panel')).toBeInTheDocument();
     expect(onPanelMount).toHaveBeenCalledTimes(1);
   });
