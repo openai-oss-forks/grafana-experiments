@@ -48,6 +48,14 @@ var (
 			Expression:  "false",
 		},
 		{
+			Name:         "prometheusMultiBatchStreaming",
+			Description:  "Enables progressive rendering for Prometheus HTTP multi-batch responses",
+			Stage:        FeatureStagePublicPreview,
+			FrontendOnly: true,
+			Owner:        grafanaOSSBigTent,
+			Expression:   "false",
+		},
+		{
 			Name:        "featureHighlights",
 			Description: "Highlight Grafana Enterprise features",
 			Stage:       FeatureStageGeneralAvailability,

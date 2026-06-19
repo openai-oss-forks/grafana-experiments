@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -17,9 +20,21 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/grafana/grafana/pkg/promlib/client"
+	"github.com/grafana/grafana/pkg/promlib/compact"
 	"github.com/grafana/grafana/pkg/promlib/models"
 	"github.com/grafana/grafana/pkg/promlib/utils"
 )
+
+const multiBatchContentType = "application/prometheus.multibatch"
+const preferredMultiBatchContentType = "application/com.openai.prometheus.multibatch"
+const streamBufferSize = 32 * 1024
+
+var browserOnlyResourceHeaders = []string{
+	compact.Header,
+	compactMultiBatchRefIDHeader,
+	compactMultiBatchLegendFormatHeader,
+	compactMultiBatchUTCOffsetHeader,
+}
 
 type Resource struct {
 	promClient *client.Client
@@ -50,7 +65,7 @@ func New(
 
 func (r *Resource) Execute(ctx context.Context, req *backend.CallResourceRequest) (*backend.CallResourceResponse, error) {
 	r.log.FromContext(ctx).Debug("Sending resource query", "URL", req.URL)
-	resp, err := r.promClient.QueryResource(ctx, req)
+	resp, err := r.queryResource(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("error querying resource: %v", err)
 	}
@@ -82,6 +97,167 @@ func (r *Resource) Execute(ctx context.Context, req *backend.CallResourceRequest
 	}
 
 	return callResponse, err
+}
+
+func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	r.log.FromContext(ctx).Debug("Sending resource query", "URL", req.URL)
+	resp, err := r.queryResource(ctx, req)
+	if err != nil {
+		return fmt.Errorf("error querying resource: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			r.log.FromContext(ctx).Warn("Failed to close resource response body", "err", closeErr)
+		}
+	}()
+
+	isMultiBatchResponse := isMultiBatchContentType(resp.Header.Get("Content-Type"))
+	if isCompactMultiBatchRequest(req) {
+		return r.executeCompactMultiBatchStream(ctx, req, resp, sender)
+	}
+
+	// frontend sets the X-Grafana-Cache with the desired response cache control value. Streaming
+	// multibatch responses cannot use this complete-response cache because each chunk is sent
+	// separately through CallResourceResponseSender.
+	if !isMultiBatchResponse && len(req.GetHTTPHeaders().Get("X-Grafana-Cache")) > 0 {
+		resp.Header.Set("X-Grafana-Cache", "y")
+		resp.Header.Set("Cache-Control", req.GetHTTPHeaders().Get("X-Grafana-Cache"))
+	}
+
+	if !isMultiBatchResponse {
+		var buf bytes.Buffer
+		// Should be more efficient than ReadAll. See https://github.com/prometheus/client_golang/pull/976
+		_, err = buf.ReadFrom(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		if requestAcceptsMultiBatch(req) {
+			headers := resp.Header.Clone()
+			headers.Del("Content-Length")
+			headers.Del("Content-Encoding")
+			headers.Del("X-Grafana-Cache")
+			headers.Set("Cache-Control", "no-store")
+			headers.Set("Content-Type", preferredMultiBatchContentType+"; version=1")
+
+			body := append(multiBatchResponseHeader(), multiBatchPayloadFrame(multiBatchPayloadTypeJSONL, multiBatchFinalFlag, multiBatchPayloadEncodingIdentity, buf.Bytes())...)
+			return sender.Send(&backend.CallResourceResponse{
+				Status:  resp.StatusCode,
+				Headers: headers,
+				Body:    body,
+			})
+		}
+
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  resp.StatusCode,
+			Headers: resp.Header,
+			Body:    buf.Bytes(),
+		})
+	}
+
+	headers := resp.Header.Clone()
+	headers.Del("Content-Length")
+	headers.Del("X-Grafana-Cache")
+	headers.Set("Cache-Control", "no-store")
+
+	buf := make([]byte, streamBufferSize)
+	sentHeader := false
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			chunkHeaders := http.Header(nil)
+			if !sentHeader {
+				chunkHeaders = headers
+			}
+			if err := sender.Send(&backend.CallResourceResponse{
+				Status:  resp.StatusCode,
+				Headers: chunkHeaders,
+				Body:    chunk,
+			}); err != nil {
+				return err
+			}
+			sentHeader = true
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+
+	if !sentHeader {
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  resp.StatusCode,
+			Headers: headers,
+		})
+	}
+
+	return nil
+}
+
+func (r *Resource) queryResource(ctx context.Context, req *backend.CallResourceRequest) (*http.Response, error) {
+	restoreHeaders := stripBrowserOnlyResourceHeaders(req)
+	defer restoreHeaders()
+
+	return r.promClient.QueryResource(ctx, req)
+}
+
+func stripBrowserOnlyResourceHeaders(req *backend.CallResourceRequest) func() {
+	if req == nil || req.Headers == nil {
+		return func() {}
+	}
+
+	type strippedHeader struct {
+		key    string
+		values []string
+	}
+	stripped := make([]strippedHeader, 0, len(browserOnlyResourceHeaders))
+	for _, header := range browserOnlyResourceHeaders {
+		for key, values := range req.Headers {
+			if !strings.EqualFold(key, header) {
+				continue
+			}
+			stripped = append(stripped, strippedHeader{key: key, values: append([]string(nil), values...)})
+			delete(req.Headers, key)
+		}
+	}
+
+	return func() {
+		for _, header := range stripped {
+			req.Headers[header.key] = header.values
+		}
+	}
+}
+
+func isMultiBatchContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.Split(contentType, ";")[0]
+	}
+	mediaType = strings.TrimSpace(mediaType)
+	return strings.EqualFold(mediaType, multiBatchContentType) ||
+		strings.EqualFold(mediaType, preferredMultiBatchContentType)
+}
+
+func requestAcceptsMultiBatch(req *backend.CallResourceRequest) bool {
+	accept := req.GetHTTPHeaders().Get("Accept")
+	if accept == "" {
+		return false
+	}
+
+	for _, value := range strings.Split(accept, ",") {
+		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(value))
+		if err != nil {
+			mediaType = strings.Split(value, ";")[0]
+		}
+		mediaType = strings.TrimSpace(mediaType)
+		if strings.EqualFold(mediaType, multiBatchContentType) || strings.EqualFold(mediaType, preferredMultiBatchContentType) {
+			return true
+		}
+	}
+	return false
 }
 
 func getSelectors(expr string) ([]string, error) {

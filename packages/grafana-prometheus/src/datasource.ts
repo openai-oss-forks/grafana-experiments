@@ -7,8 +7,16 @@ import { gte } from 'semver';
 import {
   AbstractQuery,
   AdHocVariableFilter,
+  COMPACT_TIME_SERIES_FORMAT,
+  CompactTimeSeriesAxis,
+  CompactTimeSeriesData,
+  CompactTimeSeriesMetadata,
+  CompactTimeSeriesNotice,
+  CompactTimeSeriesSeries,
   CoreApp,
   CustomVariableModel,
+  DataFrame,
+  DataQueryError,
   DataQueryRequest,
   DataQueryResponse,
   DataSourceGetTagKeysOptions,
@@ -19,6 +27,8 @@ import {
   dateTime,
   getDefaultTimeRange,
   LegacyMetricFindQueryOptions,
+  Labels,
+  LoadingState,
   MetricFindValue,
   QueryFixAction,
   QueryVariableModel,
@@ -56,6 +66,7 @@ import { getQueryHints } from './query_hints';
 import { renderLabelsWithoutBrackets } from './querybuilder/shared/rendering/labels';
 import { QueryBuilderLabelFilter, QueryEditorMode } from './querybuilder/shared/types';
 import { CacheRequestInfo, defaultPrometheusQueryOverlapWindow, QueryCache } from './querycache/QueryCache';
+import { getPrometheusMultiBatchIntervals, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { transformV2 } from './result_transformer';
 import { trackQuery } from './tracking';
 import {
@@ -87,6 +98,8 @@ export class PrometheusDatasource
   exemplarsAvailable: boolean;
   hasIncrementalQuery: boolean;
   httpMethod: string;
+  queryHttpMethod: string;
+  queryTimeout: string;
   interval: string;
   languageProvider: PrometheusLanguageProviderInterface;
   lookupsDisabled: boolean;
@@ -122,6 +135,8 @@ export class PrometheusDatasource
     this.exemplarsAvailable = true;
     this.hasIncrementalQuery = instanceSettings.jsonData.incrementalQuerying ?? false;
     this.httpMethod = instanceSettings.jsonData.httpMethod || 'GET';
+    this.queryHttpMethod = instanceSettings.jsonData.httpMethod || 'POST';
+    this.queryTimeout = instanceSettings.jsonData.queryTimeout ?? '';
     this.interval = instanceSettings.jsonData.timeInterval || '15s';
     this.lookupsDisabled = instanceSettings.jsonData.disableMetricsLookup ?? false;
     this.ruleMappings = {};
@@ -467,6 +482,16 @@ export class PrometheusDatasource
       return this.directAccessError();
     }
 
+    const multiBatchTargets = this.getPrometheusMultiBatchTargets(request);
+    if (multiBatchTargets.length > 0) {
+      const preparedTargets = multiBatchTargets.map((target) =>
+        this.preparePrometheusMultiBatchTarget(target, request)
+      );
+      const startTime = new Date();
+
+      return this.queryPrometheusMultiBatchTargets(request, preparedTargets, startTime);
+    }
+
     // Compact responses must retain their binary ownership through rendering. The incremental
     // cache stores and merges DataFrames, so legacy JSON queries are the only eligible inputs.
     const shouldUseIncrementalQuery =
@@ -503,6 +528,244 @@ export class PrometheusDatasource
         trackQuery(response, request, startTime);
       })
     );
+  }
+
+  private queryPrometheusMultiBatchTargets(
+    request: DataQueryRequest<PromQuery>,
+    targets: PromQuery[],
+    startTime: Date
+  ): Observable<DataQueryResponse> {
+    if (targets.length === 1) {
+      const responseKey = `${request.requestId}-prometheus-multibatch`;
+      const target = targets[0];
+      return queryPrometheusMultiBatch(this.uid, request, target, {
+        httpMethod: this.queryHttpMethod,
+        customQueryParameters: this.customQueryParameters,
+        minInterval: request.minInterval ?? this.interval,
+        queryTimeout: this.queryTimeout,
+      }).pipe(
+        map((response) => {
+          const keyedResponse = { ...response, key: responseKey };
+          if (keyedResponse.compactSeries) {
+            return keyedResponse;
+          }
+          return transformV2(keyedResponse, request, {
+            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
+          });
+        }),
+        tap((response) => {
+          if (response.state === LoadingState.Done) {
+            trackQuery(response, request, startTime);
+          }
+        })
+      );
+    }
+
+    return new Observable<DataQueryResponse>((subscriber) => {
+      const latestDataByTarget = new Map<string, DataFrame[]>();
+      const latestCompactSeriesByTarget = new Map<string, CompactTimeSeriesData>();
+      const errorsByTarget = new Map<string, DataQueryError>();
+      const completedTargets = new Set<string>();
+      const targetKeys = targets.map((target, index) => target.refId ?? String(index));
+      const responseKey = `${request.requestId}-prometheus-multibatch`;
+
+      const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
+        latestDataByTarget.set(targetKey, response.data);
+        if (response.compactSeries) {
+          latestCompactSeriesByTarget.set(targetKey, response.compactSeries);
+        }
+        const targetError = response.error ?? response.errors?.[0];
+        if (targetError) {
+          errorsByTarget.set(targetKey, targetError);
+        }
+        if (response.state === LoadingState.Done) {
+          completedTargets.add(targetKey);
+        }
+
+        const allTargetsDone = completedTargets.size === targets.length;
+        const errors = targetKeys.flatMap((key) => {
+          const error = errorsByTarget.get(key);
+          return error ? [error] : [];
+        });
+        const combinedCompactSeries = combineCompactTimeSeries(
+          targetKeys.map((key) => latestCompactSeriesByTarget.get(key))
+        );
+        const rawCombinedResponse: DataQueryResponse = {
+          ...response,
+          compactSeries: combinedCompactSeries,
+          data: targetKeys.flatMap((key) => latestDataByTarget.get(key) ?? []),
+          error: errors[0],
+          errors: errors.length > 0 ? errors : undefined,
+          key: responseKey,
+          state: allTargetsDone ? LoadingState.Done : LoadingState.Streaming,
+        };
+        const combinedResponse = combinedCompactSeries
+          ? rawCombinedResponse
+          : transformV2(rawCombinedResponse, request, {
+              exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
+            });
+
+        if (combinedResponse.state === LoadingState.Done) {
+          trackQuery(combinedResponse, request, startTime);
+        }
+        subscriber.next(combinedResponse);
+      };
+
+      const subscriptions = targets.map((target, index) =>
+        queryPrometheusMultiBatch(this.uid, request, target, {
+          httpMethod: this.queryHttpMethod,
+          customQueryParameters: this.customQueryParameters,
+          minInterval: request.minInterval ?? this.interval,
+          queryTimeout: this.queryTimeout,
+        }).subscribe({
+          complete: () => {
+            completedTargets.add(targetKeys[index]);
+            if (completedTargets.size === targets.length) {
+              subscriber.complete();
+            }
+          },
+          error: (error) => {
+            emitCombinedResponse(targetKeys[index], {
+              data: [],
+              error: this.toDataQueryError(error, target.refId),
+              state: LoadingState.Done,
+            });
+            if (completedTargets.size === targets.length) {
+              subscriber.complete();
+            }
+          },
+          next: (response) => emitCombinedResponse(targetKeys[index], response),
+        })
+      );
+
+      return () => {
+        for (const subscription of subscriptions) {
+          subscription.unsubscribe();
+        }
+      };
+    });
+  }
+
+  private getPrometheusMultiBatchTargets(request: DataQueryRequest<PromQuery>): PromQuery[] {
+    if (!config.featureToggles.prometheusMultiBatchStreaming || config.publicDashboardAccessToken) {
+      return [];
+    }
+
+    const visibleTargets = request.targets.filter((target) => this.filterQuery(target));
+    if (visibleTargets.length === 0) {
+      return [];
+    }
+
+    if ((request.scopes?.length ?? 0) > 0 || (request.groupByKeys?.length ?? 0) > 0) {
+      return [];
+    }
+
+    if (request.queryCachingTTL || request.stepSize || this.hasTemplateVariable(request.minInterval)) {
+      return [];
+    }
+
+    if (visibleTargets.some((target) => !this.isPrometheusMultiBatchTarget(target))) {
+      return [];
+    }
+
+    if (visibleTargets.some((target) => this.shouldUseBackendQueryPathForMultiBatch(target, request))) {
+      return [];
+    }
+
+    return visibleTargets;
+  }
+
+  private isPrometheusMultiBatchTarget(target: PromQuery): boolean {
+    const responseFormat = target.format || 'time_series';
+    if (target.instant || target.range === false || target.exemplar || responseFormat !== 'time_series') {
+      return false;
+    }
+
+    const datasourceUid = typeof target.datasource === 'string' ? target.datasource : target.datasource?.uid;
+    if (datasourceUid && datasourceUid !== this.uid) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private shouldUseBackendQueryPathForMultiBatch(target: PromQuery, request: DataQueryRequest<PromQuery>): boolean {
+    if ((target.scopes?.length ?? 0) > 0 || (target.groupByKeys?.length ?? 0) > 0) {
+      return true;
+    }
+
+    return (
+      this.hasTemplateVariable(target.interval) ||
+      this.hasTemplateVariable(target.stepSize) ||
+      this.hasUnsupportedPrometheusMultiBatchExpression(target.expr)
+    );
+  }
+
+  private preparePrometheusMultiBatchTarget(target: PromQuery, request: DataQueryRequest<PromQuery>): PromQuery {
+    const minInterval = request.minInterval ?? this.interval;
+    const intervals = getPrometheusMultiBatchIntervals(request, target, minInterval);
+    const intervalSeconds = intervals.stepSeconds;
+    const interval = rangeUtil.secondsToHms(intervalSeconds);
+    const intervalMs = intervals.stepMs;
+    const rateIntervalMs = this.getPrometheusRateIntervalMs(intervals.rateIntervalBaseMs, target, minInterval);
+    const rateInterval = rangeUtil.secondsToHms(rateIntervalMs / 1000);
+    const scopedVars = {
+      ...request.scopedVars,
+      __interval: { text: interval, value: interval },
+      __interval_ms: { text: intervalMs, value: intervalMs },
+      __rate_interval: request.scopedVars?.__rate_interval ?? { text: rateInterval, value: rateInterval },
+      __rate_interval_ms: request.scopedVars?.__rate_interval_ms ?? { text: rateIntervalMs, value: rateIntervalMs },
+      ...this.getRangeScopedVars(request.range),
+    };
+    const interpolatedTarget = this.interpolateVariablesInQueries([target], scopedVars, request.filters)[0];
+    const targetWithInterpolatedLegend = {
+      ...interpolatedTarget,
+      legendFormat: this.templateSrv.replace(interpolatedTarget.legendFormat, scopedVars),
+    };
+
+    return this.processTargetV2(targetWithInterpolatedLegend, {
+      ...request,
+      targets: [targetWithInterpolatedLegend],
+    })[0];
+  }
+
+  private getPrometheusRateIntervalMs(intervalMs: number, target: PromQuery, minInterval: string | undefined): number {
+    const requestedMinStepMs =
+      this.prometheusIntervalToMs(target.interval) || this.prometheusIntervalToMs(minInterval) || 15000;
+    return Math.max(intervalMs + requestedMinStepMs, 4 * requestedMinStepMs);
+  }
+
+  private prometheusIntervalToMs(interval: string | null | undefined): number {
+    if (!interval || this.hasTemplateVariable(interval)) {
+      return 0;
+    }
+    return rangeUtil.intervalToMs(interval);
+  }
+
+  private hasTemplateVariable(value: string | null | undefined): boolean {
+    return typeof value === 'string' && value.includes('$');
+  }
+
+  private hasUnsupportedPrometheusMultiBatchExpression(expr: string | undefined): boolean {
+    return typeof expr === 'string' && /\b(?:head_[a-zA-Z0-9_]+|median_[a-zA-Z0-9_]+)\s*\(/.test(expr);
+  }
+
+  private toDataQueryError(error: unknown, refId: string | undefined): DataQueryError {
+    if (isFetchError(error)) {
+      return {
+        data: error.data,
+        message: error.message,
+        refId,
+        status: error.status,
+        statusText: error.statusText,
+      };
+    }
+
+    if (error instanceof Error) {
+      return { message: error.message, refId };
+    }
+
+    return { message: String(error), refId };
   }
 
   protected shouldRequestCompactQueryResponse(request: DataQueryRequest<PromQuery>, queries: PromQuery[]): boolean {
@@ -880,6 +1143,103 @@ function isCompactTimeSeriesRangeQuery(query: PromQuery): boolean {
   const responseFormat = format || 'time_series';
 
   return instant !== true && range !== false && exemplar !== true && responseFormat === 'time_series';
+}
+
+export function combineCompactTimeSeries(
+  compactSeriesList: Array<CompactTimeSeriesData | undefined>
+): CompactTimeSeriesData | undefined {
+  const compactSeries = compactSeriesList.filter((series): series is CompactTimeSeriesData => Boolean(series));
+  if (compactSeries.length === 0) {
+    return undefined;
+  }
+  if (compactSeries.length === 1) {
+    return compactSeries[0];
+  }
+
+  const bufferOffsets: number[] = [];
+  let combinedByteLength = 0;
+  for (const series of compactSeries) {
+    combinedByteLength = alignToEightBytes(combinedByteLength);
+    bufferOffsets.push(combinedByteLength);
+    combinedByteLength += series.buffer.byteLength;
+  }
+
+  const combinedBuffer = new ArrayBuffer(combinedByteLength);
+  const combinedBytes = new Uint8Array(combinedBuffer);
+  const combinedAxes: CompactTimeSeriesAxis[] = [];
+  const combinedSeries: CompactTimeSeriesSeries[] = [];
+  const combinedNotices: CompactTimeSeriesNotice[] = [];
+  const sourceBySeries = new Map<
+    CompactTimeSeriesSeries,
+    { metadata: CompactTimeSeriesMetadata; series: CompactTimeSeriesSeries }
+  >();
+  let axisOffset = 0;
+  let resultCount = 0;
+  let stringCount = 0;
+  let stringBytes = 0;
+
+  compactSeries.forEach((source, index) => {
+    const bufferOffset = bufferOffsets[index];
+    combinedBytes.set(new Uint8Array(source.buffer), bufferOffset);
+    combinedAxes.push(...source.axes);
+    resultCount += source.decodeStats.resultCount;
+    stringCount += source.decodeStats.stringCount;
+    stringBytes += source.decodeStats.stringBytes;
+
+    for (const sourceSeries of source.series) {
+      const shiftedSeries: CompactTimeSeriesSeries = {
+        ...sourceSeries,
+        axisId: sourceSeries.axisId + axisOffset,
+        labelRecordsOffset: sourceSeries.labelRecordsOffset + bufferOffset,
+        presenceByteOffset: sourceSeries.presenceByteOffset + bufferOffset,
+        valuesByteOffset: sourceSeries.valuesByteOffset + bufferOffset,
+      };
+      combinedSeries.push(shiftedSeries);
+      sourceBySeries.set(shiftedSeries, { metadata: source.metadata, series: sourceSeries });
+    }
+
+    if (source.notices) {
+      combinedNotices.push(...source.notices);
+    }
+    axisOffset += source.axes.length;
+  });
+
+  const metadata: CompactTimeSeriesMetadata = {
+    getLabel: (series, name) => {
+      const source = sourceBySeries.get(series);
+      return source?.metadata.getLabel(source.series, name);
+    },
+    forEachLabel: (series, callback) => {
+      const source = sourceBySeries.get(series);
+      source?.metadata.forEachLabel(source.series, callback);
+    },
+    materializeLabels: (series, additional?: Labels) => {
+      const source = sourceBySeries.get(series);
+      return source?.metadata.materializeLabels(source.series, additional);
+    },
+  };
+
+  return {
+    kind: 'compact-response-view',
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer: combinedBuffer,
+    axes: combinedAxes,
+    series: combinedSeries,
+    metadata,
+    notices: combinedNotices.length > 0 ? combinedNotices : undefined,
+    decodeStats: {
+      responseBytes: combinedBuffer.byteLength,
+      axisCount: combinedAxes.length,
+      resultCount,
+      stringCount,
+      stringBytes,
+      seriesCount: combinedSeries.length,
+    },
+  };
+}
+
+function alignToEightBytes(value: number): number {
+  return (value + 7) & ~7;
 }
 
 function targetHasScopes(target: PromQuery): boolean {

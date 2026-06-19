@@ -192,6 +192,8 @@ COPY --from=js-src /tmp/grafana/public ./public
 COPY --from=js-src /tmp/grafana/LICENSE ./
 COPY --from=go-src /tmp/grafana/data/plugins-bundled ./data/plugins-bundled
 
+RUN chmod -R a+rX "$GF_PATHS_HOME/conf" "$GF_PATHS_HOME/bin" "$GF_PATHS_HOME/public" "$GF_PATHS_HOME/data" /etc/grafana
+
 RUN grafana server -v | sed -e 's/Version //' > /.grafana-version
 RUN chmod 644 /.grafana-version
 
@@ -200,6 +202,7 @@ EXPOSE 3000
 ARG RUN_SH=./packaging/docker/run.sh
 
 COPY ${RUN_SH} /run.sh
+RUN chmod 755 /run.sh
 
 USER "$GF_UID"
 ENTRYPOINT [ "/run.sh" ]
@@ -255,6 +258,8 @@ COPY --from=js-src /tmp/grafana/public ./public
 COPY --from=js-src /tmp/grafana/LICENSE ./
 COPY --from=go-src /tmp/grafana/data/plugins-bundled ./data/plugins-bundled
 
+RUN chmod -R a+rX "$GF_PATHS_HOME/conf" "$GF_PATHS_HOME/bin" "$GF_PATHS_HOME/public" "$GF_PATHS_HOME/data" /etc/grafana
+
 RUN grafana server -v | sed -e 's/Version //' > /.grafana-version
 RUN chmod 644 /.grafana-version
 
@@ -263,6 +268,7 @@ EXPOSE 3000
 ARG RUN_SH=./packaging/docker/run.sh
 
 COPY ${RUN_SH} /run.sh
+RUN chmod 755 /run.sh
 
 USER "$GF_UID"
 ENTRYPOINT [ "/run.sh" ]

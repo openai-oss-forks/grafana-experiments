@@ -1,12 +1,16 @@
 // Core Grafana history https://github.com/grafana/grafana/blob/v11.0.0-preview/public/app/plugins/datasource/prometheus/datasource.test.ts
 import { cloneDeep } from 'lodash';
-import { lastValueFrom, of } from 'rxjs';
+import { lastValueFrom, Observable, of } from 'rxjs';
 
 import {
   AdHocVariableFilter,
+  COMPACT_TIME_SERIES_FORMAT,
+  CompactTimeSeriesData,
+  CompactTimeSeriesSeries,
   CoreApp,
   CustomVariableModel,
   DataQueryRequest,
+  DataQueryResponse,
   DataSourceInstanceSettings,
   dateTime,
   LoadingState,
@@ -16,7 +20,12 @@ import {
 } from '@grafana/data';
 import { config, getBackendSrv, setBackendSrv, TemplateSrv } from '@grafana/runtime';
 
-import { extractResourceMatcher, extractRuleMappingFromGroups, PrometheusDatasource } from './datasource';
+import {
+  combineCompactTimeSeries,
+  extractResourceMatcher,
+  extractRuleMappingFromGroups,
+  PrometheusDatasource,
+} from './datasource';
 import { prometheusRegularEscape, prometheusSpecialRegexEscape } from './escaping';
 import { PrometheusLanguageProviderInterface } from './language_provider';
 import { CacheRequestInfo } from './querycache/QueryCache';
@@ -74,6 +83,17 @@ const mockTimeRange: TimeRange = {
 beforeEach(() => {
   jest.clearAllMocks();
 });
+
+function collectQueryResponses(observable: Observable<DataQueryResponse>): Promise<DataQueryResponse[]> {
+  return new Promise((resolve, reject) => {
+    const responses: DataQueryResponse[] = [];
+    observable.subscribe({
+      complete: () => resolve(responses),
+      error: reject,
+      next: (response) => responses.push(response),
+    });
+  });
+}
 
 describe('PrometheusDatasource', () => {
   let ds: PrometheusDatasource;
@@ -181,6 +201,411 @@ describe('PrometheusDatasource', () => {
           )
         )
       ).rejects.toMatchObject({ message: expect.stringMatching('Browser access') });
+    });
+
+    it('does not use multi-batch streaming for heatmap queries', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('heatmap queries should not use multi-batch streaming'));
+
+      try {
+        await lastValueFrom(
+          ds.query(createDataRequest([{ expr: 'sum(rate(metric_bucket[1m]))', refId: 'A', format: 'heatmap' }]))
+        );
+
+        expect(browserFetchSpy).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalled();
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('does not use multi-batch streaming for non-core PromQL helper functions', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('helper functions should use the backend query path'));
+
+      try {
+        await lastValueFrom(
+          ds.query(
+            createDataRequest([{ expr: 'head_avg(sum by (job) (up), 10)', refId: 'A' }], {
+              app: CoreApp.Dashboard,
+              panelPluginId: 'timeseries',
+              preferredQueryResultFormat: 'compact-v1',
+            })
+          )
+        );
+
+        expect(browserFetchSpy).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0].url).toContain('/api/ds/query');
+        expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it.each([
+      [
+        'scope requests',
+        [{ expr: 'up', refId: 'A' }],
+        { scopes: [{ metadata: { name: 'tenant' }, spec: { filters: [] } }] },
+      ],
+      ['group-by requests', [{ expr: 'up', refId: 'A' }], { groupByKeys: ['job'] }],
+      ['cache-enabled requests', [{ expr: 'up', refId: 'A' }], { queryCachingTTL: 60 }],
+      ['request-level step sizes', [{ expr: 'up', refId: 'A' }], { stepSize: '30m' }],
+      ['templated target intervals', [{ expr: 'up', interval: '$min_step', refId: 'A' }], {}],
+      ['templated target step sizes', [{ expr: 'up', refId: 'A', stepSize: '$step_size' }], {}],
+    ])('does not use multi-batch streaming for %s', async (_name, targets, requestOverrides) => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('backend-only queries should not use multi-batch streaming'));
+
+      try {
+        await lastValueFrom(
+          ds.query(createDataRequest(targets as PromQuery[], requestOverrides as Partial<DataQueryRequest>))
+        );
+
+        expect(browserFetchSpy).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalled();
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('uses non-compact multi-batch streaming for eligible range queries without expanding compact-v1', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        expect(init?.headers).toEqual(
+          expect.objectContaining({
+            Accept: expect.stringContaining('application/com.openai.prometheus.multibatch'),
+          })
+        );
+        expect(init?.headers).not.toHaveProperty('X-Grafana-Query-Format');
+        throw new Error('stop after selecting non-compact multi-batch path');
+      });
+
+      try {
+        await expect(
+          collectQueryResponses(
+            ds.query(
+              createDataRequest(
+                [{ datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'rate(metric_a[1m])', refId: 'A' }],
+                {
+                  app: CoreApp.Dashboard,
+                  panelPluginId: 'timeseries',
+                }
+              )
+            )
+          )
+        ).rejects.toThrow('stop after selecting non-compact multi-batch path');
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(browserFetchSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('uses compact multi-batch streaming for multi-target range queries', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const defaultReplaceMock = replaceMock.getMockImplementation();
+      replaceMock.mockImplementation((value: string | undefined, scopedVars?: Record<string, { value: unknown }>) => {
+        if (!value) {
+          return value;
+        }
+        return value.replace(/\$__rate_interval/g, String(scopedVars?.__rate_interval?.value ?? '$__rate_interval'));
+      });
+      const browserFetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValue(new Error('stop after selecting multi-batch path'));
+
+      try {
+        await collectQueryResponses(
+          ds.query(
+            createDataRequest(
+              [
+                {
+                  datasource: { type: 'prometheus', uid: 'ABCDEF' },
+                  expr: 'rate(metric_a[$__rate_interval])',
+                  refId: 'A',
+                },
+                {
+                  datasource: { type: 'prometheus', uid: 'ABCDEF' },
+                  expr: 'rate(metric_b[$__rate_interval])',
+                  refId: 'B',
+                },
+              ],
+              {
+                app: CoreApp.Dashboard,
+                panelPluginId: 'timeseries',
+                preferredQueryResultFormat: 'compact-v1',
+              }
+            )
+          )
+        );
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(browserFetchSpy).toHaveBeenCalledTimes(2);
+        expect(browserFetchSpy.mock.calls.map(([url]) => url)).toEqual([
+          '/api/datasources/uid/ABCDEF/resources/api/v1/query_range',
+          '/api/datasources/uid/ABCDEF/resources/api/v1/query_range',
+        ]);
+        expect(
+          browserFetchSpy.mock.calls.map(([, init]) => new URLSearchParams(String(init?.body)).get('query'))
+        ).toEqual(['rate(metric_a[1m])', 'rate(metric_b[1m])']);
+      } finally {
+        browserFetchSpy.mockRestore();
+        replaceMock.mockImplementation(defaultReplaceMock ?? ((a: string) => a));
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('uses request-level min intervals for compact multi-batch step and rate interval interpolation', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const intervalTemplateSrv = {
+        replace: jest.fn((value: string | undefined, scopedVars?: Record<string, { value: unknown }>) => {
+          if (!value) {
+            return value;
+          }
+
+          return value
+            .replace(/\$__rate_interval_ms/g, String(scopedVars?.__rate_interval_ms?.value ?? '$__rate_interval_ms'))
+            .replace(/\$__rate_interval/g, String(scopedVars?.__rate_interval?.value ?? '$__rate_interval'))
+            .replace(/\$__interval_ms/g, String(scopedVars?.__interval_ms?.value ?? '$__interval_ms'))
+            .replace(/\$__interval/g, String(scopedVars?.__interval?.value ?? '$__interval'));
+        }),
+      } as unknown as TemplateSrv;
+      const intervalDs = new PrometheusDatasource(instanceSettings, intervalTemplateSrv);
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const params = new URLSearchParams(body);
+
+        expect(params.get('query')).toBe('rate(up[20m])');
+        expect(params.get('step')).toBe('300');
+
+        throw new Error('stop after checking request min interval query');
+      });
+
+      try {
+        await expect(
+          collectQueryResponses(
+            intervalDs.query(
+              createDataRequest(
+                [{ datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'rate(up[$__rate_interval])', refId: 'A' }],
+                {
+                  app: CoreApp.Dashboard,
+                  minInterval: '5m',
+                  panelPluginId: 'timeseries',
+                  preferredQueryResultFormat: 'compact-v1',
+                }
+              )
+            )
+          )
+        ).rejects.toThrow('stop after checking request min interval query');
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('interpolates $__interval from the effective multi-batch query step', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const intervalTemplateSrv = {
+        replace: jest.fn((value: string | undefined, scopedVars?: Record<string, { value: unknown }>) => {
+          if (!value) {
+            return value;
+          }
+
+          return value
+            .replace(/\$__rate_interval_ms/g, String(scopedVars?.__rate_interval_ms?.value ?? '$__rate_interval_ms'))
+            .replace(/\$__rate_interval/g, String(scopedVars?.__rate_interval?.value ?? '$__rate_interval'))
+            .replace(/\$__interval_ms/g, String(scopedVars?.__interval_ms?.value ?? '$__interval_ms'))
+            .replace(/\$__interval/g, String(scopedVars?.__interval?.value ?? '$__interval'));
+        }),
+      } as unknown as TemplateSrv;
+      const intervalDs = new PrometheusDatasource(
+        {
+          ...instanceSettings,
+          jsonData: {
+            ...instanceSettings.jsonData,
+            timeInterval: '1m',
+          },
+        },
+        intervalTemplateSrv
+      );
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const params = new URLSearchParams(body);
+
+        expect(params.get('query')).toBe('rate(up[4m])');
+        expect(params.get('step')).toBe('60');
+
+        throw new Error('stop after checking interpolated multi-batch query');
+      });
+
+      try {
+        await expect(
+          collectQueryResponses(
+            intervalDs.query(
+              createDataRequest(
+                [{ datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'rate(up[$__rate_interval])', refId: 'A' }],
+                {
+                  app: CoreApp.Dashboard,
+                  panelPluginId: 'timeseries',
+                  preferredQueryResultFormat: 'compact-v1',
+                }
+              )
+            )
+          )
+        ).rejects.toThrow('stop after checking interpolated multi-batch query');
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('keeps $__rate_interval based on the pre-factor interval in multi-batch queries', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const intervalTemplateSrv = {
+        replace: jest.fn((value: string | undefined, scopedVars?: Record<string, { value: unknown }>) => {
+          if (!value) {
+            return value;
+          }
+
+          return value
+            .replace(/\$__rate_interval_ms/g, String(scopedVars?.__rate_interval_ms?.value ?? '$__rate_interval_ms'))
+            .replace(/\$__rate_interval/g, String(scopedVars?.__rate_interval?.value ?? '$__rate_interval'))
+            .replace(/\$__interval_ms/g, String(scopedVars?.__interval_ms?.value ?? '$__interval_ms'))
+            .replace(/\$__interval/g, String(scopedVars?.__interval?.value ?? '$__interval'));
+        }),
+      } as unknown as TemplateSrv;
+      const intervalDs = new PrometheusDatasource(instanceSettings, intervalTemplateSrv);
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        const params = new URLSearchParams(body);
+
+        expect(params.get('query')).toBe('rate(up[1m]) + 75000');
+        expect(params.get('step')).toBe('600');
+
+        throw new Error('stop after checking interval factor rate interval query');
+      });
+
+      try {
+        await expect(
+          collectQueryResponses(
+            intervalDs.query(
+              createDataRequest(
+                [
+                  {
+                    datasource: { type: 'prometheus', uid: 'ABCDEF' },
+                    expr: 'rate(up[$__rate_interval]) + $__rate_interval_ms',
+                    intervalFactor: 10,
+                    refId: 'A',
+                  },
+                ],
+                {
+                  app: CoreApp.Dashboard,
+                  intervalMs: 60000,
+                  panelPluginId: 'timeseries',
+                  preferredQueryResultFormat: 'compact-v1',
+                }
+              )
+            )
+          )
+        ).rejects.toThrow('stop after checking interval factor rate interval query');
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('surfaces multi-target compact multi-batch failures without backend fallback', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const browserFetchSpy = jest.spyOn(global, 'fetch').mockRejectedValue(new Error('upstream stream failed'));
+
+      try {
+        const responses = await collectQueryResponses(
+          ds.query(
+            createDataRequest(
+              [
+                { datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'metric_a', refId: 'A' },
+                { datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'metric_b', refId: 'B' },
+              ],
+              {
+                app: CoreApp.Dashboard,
+                panelPluginId: 'timeseries',
+                preferredQueryResultFormat: 'compact-v1',
+              }
+            )
+          )
+        );
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(browserFetchSpy).toHaveBeenCalledTimes(2);
+        expect(responses).toHaveLength(2);
+        const finalResponse = responses[responses.length - 1];
+        expect(finalResponse.state).toBe(LoadingState.Done);
+        expect(finalResponse.errors?.map((error) => error.message)).toEqual([
+          'upstream stream failed',
+          'upstream stream failed',
+        ]);
+      } finally {
+        browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('combines per-target compact snapshots into one accumulated compact response', () => {
+      const first = compactResponseFixture('A', 10);
+      const second = compactResponseFixture('B', 24);
+
+      const combined = combineCompactTimeSeries([first, undefined, second]);
+
+      expect(combined).toBeDefined();
+      expect(combined!.buffer.byteLength).toBe(40);
+      expect(Array.from(new Uint8Array(combined!.buffer, 0, 10))).toEqual(Array.from(new Uint8Array(first.buffer)));
+      expect(Array.from(new Uint8Array(combined!.buffer, 16, 24))).toEqual(Array.from(new Uint8Array(second.buffer)));
+      expect(combined!.axes).toEqual([
+        { start: 0, step: 1000, count: 1 },
+        { start: 0, step: 1000, count: 1 },
+      ]);
+
+      if (!Array.isArray(combined!.series)) {
+        throw new Error('Expected combined compact series to be materialized records');
+      }
+      expect(combined!.series).toHaveLength(2);
+      expect(combined!.series[0]).toMatchObject({ refId: 'A', axisId: 0, valuesByteOffset: 8 });
+      expect(combined!.series[1]).toMatchObject({ refId: 'B', axisId: 1, valuesByteOffset: 24 });
+      expect(combined!.metadata.getLabel(combined!.series[1], 'job')).toBe('B-job');
+      expect(combined!.metadata.materializeLabels(combined!.series[1], { extra: 'label' })).toEqual({
+        extra: 'label',
+        job: 'B-job',
+      });
+
+      const labels: Record<string, string> = {};
+      combined!.metadata.forEachLabel(combined!.series[0], (name, value) => {
+        labels[name] = value;
+      });
+      expect(labels).toEqual({ job: 'A-job' });
+      expect(combined!.notices?.map((notice) => notice.refId)).toEqual(['A', 'B']);
+      expect(combined!.decodeStats).toMatchObject({ axisCount: 2, responseBytes: 40, seriesCount: 2 });
     });
   });
 
@@ -1334,6 +1759,48 @@ describe('modifyQuery', () => {
     });
   });
 });
+
+function compactResponseFixture(refId: string, byteLength: number): CompactTimeSeriesData {
+  const buffer = new ArrayBuffer(byteLength);
+  const bytes = new Uint8Array(buffer);
+  for (let index = 0; index < bytes.length; index++) {
+    bytes[index] = refId.charCodeAt(0) + index;
+  }
+
+  const series: CompactTimeSeriesSeries = {
+    refId,
+    valueName: `${refId}-value`,
+    axisId: 0,
+    labelRecordsOffset: 2,
+    labelCount: 1,
+    presenceByteOffset: 4,
+    presenceByteLength: 1,
+    presentCount: 1,
+    valuesByteOffset: 8,
+  };
+
+  return {
+    kind: 'compact-response-view',
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer,
+    axes: [{ start: 0, step: 1000, count: 1 }],
+    series: [series],
+    metadata: {
+      getLabel: (_series, name) => (name === 'job' ? `${refId}-job` : undefined),
+      forEachLabel: (_series, callback) => callback('job', `${refId}-job`),
+      materializeLabels: (_series, additional) => ({ ...additional, job: `${refId}-job` }),
+    },
+    notices: [{ refId, severity: 'warning', text: `${refId} notice` }],
+    decodeStats: {
+      responseBytes: byteLength,
+      axisCount: 1,
+      resultCount: 1,
+      stringCount: 1,
+      stringBytes: refId.length,
+      seriesCount: 1,
+    },
+  };
+}
 
 describe('PrometheusDatasource incremental query logic', () => {
   let ds: PrometheusDatasource;

@@ -108,6 +108,9 @@ func (c *Client) QueryResource(ctx context.Context, req *backend.CallResourceReq
 	if err != nil {
 		return nil, err
 	}
+	if accept := req.GetHTTPHeader("Accept"); accept != "" {
+		httpRequest.Header.Set("Accept", accept)
+	}
 
 	return c.doer.Do(httpRequest)
 }
