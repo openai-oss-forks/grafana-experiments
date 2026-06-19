@@ -1,3 +1,6 @@
+import { render } from '@testing-library/react';
+import { TestProvider } from 'test/helpers/TestProvider';
+
 import { SceneQueryRunner, SceneTimeRange, VizPanel, behaviors } from '@grafana/scenes';
 import { Dashboard } from '@grafana/schema';
 import { Spec as DashboardV2Spec } from '@grafana/schema/apis/dashboard.grafana.app/v2';
@@ -9,7 +12,11 @@ import { DashboardScene, DashboardSceneState } from '../scene/DashboardScene';
 import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
 import { transformSceneToSaveModel } from '../serialization/transformSceneToSaveModel';
 
-import { ignoreChanges, isEmptyDashboard } from './DashboardPrompt';
+import { DashboardPrompt, ignoreChanges, isEmptyDashboard } from './DashboardPrompt';
+
+jest.mock('app/core/components/FormPrompt/Prompt', () => ({
+  Prompt: () => null,
+}));
 
 jest.mock('@grafana/runtime', () => ({
   ...jest.requireActual('@grafana/runtime'),
@@ -51,6 +58,28 @@ function getTestContext() {
 }
 
 describe('DashboardPrompt', () => {
+  it('blocks beforeunload while a panel edit completion is pending', () => {
+    const scene = buildTestScene();
+    let finishPanelEdit!: () => void;
+    scene.setPendingPanelEditCompletion(
+      new Promise<void>((resolve) => {
+        finishPanelEdit = resolve;
+      })
+    );
+    const { unmount } = render(
+      <TestProvider>
+        <DashboardPrompt dashboard={scene} />
+      </TestProvider>
+    );
+    const event = new Event('beforeunload', { cancelable: true });
+
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    finishPanelEdit();
+    unmount();
+  });
+
   describe('ignoreChanges', () => {
     beforeEach(() => {
       getTestContext();

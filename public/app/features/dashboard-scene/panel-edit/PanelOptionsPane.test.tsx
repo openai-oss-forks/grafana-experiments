@@ -1,5 +1,6 @@
 import { PanelPlugin } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
+import { VizPanel } from '@grafana/scenes';
 import { OptionFilter } from 'app/features/dashboard/components/PanelEditor/OptionsPaneOptions';
 import { getDashboardSrv } from 'app/features/dashboard/services/DashboardSrv';
 
@@ -11,29 +12,63 @@ import { PanelOptionsPane } from './PanelOptionsPane';
 import { testDashboard } from './testfiles/testDashboard';
 
 let pluginToLoad: PanelPlugin | undefined;
+let pluginImportError: Error | undefined;
+let pluginImportPromise: Promise<PanelPlugin> | undefined;
 
 jest.mock('@grafana/runtime', () => ({
   ...jest.requireActual('@grafana/runtime'),
   getPluginImportUtils: () => ({
     getPanelPluginFromCache: jest.fn(() => pluginToLoad),
+    importPanelPlugin: jest.fn((id: string) => {
+      if (pluginImportError) {
+        throw pluginImportError;
+      }
+      return pluginImportPromise ?? Promise.resolve(pluginToLoad ?? getPanelPlugin({ id }));
+    }),
   }),
 }));
 
 describe('PanelOptionsPane', () => {
+  beforeEach(() => {
+    pluginToLoad = undefined;
+    pluginImportError = undefined;
+    pluginImportPromise = undefined;
+  });
+
   describe('When changing plugin', () => {
-    it('Should set the cache', () => {
+    it('keeps cached options isolated between the edited panel and its preview', async () => {
       const { optionsPane, panel } = setupTest('panel-1');
-      panel.changePluginType = jest.fn();
+      const realPanelChange = jest.fn(
+        async (pluginId: string, options = {}, fieldConfig = { defaults: {}, overrides: [] }) => {
+          panel.setState({ pluginId, options, fieldConfig });
+        }
+      );
+      panel.changePluginType = realPanelChange;
+      panel.setState({ options: { legend: { showLegend: false } } });
+      const preview = new VizPanel({
+        pluginId: 'timeseries',
+        options: { legend: { showLegend: true } },
+      });
+      preview.changePluginType = jest.fn(
+        async (pluginId: string, options = {}, fieldConfig = { defaults: {}, overrides: [] }) => {
+          preview.setState({ pluginId, options, fieldConfig });
+        }
+      );
 
       expect(panel.state.pluginId).toBe('timeseries');
 
-      optionsPane.onChangePanel({ pluginId: 'table' });
+      await optionsPane.onChangePanel({ pluginId: 'table', withModKey: true });
+      await optionsPane.onChangePanel({ pluginId: 'barchart', withModKey: true }, preview);
+      await optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey: true });
 
-      expect(optionsPane['_cachedPluginOptions']['timeseries']?.options).toBe(panel.state.options);
-      expect(optionsPane['_cachedPluginOptions']['timeseries']?.fieldConfig).toBe(panel.state.fieldConfig);
+      expect(realPanelChange).toHaveBeenLastCalledWith(
+        'timeseries',
+        { legend: { showLegend: false } },
+        expect.any(Object)
+      );
     });
 
-    it('When visualization suggestion is selected should update options and fieldConfig', () => {
+    it('When visualization suggestion is selected should update options and fieldConfig', async () => {
       pluginToLoad = getPanelPlugin({
         id: 'timeseries',
       });
@@ -52,7 +87,7 @@ describe('PanelOptionsPane', () => {
       panel.setState({ $data: undefined });
       panel.activate();
 
-      optionsPane.onChangePanel({
+      await optionsPane.onChangePanel({
         pluginId: 'table',
         options: { showHeader: false },
         fieldConfig: {
@@ -65,7 +100,7 @@ describe('PanelOptionsPane', () => {
       expect((panel.state.fieldConfig.defaults.custom as any).axisBorderShow).toEqual(true);
     });
 
-    it('Should preserve correct field config', () => {
+    it('Should preserve correct field config', async () => {
       const { optionsPane, panel } = setupTest('panel-1');
 
       const mockFn = jest.fn();
@@ -114,7 +149,7 @@ describe('PanelOptionsPane', () => {
       expect(panel.state.fieldConfig.overrides[1].properties).toHaveLength(1);
       expect(panel.state.fieldConfig.defaults.custom).toHaveProperty('axisBorderShow');
 
-      optionsPane.onChangePanel({ pluginId: 'table' });
+      await optionsPane.onChangePanel({ pluginId: 'table' });
 
       expect(mockFn).toHaveBeenCalled();
       expect(mockFn.mock.calls[0][2].defaults.color?.mode).toBe('palette-classic');
@@ -128,7 +163,7 @@ describe('PanelOptionsPane', () => {
       expect(mockFn.mock.calls[0][2].defaults.custom).toStrictEqual({});
     });
 
-    it('Should merge fieldConfig overrides when fieldConfig is provided in options', () => {
+    it('Should merge fieldConfig overrides when fieldConfig is provided in options', async () => {
       const { optionsPane, panel } = setupTest('panel-1');
 
       const originalFieldConfig = {
@@ -147,7 +182,7 @@ describe('PanelOptionsPane', () => {
       panel.onFieldConfigChange = mockOnFieldConfigChange;
 
       // Call onChangePanel with fieldConfig that has overrides
-      optionsPane.onChangePanel({
+      await optionsPane.onChangePanel({
         pluginId: 'table',
         fieldConfig: {
           defaults: { unit: 'percent' },
@@ -171,19 +206,228 @@ describe('PanelOptionsPane', () => {
       expect(mergedConfig.defaults.unit).toBe('percent');
     });
 
-    it('Should not call onFieldConfigChange when no fieldConfig provided', () => {
+    it('Should not call onFieldConfigChange when no fieldConfig provided', async () => {
       const { optionsPane, panel } = setupTest('panel-1');
 
       const mockOnFieldConfigChange = jest.fn();
       panel.onFieldConfigChange = mockOnFieldConfigChange;
 
       // Call without fieldConfig
-      optionsPane.onChangePanel({
+      await optionsPane.onChangePanel({
         pluginId: 'table',
         options: { showHeader: false },
       });
 
       expect(mockOnFieldConfigChange).not.toHaveBeenCalled();
+    });
+
+    it('keeps the visualization preview open until the panel plugin finishes changing', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      optionsPane.setState({ isVizPickerOpen: true });
+
+      let finishPluginChange!: () => void;
+      panel.changePluginType = jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishPluginChange = resolve;
+          })
+      );
+
+      const change = optionsPane.onChangePanel({ pluginId: 'barchart' });
+      await new Promise(process.nextTick);
+
+      expect(optionsPane.state.isVizPickerOpen).toBe(true);
+
+      finishPluginChange();
+      await change;
+
+      expect(optionsPane.state.isVizPickerOpen).toBe(false);
+    });
+
+    it('applies suggestion configuration after the panel plugin finishes changing', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      const calls: string[] = [];
+      let finishPluginChange!: () => void;
+      panel.changePluginType = jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            calls.push('plugin-change-started');
+            finishPluginChange = () => {
+              calls.push('plugin-change-finished');
+              resolve();
+            };
+          })
+      );
+      panel.onOptionsChange = jest.fn(() => calls.push('options-applied'));
+      panel.onFieldConfigChange = jest.fn(() => calls.push('field-config-applied'));
+
+      const change = optionsPane.onChangePanel({
+        pluginId: 'barchart',
+        options: { orientation: 'horizontal' },
+        fieldConfig: { defaults: {}, overrides: [] },
+        withModKey: true,
+      });
+      await new Promise(process.nextTick);
+
+      expect(calls).toEqual(['plugin-change-started']);
+
+      finishPluginChange();
+      await change;
+
+      expect(calls).toEqual([
+        'plugin-change-started',
+        'plugin-change-finished',
+        'options-applied',
+        'field-config-applied',
+      ]);
+    });
+
+    it('delegates to the panel when plugin preloading throws synchronously', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      pluginImportError = new Error('plugin metadata missing');
+      panel.changePluginType = jest.fn().mockResolvedValue(undefined);
+
+      await expect(optionsPane.onChangePanel({ pluginId: 'missing-plugin' })).resolves.toBeUndefined();
+
+      expect(panel.changePluginType).toHaveBeenCalledWith('missing-plugin', undefined, expect.any(Object));
+    });
+
+    it('exposes plugin preloading as a pending live-panel change', async () => {
+      const { optionsPane } = setupTest('panel-1');
+      let finishPreload!: (plugin: PanelPlugin) => void;
+      pluginImportPromise = new Promise<PanelPlugin>((resolve) => {
+        finishPreload = resolve;
+      });
+
+      const change = optionsPane.onChangePanel({ pluginId: 'barchart' });
+
+      expect(optionsPane.getPendingLivePanelChange()).toBeDefined();
+      finishPreload(getPanelPlugin({ id: 'barchart' }));
+      await change;
+      expect(optionsPane.getPendingLivePanelChange()).toBeUndefined();
+    });
+
+    it('completes a started visualization change and coalesces queued changes to the latest', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      const finishPluginChanges: Array<() => void> = [];
+      panel.changePluginType = jest.fn(
+        (pluginId: string) =>
+          new Promise<void>((resolve) => {
+            finishPluginChanges.push(() => {
+              panel.setState({ pluginId });
+              resolve();
+            });
+          })
+      );
+      panel.onOptionsChange = jest.fn();
+
+      const first = optionsPane.onChangePanel({
+        pluginId: 'barchart',
+        options: { orientation: 'horizontal' },
+        withModKey: true,
+      });
+      await new Promise(process.nextTick);
+      const superseded = optionsPane.onChangePanel({
+        pluginId: 'table',
+        options: { showHeader: true },
+        withModKey: true,
+      });
+      const latest = optionsPane.onChangePanel({
+        pluginId: 'timeseries',
+        options: { legend: { showLegend: false } },
+        withModKey: true,
+      });
+
+      expect(panel.changePluginType).toHaveBeenCalledTimes(1);
+      expect(panel.changePluginType).toHaveBeenLastCalledWith('barchart', undefined, expect.any(Object));
+
+      finishPluginChanges[0]();
+      await first;
+      await new Promise(process.nextTick);
+
+      expect(panel.changePluginType).toHaveBeenCalledTimes(2);
+      expect(panel.changePluginType).toHaveBeenLastCalledWith('timeseries', expect.any(Object), expect.any(Object));
+
+      finishPluginChanges[1]();
+      await Promise.all([superseded, latest]);
+
+      expect(panel.state.pluginId).toBe('timeseries');
+      expect(panel.onOptionsChange).toHaveBeenCalledTimes(2);
+      expect(panel.onOptionsChange).toHaveBeenNthCalledWith(1, { orientation: 'horizontal' }, true);
+      expect(panel.onOptionsChange).toHaveBeenNthCalledWith(2, { legend: { showLegend: false } }, true);
+    });
+
+    it('does not reopen the visualization picker when a pending change finishes after it was closed', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      optionsPane.setState({ isVizPickerOpen: true });
+      let finishPluginChange!: () => void;
+      panel.changePluginType = jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishPluginChange = resolve;
+          })
+      );
+
+      const change = optionsPane.onChangePanel({ pluginId: 'barchart' });
+      await new Promise(process.nextTick);
+      optionsPane.onToggleVizPicker();
+      finishPluginChange();
+      await change;
+
+      expect(optionsPane.state.isVizPickerOpen).toBe(false);
+    });
+
+    it('finishes an in-flight visualization change when panel edit closes', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      let finishPluginChange!: () => void;
+      panel.changePluginType = jest.fn(
+        (pluginId: string) =>
+          new Promise<void>((resolve) => {
+            finishPluginChange = () => {
+              panel.setState({ pluginId });
+              resolve();
+            };
+          })
+      );
+      panel.onOptionsChange = jest.fn();
+
+      const change = optionsPane.onChangePanel({
+        pluginId: 'barchart',
+        options: { orientation: 'horizontal' },
+      });
+      await new Promise(process.nextTick);
+      const completion = optionsPane.cancelPendingPanelChanges();
+      expect(completion).toBeDefined();
+      finishPluginChange();
+      await Promise.all([change, completion]);
+
+      expect(panel.onOptionsChange).toHaveBeenCalledWith({ orientation: 'horizontal' }, true);
+      expect(panel.state.pluginId).toBe('barchart');
+      expect(panel.changePluginType).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops queued visualization changes when panel edit closes', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      let finishPluginChange!: () => void;
+      panel.changePluginType = jest.fn(
+        (pluginId: string) =>
+          new Promise<void>((resolve) => {
+            finishPluginChange = () => {
+              panel.setState({ pluginId });
+              resolve();
+            };
+          })
+      );
+
+      const started = optionsPane.onChangePanel({ pluginId: 'barchart' });
+      await new Promise(process.nextTick);
+      const queued = optionsPane.onChangePanel({ pluginId: 'table' });
+      const completion = optionsPane.cancelPendingPanelChanges();
+      finishPluginChange();
+      await Promise.all([started, queued, completion]);
+
+      expect(panel.changePluginType).toHaveBeenCalledTimes(1);
+      expect(panel.state.pluginId).toBe('barchart');
     });
   });
 });

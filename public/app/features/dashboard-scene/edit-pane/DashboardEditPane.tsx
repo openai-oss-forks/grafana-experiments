@@ -105,7 +105,7 @@ export class DashboardEditPane extends SceneObjectBase<DashboardEditPaneState> {
     }
   }
 
-  private performPanelEditAction(action: DashboardEditActionEvent) {
+  public performPanelEditAction(action: DashboardEditActionEvent) {
     // Some layout items are not yet active when leaving panel edit, let's wait for them to activate
     if (!action.payload.source.isActive) {
       trySwitchingToSourceTab(action.payload.source);

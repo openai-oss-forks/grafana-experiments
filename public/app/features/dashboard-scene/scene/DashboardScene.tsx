@@ -189,6 +189,7 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
    * Url state before editing started
    */
   private _initialUrlState?: H.Location;
+  private _pendingPanelEditCompletions = new Set<Promise<void>>();
   /**
    * Dashboard changes tracker
    */
@@ -324,6 +325,23 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
     this._initialUrlState = locationService.getLocation();
 
     this._changeTracker.startTrackingChanges();
+  }
+
+  public setPendingPanelEditCompletion(completion: Promise<void>) {
+    const trackedCompletion = completion.finally(() => {
+      this._pendingPanelEditCompletions.delete(trackedCompletion);
+    });
+    this._pendingPanelEditCompletions.add(trackedCompletion);
+  }
+
+  public async waitForPendingPanelEditCompletion() {
+    while (this._pendingPanelEditCompletions.size > 0) {
+      await Promise.all(this._pendingPanelEditCompletions);
+    }
+  }
+
+  public hasPendingPanelEditCompletion() {
+    return this._pendingPanelEditCompletions.size > 0;
   }
 
   public exitEditMode({ skipConfirm, restoreInitialState }: { skipConfirm: boolean; restoreInitialState?: boolean }) {
@@ -933,11 +951,13 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
     const legend = panel?.state.options ? Reflect.get(panel.state.options, 'legend') : undefined;
     const legendCalcs = typeof legend === 'object' && legend !== null ? Reflect.get(legend, 'calcs') : undefined;
     const isTableView = Boolean(dashboard.state.editPanel?.state.tableView);
+    const inspector = dashboard.state.overlay;
+    const isInspecting = inspector instanceof PanelInspectDrawer && inspector.state.panelRef.resolve() === panel;
     const preferredQueryResultFormat = getPreferredDashboardQueryFormat({
       app: CoreApp.Dashboard,
       panelPluginId: panel?.state.pluginId,
       transformations,
-      isInspecting: dashboard.state.overlay instanceof PanelInspectDrawer,
+      isInspecting,
       isTableView,
       isPublicDashboard: Boolean(config.publicDashboardAccessToken),
       hasTimeComparison,

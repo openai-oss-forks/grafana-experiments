@@ -1,15 +1,18 @@
-import { screen, render, waitFor } from '@testing-library/react';
+import { act, screen, render, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TestProvider } from 'test/helpers/TestProvider';
 import { byTestId, byText } from 'testing-library-selector';
 
 import { selectors } from '@grafana/e2e-selectors';
 import { config } from '@grafana/runtime';
-import { ConstantVariable, sceneGraph, SceneRefreshPicker } from '@grafana/scenes';
+import { ConstantVariable, sceneGraph, SceneGridLayout, SceneRefreshPicker, VizPanel } from '@grafana/scenes';
 import { AnnoKeyManagerKind, ManagerKind } from 'app/features/apiserver/types';
 import { SaveDashboardResponseDTO } from 'app/types/dashboard';
 
+import { buildPanelEditScene } from '../panel-edit/PanelEditor';
 import { DashboardSceneState } from '../scene/DashboardScene';
+import { DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
+import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
 import { transformSaveModelToScene } from '../serialization/transformSaveModelToScene';
 import { transformSceneToSaveModel } from '../serialization/transformSceneToSaveModel';
 
@@ -185,6 +188,33 @@ describe('SaveDashboardDrawer', () => {
       expect(dashboard.state.version).toEqual(11);
       expect(dashboard.state.uid).toEqual('my-uid-from-resp');
       expect(dashboard.state.isDirty).toEqual(false);
+    });
+
+    it('waits for an active panel change and snapshots its final state', async () => {
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries' });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const { dashboard, openAndRender } = setup({
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+      const panelEditor = buildPanelEditScene(panel);
+      let finishPanelChange!: () => void;
+      const pendingPanelChange = new Promise<void>((resolve) => {
+        finishPanelChange = resolve;
+      });
+      jest.spyOn(panelEditor, 'getPendingPanelChange').mockReturnValue(pendingPanelChange);
+      dashboard.setState({ editPanel: panelEditor, title: 'Before pending panel change' });
+      openAndRender();
+      mockSaveDashboard();
+      saveDashboardMutationMock.mockImplementation(() => new Promise(() => {}));
+
+      await userEvent.click(await screen.findByTestId(selectors.components.Drawer.DashboardSaveDrawer.saveButton));
+      expect(saveDashboardMutationMock).not.toHaveBeenCalled();
+
+      act(() => dashboard.setState({ title: 'After pending panel change' }));
+      finishPanelChange();
+      await waitFor(() => expect(saveDashboardMutationMock).toHaveBeenCalledTimes(1));
+
+      expect(saveDashboardMutationMock.mock.calls[0][0].dashboard.title).toBe('After pending panel change');
     });
 
     it('Can handle save errors and overwrite', async () => {

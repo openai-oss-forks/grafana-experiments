@@ -38,7 +38,14 @@ export function SaveDashboardForm({ dashboard, drawer, changeInfo }: Props) {
   });
 
   const onSave = async (overwrite: boolean) => {
-    const result = await onSaveDashboard(dashboard, { ...options, rawDashboardJSON: changedSaveModel, overwrite });
+    const result = await onSaveDashboard(dashboard, {
+      ...options,
+      rawDashboardJSON: changedSaveModel,
+      getRawDashboardJSON: () =>
+        dashboard.getDashboardChanges(drawer.state.saveTimeRange, drawer.state.saveVariables, drawer.state.saveRefresh)
+          .changedSaveModel,
+      overwrite,
+    });
     if (result.status === 'success') {
       dashboard.closeModal();
       drawer.state.onSaveSuccess?.();
@@ -174,7 +181,7 @@ export function SaveDashboardForm({ dashboard, drawer, changeInfo }: Props) {
           </p>
         </Alert>
       )}
-      <Field label={t('dashboard-scene.save-dashboard-form.label-message', 'Message')}>
+      <Field label={t('dashboard-scene.save-dashboard-form.label-message', 'Message')} noMargin>
         <TextArea
           aria-label={t('dashboard-scene.save-dashboard-form.aria-label-message', 'message')}
           value={options.message ?? ''}

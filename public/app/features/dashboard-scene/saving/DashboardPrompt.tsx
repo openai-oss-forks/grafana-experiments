@@ -30,11 +30,17 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
 
   useEffect(() => {
     const handleUnload = (event: BeforeUnloadEvent) => {
+      if (dashboard.hasPendingPanelEditCompletion() || dashboard.state.editPanel?.getPendingPanelChange()) {
+        event.preventDefault();
+        event.returnValue = '';
+        return;
+      }
+
       if (ignoreChanges(dashboard)) {
         return;
       }
 
-      if (dashboard.state.isDirty) {
+      if (dashboard.state.isDirty || dashboard.state.editPanel?.hasChanges()) {
         event.preventDefault();
         // No browser actually displays this message anymore.
         // But Chrome requires it to be defined else the popup won't show.
@@ -50,17 +56,44 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
     const panelEditor = dashboard.state.editPanel;
     const vizPanel = panelEditor?.getPanel();
     const search = new URLSearchParams(location.search);
+    const pendingPanelChange = panelEditor?.getPendingPanelChange();
+    const pendingPanelEditCompletion = dashboard.hasPendingPanelEditCompletion()
+      ? dashboard.waitForPendingPanelEditCompletion()
+      : undefined;
+    const pendingNavigation: Array<Promise<void>> = [];
+    if (pendingPanelChange) {
+      pendingNavigation.push(pendingPanelChange);
+    }
+    if (pendingPanelEditCompletion) {
+      pendingNavigation.push(pendingPanelEditCompletion);
+    }
+    const isLeavingPendingLibraryPanel =
+      pendingPanelChange && vizPanel && isLibraryPanel(vizPanel) && !search.has('editPanel');
+
+    if (pendingNavigation.length > 0 && (originalPath !== location.pathname || isLeavingPendingLibraryPanel)) {
+      void Promise.all(pendingNavigation).then(() => moveToBlockedLocationAfterReactStateUpdate(location));
+      return false;
+    }
 
     // Are we leaving panel edit & library panel?
-    if (panelEditor && vizPanel && isLibraryPanel(vizPanel) && panelEditor.state.isDirty && !search.has('editPanel')) {
+    if (
+      panelEditor &&
+      vizPanel &&
+      isLibraryPanel(vizPanel) &&
+      (panelEditor.state.isDirty || panelEditor.hasChanges()) &&
+      !search.has('editPanel')
+    ) {
       const libPanelBehavior = getLibraryPanelBehavior(vizPanel);
 
       showModal(SaveLibraryVizPanelModal, {
         dashboard,
         isUnsavedPrompt: true,
         libraryPanel: libPanelBehavior!,
-        onConfirm: () => {
-          panelEditor.onConfirmSaveLibraryPanel();
+        onConfirm: async () => {
+          const saved = await panelEditor.onConfirmSaveLibraryPanel();
+          if (!saved) {
+            return;
+          }
           hideModal();
           moveToBlockedLocationAfterReactStateUpdate(location);
         },
@@ -83,7 +116,7 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
       return true;
     }
 
-    if (!dashboard.state.isDirty) {
+    if (!dashboard.state.isDirty && !panelEditor?.hasChanges()) {
       return true;
     }
 

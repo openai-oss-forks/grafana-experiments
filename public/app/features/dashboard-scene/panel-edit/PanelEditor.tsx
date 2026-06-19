@@ -1,5 +1,5 @@
 import * as H from 'history';
-import { debounce } from 'lodash';
+import { cloneDeep, debounce } from 'lodash';
 import { Unsubscribable } from 'rxjs';
 
 import { LoadingState, NavIndex, PanelPlugin } from '@grafana/data';
@@ -9,6 +9,7 @@ import {
   NewSceneObjectAddedEvent,
   PanelBuilders,
   SceneComponentProps,
+  SceneDataProvider,
   SceneDataTransformer,
   SceneObjectBase,
   SceneObjectRef,
@@ -80,6 +81,8 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private _changesHaveBeenMade = false;
   private _editorDataTransformer?: SceneDataTransformer;
   private _editorQueryRunner?: SceneQueryRunner;
+  private _dataProviderBeforeSkip?: SceneDataProvider;
+  private _skipCommitChanges = false;
 
   public constructor(state: PanelEditorState) {
     super(state);
@@ -260,13 +263,29 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this.waitForPlugin();
 
     return () => {
-      this.commitChanges();
+      const pendingPanelChange = this.state.optionsPane?.cancelPendingPanelChanges();
+
+      if (!pendingPanelChange) {
+        this.commitChanges(dashboard);
+      }
 
       if (deactivateParents) {
         deactivateParents();
       }
 
-      this.restoreEditorDataSource(panel);
+      if (pendingPanelChange) {
+        const completion = pendingPanelChange.then(() => {
+          const plugin = panel.getPlugin();
+          if (plugin) {
+            this.updatePanelDataProvider(plugin, panel, dashboard);
+          }
+          this.restoreEditorDataSource(panel);
+          this.commitChanges(dashboard, true);
+        });
+        dashboard.setPendingPanelEditCompletion(completion);
+      } else {
+        this.restoreEditorDataSource(panel);
+      }
     };
   }
 
@@ -289,6 +308,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private restoreEditorDataSource(panel: VizPanel) {
     const transformer = this._editorDataTransformer;
     const queryRunner = this._editorQueryRunner;
+    this._dataProviderBeforeSkip = undefined;
     if (!transformer || !queryRunner) {
       return;
     }
@@ -305,8 +325,12 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this._editorQueryRunner = undefined;
   }
 
-  private commitChanges() {
-    if (!this.state.isDirty && !this._changesHaveBeenMade) {
+  private commitChanges(dashboard = getDashboardSceneFor(this), publishImmediately = false) {
+    if (this._skipCommitChanges) {
+      return;
+    }
+
+    if (!this.hasChanges() && !this._changesHaveBeenMade) {
       // Nothing to commit
       return;
     }
@@ -339,8 +363,11 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     // sadly we cannot publish this event directly here as the main dashboard edit / undo system
     // is not active while panel edit is active so we have to let the edit pane (which owns undo/redo)
     // publish this event when it activates
-    const dashboard = getDashboardSceneFor(this);
-    dashboard.state.editPane.setPanelEditAction(editAction);
+    if (publishImmediately) {
+      dashboard.state.editPane.performPanelEditAction(editAction);
+    } else {
+      dashboard.state.editPane.setPanelEditAction(editAction);
+    }
   }
 
   private waitForPlugin(retry = 0) {
@@ -420,6 +447,17 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     return this.state.panelRef?.resolve();
   }
 
+  public getPendingPanelChange() {
+    return this.state.optionsPane?.getPendingLivePanelChange();
+  }
+
+  public hasChanges() {
+    if (this._skipCommitChanges) {
+      return false;
+    }
+    return getPanelChanges(this._originalSaveModel, vizPanelToPanel(this.state.panelRef.resolve())).hasChanges;
+  }
+
   private gotPanelPlugin(plugin: PanelPlugin) {
     const panel = this.getPanel();
 
@@ -490,11 +528,6 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         locationService.partial({ tab: null }, true);
         this.setState({ dataPane: undefined });
       }
-
-      // clean up data provider when switching from data to non data panel
-      if (panel.state.$data) {
-        panel.setState({ $data: undefined });
-      }
     }
 
     if (!skipDataQuery) {
@@ -504,27 +537,48 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         // This is to notify UrlSyncManager that a new object has been added to scene that requires url sync
         this.publishEvent(new NewSceneObjectAddedEvent(dataPane), true);
       }
-
-      // add data provider when switching from non data to data panel
-      if (!panel.state.$data) {
-        let ds = getLastUsedDatasourceFromStorage(getDashboardSceneFor(this).state.uid!)?.datasourceUid;
-        if (!ds) {
-          ds = config.defaultDatasource;
-        }
-
-        panel.setState({
-          $data: new SceneDataTransformer({
-            $data: new DashboardSceneQueryRunner({
-              datasource: {
-                uid: ds,
-              },
-              queries: [{ refId: 'A' }],
-            }),
-            transformations: [],
-          }),
-        });
-      }
     }
+
+    this.updatePanelDataProvider(plugin, panel);
+  }
+
+  private updatePanelDataProvider(plugin: PanelPlugin, panel: VizPanel, dashboard = getDashboardSceneFor(this)) {
+    if (plugin.meta.skipDataQuery) {
+      if (panel.state.$data) {
+        this._dataProviderBeforeSkip = panel.state.$data;
+        this._dataProviderBeforeSkip.clearParent();
+        panel.setState({ $data: undefined });
+      }
+      return;
+    }
+
+    if (panel.state.$data) {
+      return;
+    }
+
+    if (this._dataProviderBeforeSkip) {
+      const dataProvider = this._dataProviderBeforeSkip;
+      this._dataProviderBeforeSkip = undefined;
+      panel.setState({ $data: dataProvider });
+      return;
+    }
+
+    let ds = getLastUsedDatasourceFromStorage(dashboard.state.uid!)?.datasourceUid;
+    if (!ds) {
+      ds = config.defaultDatasource;
+    }
+
+    panel.setState({
+      $data: new SceneDataTransformer({
+        $data: new DashboardSceneQueryRunner({
+          datasource: {
+            uid: ds,
+          },
+          queries: [{ refId: 'A' }],
+        }),
+        transformations: [],
+      }),
+    });
   }
 
   public getUrlKey() {
@@ -545,6 +599,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   }
 
   public onDiscard = () => {
+    this._skipCommitChanges = true;
     this.setState({ isDirty: false });
 
     const panel = this.state.panelRef.resolve();
@@ -571,10 +626,22 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this.setState({ showLibraryPanelSaveModal: true });
   };
 
-  public onConfirmSaveLibraryPanel = () => {
-    saveLibPanel(this.state.panelRef.resolve());
+  public onConfirmSaveLibraryPanel = async (): Promise<boolean> => {
+    const pendingPanelChange = this.getPendingPanelChange();
+    if (pendingPanelChange) {
+      await pendingPanelChange;
+    }
+
+    try {
+      await saveLibPanel(this.state.panelRef.resolve());
+    } catch {
+      return false;
+    }
+
+    this._skipCommitChanges = true;
     this.setState({ isDirty: false });
     locationService.partial({ editPanel: null });
+    return true;
   };
 
   public onDismissLibraryPanelSaveModal = () => {
@@ -641,8 +708,15 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   public static buildEditPreview(panel: VizPanel): VizPanel {
     const editPreview = getDefaultVizPanel();
     editPreview.setState({
+      pluginId: panel.state.pluginId,
+      pluginVersion: panel.state.pluginVersion,
       title: panel.state.title,
       description: panel.state.description,
+      options: cloneDeep(panel.state.options),
+      fieldConfig: cloneDeep(panel.state.fieldConfig),
+      displayMode: panel.state.displayMode,
+      seriesLimit: panel.state.seriesLimit,
+      seriesLimitShowAll: panel.state.seriesLimitShowAll,
       $data: panel.state.$data ? new DataProviderSharer({ source: panel.state.$data.getRef() }) : undefined,
     });
     return editPreview;

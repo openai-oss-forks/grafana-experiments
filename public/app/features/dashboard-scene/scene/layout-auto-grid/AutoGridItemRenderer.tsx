@@ -9,7 +9,7 @@ import { ConditionalRenderingGroup } from '../../conditional-rendering/group/Con
 import { useIsConditionallyHidden } from '../../conditional-rendering/hooks/useIsConditionallyHidden';
 import { useDashboardState } from '../../utils/utils';
 import { SoloPanelContextValueWithSearchStringFilter } from '../PanelSearchLayout';
-import { useSoloPanelContext, renderMatchingSoloPanels } from '../SoloPanelContext';
+import { renderMatchingSoloPanels, useRegisterSoloPanelMatch, useSoloPanelContext } from '../SoloPanelContext';
 import { DashboardPanelLazyLoader, DashboardPanelRenderSuspender } from '../layouts-shared/DashboardPanelLazyLoader';
 import { getIsLazy, shouldSuspendGraphNGOffscreen } from '../layouts-shared/utils';
 import { AUTO_GRID_ITEM_DROP_TARGET_ATTR } from '../types/DashboardDropTarget';
@@ -30,6 +30,15 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
   // Check if this grid is a drop target for external drags
   const layoutManager = sceneGraph.getAncestor(model, AutoGridLayoutManager);
   const { isDropTarget } = layoutManager.useState();
+
+  const soloPanelResult = soloPanelContext
+    ? renderMatchingSoloPanels(
+        soloPanelContext,
+        [body, ...repeatedPanels],
+        isLazy && soloPanelContext instanceof SoloPanelContextValueWithSearchStringFilter
+      )
+    : undefined;
+  useRegisterSoloPanelMatch(soloPanelContext, model, soloPanelResult?.matchFound ?? false);
 
   const Wrapper = useMemo(
     () =>
@@ -101,11 +110,7 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
   );
 
   if (soloPanelContext) {
-    // Use lazy loading only for panel search layout (SoloPanelContextValueWithSearchStringFilter)
-    // as it renders multiple panels in a grid. Skip lazy loading for viewPanel URL param
-    // (SoloPanelContextWithPathIdFilter) since single panels should render immediately.
-    const useLazyForSoloPanel = isLazy && soloPanelContext instanceof SoloPanelContextValueWithSearchStringFilter;
-    return renderMatchingSoloPanels(soloPanelContext, [body, ...repeatedPanels], useLazyForSoloPanel);
+    return soloPanelResult?.content ?? null;
   }
 
   const isDragging = !!draggingKey;

@@ -1,17 +1,19 @@
-import { DataSourceInstanceSettings, DataTransformerConfig, getDataSourceRef } from '@grafana/data';
+import { DataSourceApi, DataSourceInstanceSettings, DataTransformerConfig, getDataSourceRef } from '@grafana/data';
 import { config } from '@grafana/runtime';
 import { SceneDataTransformer, sceneGraph, SceneObjectRef, SceneQueryRunner, VizPanel } from '@grafana/scenes';
-import { DataQuery } from '@grafana/schema';
+import { DataQuery, DataSourceRef } from '@grafana/schema';
 
 import { PanelTimeRange, PanelTimeRangeState } from '../../scene/panel-timerange/PanelTimeRange';
 
 import { PanelDataPaneNext } from './PanelDataPaneNext';
 
 const mockGetInstanceSettings = jest.fn();
+const mockGetDataSource = jest.fn();
 
 jest.mock('@grafana/runtime', () => ({
   ...jest.requireActual('@grafana/runtime'),
   getDataSourceSrv: () => ({
+    get: mockGetDataSource,
     getInstanceSettings: mockGetInstanceSettings,
   }),
 }));
@@ -19,6 +21,7 @@ jest.mock('@grafana/runtime', () => ({
 // Mutable state object for the mock queryRunner
 const mockQueryRunnerState = {
   queries: [] as unknown[],
+  datasource: undefined as DataSourceRef | undefined,
   maxDataPoints: undefined as number | undefined,
   minInterval: undefined as string | undefined,
   cacheTimeout: undefined as string | undefined,
@@ -71,10 +74,144 @@ describe('PanelDataPaneNext', () => {
     // Reset mock queryRunner state
     Object.assign(mockQueryRunnerState, {
       queries: [],
+      datasource: undefined,
       maxDataPoints: undefined,
       minInterval: undefined,
       cacheTimeout: undefined,
       queryCachingTTL: undefined,
+    });
+  });
+
+  describe('datasource loading', () => {
+    it('keeps query edits made while a datasource change is loading', async () => {
+      const prometheus = dataSourceSettings('prom-1', 'prometheus');
+      const loki = dataSourceSettings('loki-1', 'loki');
+      mockGetInstanceSettings.mockImplementation((ref: DataSourceRef) => (ref.uid === loki.uid ? loki : prometheus));
+      let finishLoad!: (datasource: DataSourceApi) => void;
+      mockGetDataSource.mockReturnValue(
+        new Promise<DataSourceApi>((resolve) => {
+          finishLoad = resolve;
+        })
+      );
+      mockQueryRunnerState.queries = [{ refId: 'A', expr: 'before', datasource: getDataSourceRef(prometheus) }];
+      (mockQueryRunner.setState as jest.Mock).mockImplementation((update) =>
+        Object.assign(mockQueryRunnerState, update)
+      );
+
+      const change = dataPane.changeDataSource(getDataSourceRef(loki), 'A');
+      mockQueryRunnerState.queries = [
+        { refId: 'A', expr: 'after', datasource: getDataSourceRef(prometheus) },
+        { refId: 'B', expr: 'added' },
+      ];
+      finishLoad({ getDefaultQuery: () => ({ queryType: 'range' }) } as unknown as DataSourceApi);
+      await change;
+
+      expect(mockQueryRunnerState.queries).toEqual([
+        { refId: 'A', expr: 'after', queryType: 'range', datasource: getDataSourceRef(loki) },
+        { refId: 'B', expr: 'added' },
+      ]);
+    });
+
+    it('keeps the latest datasource choice when loads finish out of order', async () => {
+      const prometheus = dataSourceSettings('prom-1', 'prometheus');
+      const loki = dataSourceSettings('loki-1', 'loki');
+      const elasticsearch = dataSourceSettings('es-1', 'elasticsearch');
+      mockGetInstanceSettings.mockImplementation((ref: DataSourceRef) => {
+        if (ref.uid === loki.uid) {
+          return loki;
+        }
+        if (ref.uid === elasticsearch.uid) {
+          return elasticsearch;
+        }
+        return prometheus;
+      });
+      const loads = new Map<string, (datasource: DataSourceApi) => void>();
+      mockGetDataSource.mockImplementation(
+        (ref: DataSourceRef) =>
+          new Promise<DataSourceApi>((resolve) => {
+            loads.set(ref.uid!, resolve);
+          })
+      );
+      mockQueryRunnerState.queries = [{ refId: 'A', expr: 'up', datasource: getDataSourceRef(prometheus) }];
+      (mockQueryRunner.setState as jest.Mock).mockImplementation((update) =>
+        Object.assign(mockQueryRunnerState, update)
+      );
+
+      const first = dataPane.changeDataSource(getDataSourceRef(loki), 'A');
+      const second = dataPane.changeDataSource(getDataSourceRef(elasticsearch), 'A');
+      loads.get(elasticsearch.uid)!({ getDefaultQuery: () => ({ query: 'latest' }) } as unknown as DataSourceApi);
+      await second;
+      loads.get(loki.uid)!({ getDefaultQuery: () => ({ query: 'stale' }) } as unknown as DataSourceApi);
+      await first;
+
+      expect(mockQueryRunnerState.queries).toEqual([
+        { refId: 'A', expr: 'up', query: 'latest', datasource: getDataSourceRef(elasticsearch) },
+      ]);
+    });
+
+    it('ignores a stale datasource load failure after a newer choice succeeds', async () => {
+      const prometheus = dataSourceSettings('prom-1', 'prometheus');
+      const loki = dataSourceSettings('loki-1', 'loki');
+      const elasticsearch = dataSourceSettings('es-1', 'elasticsearch');
+      mockGetInstanceSettings.mockImplementation((ref: DataSourceRef) => {
+        if (ref.uid === loki.uid) {
+          return loki;
+        }
+        if (ref.uid === elasticsearch.uid) {
+          return elasticsearch;
+        }
+        return prometheus;
+      });
+      const loads = new Map<string, { resolve: (datasource: DataSourceApi) => void; reject: (error: Error) => void }>();
+      mockGetDataSource.mockImplementation(
+        (ref: DataSourceRef) =>
+          new Promise<DataSourceApi>((resolve, reject) => {
+            loads.set(ref.uid!, { resolve, reject });
+          })
+      );
+      mockQueryRunnerState.queries = [{ refId: 'A', expr: 'up', datasource: getDataSourceRef(prometheus) }];
+      (mockQueryRunner.setState as jest.Mock).mockImplementation((update) =>
+        Object.assign(mockQueryRunnerState, update)
+      );
+
+      const stale = dataPane.changeDataSource(getDataSourceRef(loki), 'A');
+      const latest = dataPane.changeDataSource(getDataSourceRef(elasticsearch), 'A');
+      loads.get(elasticsearch.uid)!.resolve({
+        getDefaultQuery: () => ({ query: 'latest' }),
+      } as unknown as DataSourceApi);
+      await latest;
+      loads.get(loki.uid)!.reject(new Error('stale load failed'));
+
+      await expect(stale).resolves.toBeUndefined();
+      expect(mockQueryRunnerState.queries).toEqual([
+        { refId: 'A', expr: 'up', query: 'latest', datasource: getDataSourceRef(elasticsearch) },
+      ]);
+    });
+
+    it('ignores an older panel datasource load that finishes last', async () => {
+      const prometheus = dataSourceSettings('prom-1', 'prometheus');
+      const loki = dataSourceSettings('loki-1', 'loki');
+      mockGetInstanceSettings.mockImplementation((ref: DataSourceRef) => (ref.uid === loki.uid ? loki : prometheus));
+      const loads = new Map<string, (datasource: DataSourceApi) => void>();
+      mockGetDataSource.mockImplementation(
+        (ref: DataSourceRef) =>
+          new Promise<DataSourceApi>((resolve) => {
+            loads.set(ref.uid!, resolve);
+          })
+      );
+      mockQueryRunnerState.datasource = getDataSourceRef(prometheus);
+
+      const first = Reflect.get(dataPane, 'loadDatasource').call(dataPane) as Promise<void>;
+      mockQueryRunnerState.datasource = getDataSourceRef(loki);
+      const second = Reflect.get(dataPane, 'loadDatasource').call(dataPane) as Promise<void>;
+      const latestDatasource = { name: 'latest' } as unknown as DataSourceApi;
+      loads.get(loki.uid)!(latestDatasource);
+      await second;
+      loads.get(prometheus.uid)!({ name: 'stale' } as unknown as DataSourceApi);
+      await first;
+
+      expect(dataPane.state.datasource).toBe(latestDatasource);
+      expect(dataPane.state.dsSettings).toBe(loki);
     });
   });
 
@@ -434,3 +571,12 @@ describe('PanelDataPaneNext', () => {
     });
   });
 });
+
+function dataSourceSettings(uid: string, type: string): DataSourceInstanceSettings {
+  return {
+    uid,
+    type,
+    name: uid,
+    meta: { mixed: false },
+  } as unknown as DataSourceInstanceSettings;
+}

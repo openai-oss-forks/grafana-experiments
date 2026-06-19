@@ -28,11 +28,13 @@ import { LS_PANEL_COPY_KEY, LS_STYLES_COPY_KEY } from 'app/core/constants';
 import { AnnoKeyManagerKind, ManagerKind } from 'app/features/apiserver/types';
 import { getDashboardSrv } from 'app/features/dashboard/services/DashboardSrv';
 import { DecoratedRevisionModel } from 'app/features/dashboard/types/revisionModels';
+import { InspectTab } from 'app/features/inspector/types';
 import { dashboardWatcher } from 'app/features/live/dashboard/dashboardWatcher';
 import { DashboardEventAction } from 'app/features/live/dashboard/types';
 import { VariablesChanged } from 'app/features/variables/types';
 import { ShowConfirmModalEvent } from 'app/types/events';
 
+import { PanelInspectDrawer } from '../inspect/PanelInspectDrawer';
 import { buildPanelEditScene } from '../panel-edit/PanelEditor';
 import { SaveDashboardDrawer } from '../saving/SaveDashboardDrawer';
 import { createWorker } from '../saving/createDetectChangesWorker';
@@ -109,6 +111,34 @@ describe('DashboardScene', () => {
 
       expect(getDashboardSrv().getCurrent()?.uid).toBe('dash-1');
     });
+  });
+
+  it('waits for every pending panel edit before allowing a save snapshot', async () => {
+    const scene = buildTestScene();
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    scene.setPendingPanelEditCompletion(
+      new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      })
+    );
+    scene.setPendingPanelEditCompletion(
+      new Promise<void>((resolve) => {
+        resolveSecond = resolve;
+      })
+    );
+    let finished = false;
+    const wait = scene.waitForPendingPanelEditCompletion().then(() => {
+      finished = true;
+    });
+
+    resolveSecond();
+    await Promise.resolve();
+    expect(finished).toBe(false);
+
+    resolveFirst();
+    await wait;
+    expect(finished).toBe(true);
   });
 
   describe('Editing and discarding', () => {
@@ -1005,6 +1035,24 @@ describe('DashboardScene', () => {
         editPanel.onToggleTableView();
 
         expect(scene.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
+      });
+
+      test('requests full inspector data only for the inspected panel', () => {
+        const inspectedPanel = findVizPanelByKey(scene, 'panel-1')!;
+        inspectedPanel.setState({ pluginId: 'timeseries' });
+        const otherPanel = findVizPanelByKey(scene, 'panel-2')!;
+        const otherQueryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+        otherPanel.setState({ pluginId: 'timeseries', $data: otherQueryRunner });
+        const inspectedQueryRunner = sceneGraph.findObject(
+          inspectedPanel,
+          (object) => object.state.key === 'data-query-runner'
+        )!;
+        scene.setState({
+          overlay: new PanelInspectDrawer({ panelRef: inspectedPanel.getRef(), currentTab: InspectTab.Data }),
+        });
+
+        expect(scene.enrichDataRequest(inspectedQueryRunner).preferredQueryResultFormat).toBeUndefined();
+        expect(scene.enrichDataRequest(otherQueryRunner).preferredQueryResultFormat).toBe('compact-v1');
       });
     });
 

@@ -13,7 +13,7 @@ import {
 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { t, Trans } from '@grafana/i18n';
-import { config, locationService, reportInteraction } from '@grafana/runtime';
+import { config, getPluginImportUtils, locationService, reportInteraction } from '@grafana/runtime';
 import {
   DeepPartial,
   SceneComponentProps,
@@ -49,8 +49,22 @@ interface PluginOptionsCache {
   fieldConfig: FieldConfigSource<DeepPartial<{}>>;
 }
 
+interface PanelPluginChangeRequest {
+  options: VizTypeChangeDetails;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+interface PanelPluginChangeState {
+  pending?: PanelPluginChangeRequest;
+  running?: Promise<void>;
+  cancelled: boolean;
+  pluginChangeStarted: boolean;
+}
+
 export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
-  private _cachedPluginOptions: Record<string, PluginOptionsCache | undefined> = {};
+  private _cachedPluginOptions = new WeakMap<VizPanel, Record<string, PluginOptionsCache | undefined>>();
+  private _panelPluginChanges = new Map<VizPanel, PanelPluginChangeState>();
 
   onToggleVizPicker = () => {
     const newState = !this.state.isVizPickerOpen;
@@ -64,15 +78,79 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
     });
   };
 
-  onChangePanel = (options: VizTypeChangeDetails, panel = this.state.panelRef.resolve()) => {
-    const { options: prevOptions, fieldConfig: prevFieldConfig, pluginId: prevPluginId } = panel.state;
-    const pluginId = options.pluginId;
-
+  onChangePanel = (options: VizTypeChangeDetails, panel = this.state.panelRef.resolve()): Promise<void> => {
     reportInteraction(INTERACTION_EVENT_NAME, {
       item: INTERACTION_ITEM.SELECT_PANEL_PLUGIN,
-      plugin_id: pluginId,
+      plugin_id: options.pluginId,
       from_suggestions: options.fromSuggestions ?? false,
     });
+
+    let state = this._panelPluginChanges.get(panel);
+    if (!state || state.cancelled) {
+      state = { cancelled: false, pluginChangeStarted: false };
+      this._panelPluginChanges.set(panel, state);
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      state.pending?.resolve();
+      state.pending = { options, resolve, reject };
+
+      if (!state.running) {
+        state.running = this.processPanelPluginChanges(panel, state);
+      }
+    });
+  };
+
+  /** Cancels plugin changes that are still preloading and returns an already-started live-panel change. */
+  cancelPendingPanelChanges(): Promise<void> | undefined {
+    let livePanelChange: Promise<void> | undefined;
+    const livePanel = this.state.panelRef.resolve();
+
+    for (const [panel, state] of this._panelPluginChanges) {
+      if (state.pluginChangeStarted) {
+        state.pending?.resolve();
+        state.pending = undefined;
+        if (panel === livePanel) {
+          livePanelChange = state.running;
+        }
+        continue;
+      }
+
+      state.cancelled = true;
+      state.pending?.resolve();
+      state.pending = undefined;
+    }
+
+    return livePanelChange;
+  }
+
+  getPendingLivePanelChange(): Promise<void> | undefined {
+    const livePanel = this.state.panelRef.resolve();
+    return this._panelPluginChanges.get(livePanel)?.running;
+  }
+
+  private async processPanelPluginChanges(panel: VizPanel, state: PanelPluginChangeState) {
+    while (state.pending && !state.cancelled) {
+      const request = state.pending;
+      state.pending = undefined;
+
+      try {
+        await this.applyPanelPluginChange(panel, request.options, state);
+        request.resolve();
+      } catch (error) {
+        request.reject(error);
+      }
+    }
+
+    state.running = undefined;
+    if (this._panelPluginChanges.get(panel) === state) {
+      this._panelPluginChanges.delete(panel);
+    }
+  }
+
+  private async applyPanelPluginChange(panel: VizPanel, options: VizTypeChangeDetails, state: PanelPluginChangeState) {
+    const { options: prevOptions, fieldConfig: prevFieldConfig, pluginId: prevPluginId } = panel.state;
+    const pluginId = options.pluginId;
 
     // clear custom options
     let newFieldConfig: FieldConfigSource = {
@@ -83,16 +161,36 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
       overrides: filterFieldConfigOverrides(prevFieldConfig.overrides, isStandardFieldProp),
     };
 
-    this._cachedPluginOptions[prevPluginId] = { options: prevOptions, fieldConfig: prevFieldConfig };
+    let cachedPluginOptions = this._cachedPluginOptions.get(panel);
+    if (!cachedPluginOptions) {
+      cachedPluginOptions = {};
+      this._cachedPluginOptions.set(panel, cachedPluginOptions);
+    }
+    cachedPluginOptions[prevPluginId] = { options: prevOptions, fieldConfig: prevFieldConfig };
 
-    const cachedOptions = this._cachedPluginOptions[pluginId]?.options;
-    const cachedFieldConfig = this._cachedPluginOptions[pluginId]?.fieldConfig;
+    const cachedOptions = cachedPluginOptions[pluginId]?.options;
+    const cachedFieldConfig = cachedPluginOptions[pluginId]?.fieldConfig;
 
     if (cachedFieldConfig) {
       newFieldConfig = restoreCustomOverrideRules(newFieldConfig, cachedFieldConfig);
     }
 
-    panel.changePluginType(pluginId, cachedOptions, newFieldConfig);
+    try {
+      await getPluginImportUtils().importPanelPlugin(pluginId);
+    } catch {
+      // VizPanel owns the plugin-not-found behavior. Preloading here only keeps
+      // changePluginType from racing a newer picker selection.
+    }
+    if (state.cancelled || state.pending) {
+      return;
+    }
+
+    state.pluginChangeStarted = true;
+    try {
+      await panel.changePluginType(pluginId, cachedOptions, newFieldConfig);
+    } finally {
+      state.pluginChangeStarted = false;
+    }
 
     if (options.options) {
       panel.onOptionsChange(options.options, true);
@@ -107,10 +205,10 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
     }
 
     // Handle preview suggestions
-    if (!options.withModKey) {
-      this.onToggleVizPicker();
+    if (!options.withModKey && this.state.isVizPickerOpen) {
+      this.setState({ isVizPickerOpen: false, hasPickedViz: true });
     }
-  };
+  }
 
   onSetSearchQuery = (searchQuery: string) => {
     this.setState({ searchQuery });

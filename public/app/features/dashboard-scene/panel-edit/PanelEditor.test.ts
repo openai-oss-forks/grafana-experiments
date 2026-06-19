@@ -39,7 +39,7 @@ import { findVizPanelByKey, getQueryRunnerFor } from '../utils/utils';
 
 import { PanelDataPane } from './PanelDataPane/PanelDataPane';
 import { PanelDataPaneNext } from './PanelEditNext/PanelDataPaneNext';
-import { buildPanelEditScene } from './PanelEditor';
+import { buildPanelEditScene, PanelEditor } from './PanelEditor';
 
 const runRequestMock = jest.fn().mockImplementation((ds: DataSourceApi, request: DataQueryRequest) => {
   return of({
@@ -459,6 +459,24 @@ describe('PanelEditor', () => {
       expect(discardedPanel.state.title).toBe('original title');
     });
 
+    it('does not commit the detached changed panel after discard', async () => {
+      const { panelEditor, panel, dashboard } = await setup();
+      const setPanelEditAction = jest.spyOn(dashboard.state.editPane, 'setPanelEditAction');
+      const previousNewLayoutsToggle = config.featureToggles.dashboardNewLayouts;
+      config.featureToggles.dashboardNewLayouts = true;
+
+      try {
+        panel.setState({ title: 'discarded title' });
+        panelEditor.onDiscard();
+        deactivate?.();
+        deactivate = undefined;
+
+        expect(setPanelEditAction).not.toHaveBeenCalled();
+      } finally {
+        config.featureToggles.dashboardNewLayouts = previousNewLayoutsToggle;
+      }
+    });
+
     it('should discard a newly added panel', async () => {
       const { panelEditor, dashboard } = await setup({ isNewPanel: true });
       panelEditor.onDiscard();
@@ -512,6 +530,29 @@ describe('PanelEditor', () => {
       panel.setState({ title: 'changed title' });
       expect(panelEditor.state.isDirty).toBe(false);
     });
+
+    it('commits an immediately completed plugin change before dirty detection is debounced', async () => {
+      const { panelEditor, dashboard } = await setup({ debounceSaveModelDiff: true });
+      const setPanelEditAction = jest.spyOn(dashboard.state.editPane, 'setPanelEditAction');
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'barchart' }));
+      const previousNewLayoutsToggle = config.featureToggles.dashboardNewLayouts;
+      config.featureToggles.dashboardNewLayouts = true;
+      jest.useFakeTimers();
+
+      try {
+        await panelEditor.state.optionsPane!.onChangePanel({ pluginId: 'barchart' });
+
+        expect(panelEditor.getPanel().state.pluginId).toBe('barchart');
+        expect(panelEditor.state.isDirty).toBeUndefined();
+        deactivate?.();
+        deactivate = undefined;
+
+        expect(setPanelEditAction).toHaveBeenCalledTimes(1);
+      } finally {
+        config.featureToggles.dashboardNewLayouts = previousNewLayoutsToggle;
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe('When opening a repeated panel', () => {
@@ -519,6 +560,195 @@ describe('PanelEditor', () => {
       const { panel } = await setup({ repeatByVariable: 'server' });
       const variable = sceneGraph.lookupVariable('server', panel);
       expect(variable?.getValue()).toBe('A');
+    });
+  });
+
+  describe('Visualization preview', () => {
+    it('starts with the visualization and configuration of the panel being edited', () => {
+      const options = { orientation: VizOrientation.Horizontal };
+      const fieldConfig = {
+        defaults: { custom: { drawStyle: GraphDrawStyle.Bars } },
+        overrides: [],
+      };
+      const panel = new VizPanel({
+        pluginId: 'barchart',
+        pluginVersion: '1.2.3',
+        title: 'Bar panel',
+        description: 'Panel description',
+        options,
+        fieldConfig,
+        seriesLimit: 321,
+      });
+
+      const preview = PanelEditor.buildEditPreview(panel);
+
+      expect(preview.state).toMatchObject({
+        pluginId: 'barchart',
+        pluginVersion: '1.2.3',
+        title: 'Bar panel',
+        description: 'Panel description',
+        options,
+        fieldConfig,
+        seriesLimit: 321,
+      });
+      expect(preview.state.options).not.toBe(panel.state.options);
+      expect(preview.state.fieldConfig).not.toBe(panel.state.fieldConfig);
+    });
+
+    it('cancels a plugin preload when panel edit closes', async () => {
+      const { panelEditor, panel } = await setup();
+      let resolvePlugin!: (plugin: PanelPlugin) => void;
+      pluginPromise = new Promise<PanelPlugin>((resolve) => {
+        resolvePlugin = resolve;
+      });
+
+      const change = panelEditor.state.optionsPane!.onChangePanel({ pluginId: 'barchart' });
+
+      deactivate?.();
+      deactivate = undefined;
+      resolvePlugin(getPanelPlugin({ id: 'barchart' }));
+      await change;
+
+      expect(panel.state.pluginId).toBe('text');
+    });
+
+    it('commits a plugin change that already started when panel edit closes', async () => {
+      const { panelEditor, panel, dashboard, gridItem } = await setup({ pluginSkipDataQuery: false });
+      const previousNewLayoutsToggle = config.featureToggles.dashboardNewLayouts;
+      config.featureToggles.dashboardNewLayouts = true;
+      let finishPluginChange!: () => void;
+      let pluginChangeFinished = false;
+      const targetPlugin = getPanelPlugin({ id: 'barchart', skipDataQuery: true });
+      panel.getPlugin = jest.fn(() => (pluginChangeFinished ? targetPlugin : undefined));
+      panel.changePluginType = jest.fn(
+        (pluginId: string) =>
+          new Promise<void>((resolve) => {
+            finishPluginChange = () => {
+              pluginChangeFinished = true;
+              panel.setState({ pluginId });
+              resolve();
+            };
+          })
+      );
+
+      try {
+        const change = panelEditor.state.optionsPane!.onChangePanel({ pluginId: 'barchart' });
+        await new Promise(process.nextTick);
+        Reflect.get(panelEditor, '_internalDeactivate').call(panelEditor);
+        dashboard.setState({ editPanel: undefined });
+
+        expect(dashboard.state.editPane.state.undoStack).toHaveLength(0);
+        let saveGateFinished = false;
+        const saveGate = dashboard.waitForPendingPanelEditCompletion().then(() => {
+          saveGateFinished = true;
+        });
+        await Promise.resolve();
+        expect(saveGateFinished).toBe(false);
+
+        finishPluginChange();
+        await Promise.all([change, saveGate]);
+        await new Promise(process.nextTick);
+        expect(saveGateFinished).toBe(true);
+        expect(dashboard.state.editPane.state.undoStack).toHaveLength(1);
+        expect((gridItem.state.body as VizPanel).state.pluginId).toBe('barchart');
+        expect((gridItem.state.body as VizPanel).state.$data).toBeUndefined();
+
+        dashboard.state.editPane.undoAction();
+        expect((gridItem.state.body as VizPanel).state.pluginId).toBe('text');
+        dashboard.state.editPane.redoAction();
+        expect((gridItem.state.body as VizPanel).state.pluginId).toBe('barchart');
+      } finally {
+        config.featureToggles.dashboardNewLayouts = previousNewLayoutsToggle;
+      }
+    });
+
+    it('updates classic repeated panels after an in-flight plugin change finishes', async () => {
+      const { panelEditor, panel, dashboard, gridItem } = await setup({
+        pluginSkipDataQuery: false,
+        repeatByVariable: 'server',
+      });
+      const previousNewLayoutsToggle = config.featureToggles.dashboardNewLayouts;
+      config.featureToggles.dashboardNewLayouts = false;
+      const handleEditChange = jest.spyOn(gridItem, 'handleEditChange');
+      let finishPluginChange!: () => void;
+      let pluginChangeFinished = false;
+      const targetPlugin = getPanelPlugin({ id: 'barchart', skipDataQuery: false });
+      panel.getPlugin = jest.fn(() => (pluginChangeFinished ? targetPlugin : undefined));
+      panel.changePluginType = jest.fn(
+        (pluginId: string) =>
+          new Promise<void>((resolve) => {
+            finishPluginChange = () => {
+              pluginChangeFinished = true;
+              panel.setState({ pluginId });
+              resolve();
+            };
+          })
+      );
+
+      try {
+        const change = panelEditor.state.optionsPane!.onChangePanel({ pluginId: 'barchart' });
+        await new Promise(process.nextTick);
+        Reflect.get(panelEditor, '_internalDeactivate').call(panelEditor);
+        dashboard.setState({ editPanel: undefined });
+
+        expect(handleEditChange).not.toHaveBeenCalled();
+
+        finishPluginChange();
+        await change;
+        await new Promise(process.nextTick);
+
+        expect(handleEditChange).toHaveBeenCalledTimes(1);
+        expect((gridItem.state.body as VizPanel).state.pluginId).toBe('barchart');
+        expect(gridItem.state.repeatedPanels?.every((repeat) => repeat.state.pluginId === 'barchart')).toBe(true);
+      } finally {
+        config.featureToggles.dashboardNewLayouts = previousNewLayoutsToggle;
+      }
+    });
+  });
+
+  describe('Changing between data and non-data visualizations', () => {
+    it('preserves queries and transformations across the round trip', async () => {
+      const queryRunner = new SceneQueryRunner({
+        datasource: { uid: 'ds1' },
+        queries: [
+          { refId: 'A', expr: 'up' },
+          { refId: 'B', expr: 'rate(requests_total[5m])' },
+        ],
+      });
+      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const transformer = new SceneDataTransformer({
+        $data: queryRunner,
+        transformations: [{ id: 'organize', options: { excludeByName: { Time: true } }, disabled: true }],
+      });
+      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: transformer });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      deactivate = activateFullSceneTree(dashboard);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
+      await panel.changePluginType('text');
+      expect(panel.state.$data).toBeUndefined();
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      await panel.changePluginType('timeseries');
+
+      expect(panel.state.$data).toBe(transformer);
+      expect(transformer.state.$data).toBe(queryRunner);
+      expect(queryRunner.state.datasource).toEqual({ uid: 'ds1' });
+      expect(queryRunner.state.queries).toEqual([
+        { refId: 'A', expr: 'up' },
+        { refId: 'B', expr: 'rate(requests_total[5m])' },
+      ]);
+      expect(transformer.state.transformations).toEqual([
+        { id: 'organize', options: { excludeByName: { Time: true } }, disabled: true },
+      ]);
     });
   });
 
@@ -570,8 +800,7 @@ describe('PanelEditor', () => {
         libPanelBehavior.setPanelFromLibPanel(updatedPanel);
       });
 
-      editScene.onConfirmSaveLibraryPanel();
-      await new Promise(process.nextTick);
+      await editScene.onConfirmSaveLibraryPanel();
 
       // Wait for mock api to return and update the library panel
       expect(libPanelBehavior.state._loadedPanel?.version).toBe(2);
@@ -774,6 +1003,7 @@ interface SetupOptions {
   repeatByVariable?: string;
   skipWait?: boolean;
   pluginLoadTime?: number;
+  debounceSaveModelDiff?: boolean;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -823,7 +1053,7 @@ async function setup(options: SetupOptions = {}) {
     }),
   });
 
-  panelEditor.debounceSaveModelDiff = false;
+  panelEditor.debounceSaveModelDiff = options.debounceSaveModelDiff ?? false;
 
   deactivate = activateFullSceneTree(dashboard);
 

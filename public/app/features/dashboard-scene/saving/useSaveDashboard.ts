@@ -30,85 +30,89 @@ export function useSaveDashboard(isCopy = false) {
         SaveDashboardAsOptions & {
           // When provided, will take precedence over the scene's save model
           rawDashboardJSON?: Dashboard | DashboardV2Spec;
+          getRawDashboardJSON?: () => Dashboard | DashboardV2Spec;
         }
     ) => {
-      {
-        let saveModel = options.rawDashboardJSON ?? scene.getSaveModel();
-
-        if (options.saveAsCopy) {
-          saveModel = scene.getSaveAsModel({
-            isNew: options.isNew,
-            title: options.title,
-            description: options.description,
-            copyTags: options.copyTags,
-          });
-        }
-
-        const result = await saveDashboardRtkQuery({
-          dashboard: saveModel,
-          folderUid: options.folderUid,
-          message: options.message,
-          overwrite: options.overwrite,
-          showErrorAlert: false,
-          k8s: options.k8s,
-        });
-
-        if ('error' in result) {
-          throw result.error;
-        }
-
-        // result.data is readonly so spreading to allow for slug edits
-        const resultData: typeof result.data = { ...result.data };
-
-        // TODO: use slug from response once implemented
-        // reuse existing slug to avoid "Unsaved changes" modal after save
-        //   due to slugify logic difference between frontend and backend
-        if (!result.data.slug && scene.state.meta.slug) {
-          const slug = scene.state.meta.slug;
-          resultData.slug = slug;
-          resultData.url = `${result.data.url}/${slug}`;
-        }
-
-        scene.saveCompleted(saveModel, resultData, options.folderUid);
-
-        // important that these happen before location redirect below
-        appEvents.publish(new DashboardSavedEvent());
-        notifyApp.success(t('dashboard-scene.use-save-dashboard.message-dashboard-saved', 'Dashboard saved'));
-
-        updateDashboardUidLastUsedDatasource(resultData.uid);
-
-        if (isCopy) {
-          DashboardInteractions.dashboardCopied({ name: saveModel.title || '', url: resultData.url });
-        } else {
-          trackDashboardSceneCreatedOrSaved(!!options.isNew, scene, {
-            name: saveModel.title || '',
-            url: resultData.url || '',
-            transformation_counts: scene.getTransformationCounts(saveModel),
-            expression_counts: scene.getExpressionCounts(saveModel),
-          });
-        }
-
-        const currentLocation = locationService.getLocation();
-        const newUrl = locationUtil.stripBaseFromUrl(resultData.url);
-
-        if (newUrl !== currentLocation.pathname) {
-          setTimeout(() => {
-            locationService.push({ pathname: newUrl, search: currentLocation.search });
-          });
-        }
-
-        if (scene.state.meta.isStarred) {
-          dispatch(
-            updateDashboardName({
-              id: resultData.uid,
-              title: scene.state.title,
-              url: newUrl,
-            })
-          );
-        }
-
-        return result.data;
+      const activePanelChange = scene.state.editPanel?.getPendingPanelChange();
+      if (activePanelChange) {
+        await activePanelChange;
       }
+      await scene.waitForPendingPanelEditCompletion();
+      let saveModel = options.getRawDashboardJSON?.() ?? options.rawDashboardJSON ?? scene.getSaveModel();
+
+      if (options.saveAsCopy) {
+        saveModel = scene.getSaveAsModel({
+          isNew: options.isNew,
+          title: options.title,
+          description: options.description,
+          copyTags: options.copyTags,
+        });
+      }
+
+      const result = await saveDashboardRtkQuery({
+        dashboard: saveModel,
+        folderUid: options.folderUid,
+        message: options.message,
+        overwrite: options.overwrite,
+        showErrorAlert: false,
+        k8s: options.k8s,
+      });
+
+      if ('error' in result) {
+        throw result.error;
+      }
+
+      // result.data is readonly so spreading to allow for slug edits
+      const resultData: typeof result.data = { ...result.data };
+
+      // TODO: use slug from response once implemented
+      // reuse existing slug to avoid "Unsaved changes" modal after save
+      //   due to slugify logic difference between frontend and backend
+      if (!result.data.slug && scene.state.meta.slug) {
+        const slug = scene.state.meta.slug;
+        resultData.slug = slug;
+        resultData.url = `${result.data.url}/${slug}`;
+      }
+
+      scene.saveCompleted(saveModel, resultData, options.folderUid);
+
+      // important that these happen before location redirect below
+      appEvents.publish(new DashboardSavedEvent());
+      notifyApp.success(t('dashboard-scene.use-save-dashboard.message-dashboard-saved', 'Dashboard saved'));
+
+      updateDashboardUidLastUsedDatasource(resultData.uid);
+
+      if (isCopy) {
+        DashboardInteractions.dashboardCopied({ name: saveModel.title || '', url: resultData.url });
+      } else {
+        trackDashboardSceneCreatedOrSaved(!!options.isNew, scene, {
+          name: saveModel.title || '',
+          url: resultData.url || '',
+          transformation_counts: scene.getTransformationCounts(saveModel),
+          expression_counts: scene.getExpressionCounts(saveModel),
+        });
+      }
+
+      const currentLocation = locationService.getLocation();
+      const newUrl = locationUtil.stripBaseFromUrl(resultData.url);
+
+      if (newUrl !== currentLocation.pathname) {
+        setTimeout(() => {
+          locationService.push({ pathname: newUrl, search: currentLocation.search });
+        });
+      }
+
+      if (scene.state.meta.isStarred) {
+        dispatch(
+          updateDashboardName({
+            id: resultData.uid,
+            title: scene.state.title,
+            url: newUrl,
+          })
+        );
+      }
+
+      return result.data;
     },
     [dispatch, notifyApp]
   );

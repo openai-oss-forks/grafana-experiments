@@ -32,6 +32,7 @@ export interface Props {
   panel?: PanelModel;
   searchQuery?: string;
   isNewPanel?: boolean;
+  hasPickedViz?: boolean;
 }
 
 const useSuggestions = (data: PanelData | undefined, searchQuery: string | undefined) => {
@@ -66,7 +67,15 @@ const useSuggestions = (data: PanelData | undefined, searchQuery: string | undef
   return { value: filteredValue, loading, error, retry };
 };
 
-export function VisualizationSuggestions({ onChange, editPreview, data, panel, searchQuery, isNewPanel }: Props) {
+export function VisualizationSuggestions({
+  onChange,
+  editPreview,
+  data,
+  panel,
+  searchQuery,
+  isNewPanel,
+  hasPickedViz,
+}: Props) {
   const styles = useStyles2(getStyles);
 
   const { value: result, loading, error, retry } = useSuggestions(data, searchQuery);
@@ -159,7 +168,12 @@ export function VisualizationSuggestions({ onChange, editPreview, data, panel, s
   );
 
   useEffect(() => {
-    if (!isNewVizSuggestionsEnabled || !suggestions || suggestions.length === 0) {
+    if (
+      !isNewVizSuggestionsEnabled ||
+      ((!isNewPanel || hasPickedViz) && !isUnconfiguredPanel) ||
+      !suggestions ||
+      suggestions.length === 0
+    ) {
       return;
     }
 
@@ -172,7 +186,16 @@ export function VisualizationSuggestions({ onChange, editPreview, data, panel, s
       setFirstCardHash(newFirstCardHash);
       return;
     }
-  }, [suggestions, suggestionHash, firstCardHash, isNewVizSuggestionsEnabled, isUnconfiguredPanel, applySuggestion]);
+  }, [
+    suggestions,
+    suggestionHash,
+    firstCardHash,
+    isNewVizSuggestionsEnabled,
+    isNewPanel,
+    hasPickedViz,
+    isUnconfiguredPanel,
+    applySuggestion,
+  ]);
 
   if (loading || !data) {
     return (
