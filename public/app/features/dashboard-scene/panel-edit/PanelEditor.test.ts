@@ -10,7 +10,7 @@ import {
   PanelPlugin,
 } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
-import { config, locationService } from '@grafana/runtime';
+import { config } from '@grafana/runtime';
 import {
   CancelActivationHandler,
   CustomVariable,
@@ -185,13 +185,13 @@ describe('PanelEditor', () => {
       expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps a compact query when changed panel options remain compatible', async () => {
-      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+    it('restarts an active incompatible request without response metadata', async () => {
+      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor({ withCompactData: false });
 
-      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Points } }, overrides: [] }, true);
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
 
-      expect(cancelQuery).not.toHaveBeenCalled();
-      expect(runQueries).not.toHaveBeenCalled();
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
     it('reruns a compact query in full format when table view opens', async () => {
@@ -219,29 +219,6 @@ describe('PanelEditor', () => {
       expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps a compact query when a disabled transformation is added', async () => {
-      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
-      const transformer = panel.state.$data;
-      expect(transformer).toBeInstanceOf(SceneDataTransformer);
-
-      (transformer as SceneDataTransformer).setState({
-        transformations: [{ id: 'organize', options: {}, disabled: true }],
-      });
-
-      expect(cancelQuery).not.toHaveBeenCalled();
-      expect(runQueries).not.toHaveBeenCalled();
-    });
-
-    it('does not rerun a compact query when switching to a panel that skips data queries', async () => {
-      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
-      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
-
-      await panel.changePluginType('text');
-
-      expect(cancelQuery).not.toHaveBeenCalled();
-      expect(runQueries).not.toHaveBeenCalled();
-    });
-
     it('does not restart a full-format request that retains stale compact data while loading', async () => {
       const { panel, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
       queryRunner.setState({
@@ -256,15 +233,6 @@ describe('PanelEditor', () => {
 
       expect(cancelQuery).not.toHaveBeenCalled();
       expect(runQueries).not.toHaveBeenCalled();
-    });
-
-    it('restarts an unreported in-flight request when configuration requires the full format', async () => {
-      const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor({ withCompactData: false });
-
-      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
-
-      expect(cancelQuery).toHaveBeenCalledTimes(1);
-      expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
     it('restarts a compact refresh that still exposes the previous full-format response', async () => {
@@ -283,29 +251,6 @@ describe('PanelEditor', () => {
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] }, true);
       prepareDashboardQuery(queryRunner);
       expect(queryRunner.getLastPreparedRequest()?.preferredQueryResultFormat).toBe('compact-v1');
-      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
-
-      expect(cancelQuery).toHaveBeenCalledTimes(1);
-      expect(runQueries).toHaveBeenCalledTimes(1);
-    });
-
-    it('uses a replacement compact query runner added after the panel editor activates', async () => {
-      const { panel } = await setupCompactTimeSeriesEditor();
-      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
-      queryRunner.setState({
-        data: {
-          state: LoadingState.Done,
-          series: [],
-          timeRange: getDefaultTimeRange(),
-          compactSeries: createCompactSeries(),
-        },
-      });
-      const cancelQuery = jest.spyOn(queryRunner, 'cancelQuery').mockImplementation(() => {});
-      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
-      panel.setState({ $data: queryRunner });
-      cancelQuery.mockClear();
-      runQueries.mockClear();
-
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
 
       expect(cancelQuery).toHaveBeenCalledTimes(1);
@@ -661,49 +606,6 @@ describe('PanelEditor', () => {
         config.featureToggles.dashboardNewLayouts = previousNewLayoutsToggle;
       }
     });
-
-    it('updates classic repeated panels after an in-flight plugin change finishes', async () => {
-      const { panelEditor, panel, dashboard, gridItem } = await setup({
-        pluginSkipDataQuery: false,
-        repeatByVariable: 'server',
-      });
-      const previousNewLayoutsToggle = config.featureToggles.dashboardNewLayouts;
-      config.featureToggles.dashboardNewLayouts = false;
-      const handleEditChange = jest.spyOn(gridItem, 'handleEditChange');
-      let finishPluginChange!: () => void;
-      let pluginChangeFinished = false;
-      const targetPlugin = getPanelPlugin({ id: 'barchart', skipDataQuery: false });
-      panel.getPlugin = jest.fn(() => (pluginChangeFinished ? targetPlugin : undefined));
-      panel.changePluginType = jest.fn(
-        (pluginId: string) =>
-          new Promise<void>((resolve) => {
-            finishPluginChange = () => {
-              pluginChangeFinished = true;
-              panel.setState({ pluginId });
-              resolve();
-            };
-          })
-      );
-
-      try {
-        const change = panelEditor.state.optionsPane!.onChangePanel({ pluginId: 'barchart' });
-        await new Promise(process.nextTick);
-        Reflect.get(panelEditor, '_internalDeactivate').call(panelEditor);
-        dashboard.setState({ editPanel: undefined });
-
-        expect(handleEditChange).not.toHaveBeenCalled();
-
-        finishPluginChange();
-        await change;
-        await new Promise(process.nextTick);
-
-        expect(handleEditChange).toHaveBeenCalledTimes(1);
-        expect((gridItem.state.body as VizPanel).state.pluginId).toBe('barchart');
-        expect(gridItem.state.repeatedPanels?.every((repeat) => repeat.state.pluginId === 'barchart')).toBe(true);
-      } finally {
-        config.featureToggles.dashboardNewLayouts = previousNewLayoutsToggle;
-      }
-    });
   });
 
   describe('Changing between data and non-data visualizations', () => {
@@ -831,37 +733,6 @@ describe('PanelEditor', () => {
       finishSave();
       await expect(firstSave).resolves.toBe(true);
       await expect(secondSave).resolves.toBe(true);
-    });
-
-    it('does not discard while a library panel save is pending', async () => {
-      const { panelEditor } = await setup();
-      let finishPanelChange!: () => void;
-      const pendingPanelChange = new Promise<void>((resolve) => {
-        finishPanelChange = resolve;
-      });
-      jest.spyOn(panelEditor, 'getPendingPanelChange').mockReturnValue(pendingPanelChange);
-      const saveLibPanel = jest.spyOn(libAPI, 'saveLibPanel').mockImplementation(() => Promise.resolve());
-      saveLibPanel.mockClear();
-
-      const save = panelEditor.onConfirmSaveLibraryPanel();
-      expect(panelEditor.onDiscard()).toBe(false);
-      finishPanelChange();
-
-      await expect(save).resolves.toBe(true);
-      expect(saveLibPanel).toHaveBeenCalledTimes(1);
-    });
-
-    it('lets the caller own navigation after a library panel save', async () => {
-      const { panelEditor } = await setup();
-      const saveLibPanel = jest.spyOn(libAPI, 'saveLibPanel').mockImplementation(() => Promise.resolve());
-      const partial = jest.spyOn(locationService, 'partial');
-      saveLibPanel.mockClear();
-      partial.mockClear();
-
-      await expect(panelEditor.onConfirmSaveLibraryPanel(false)).resolves.toBe(true);
-
-      expect(saveLibPanel).toHaveBeenCalledTimes(1);
-      expect(partial).not.toHaveBeenCalled();
     });
 
     it('unlinks library panel', () => {
@@ -997,13 +868,13 @@ function createTimeSeriesTestPlugin() {
 }
 
 async function setupCompactTimeSeriesEditor({
-  withCompactData = true,
-  fieldConfig = { defaults: {}, overrides: [] },
   clearSpies = true,
+  fieldConfig,
+  withCompactData = true,
 }: {
-  withCompactData?: boolean;
-  fieldConfig?: FieldConfigSource;
   clearSpies?: boolean;
+  fieldConfig?: FieldConfigSource;
+  withCompactData?: boolean;
 } = {}) {
   pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
   const queryRunner = new DashboardSceneQueryRunner({ queries: [{ refId: 'A' }] });

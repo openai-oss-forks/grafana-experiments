@@ -216,6 +216,7 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
   };
 
   public deleteQuery = (refId: string) => {
+    this.queryDatasourceChangeGeneration.set(refId, (this.queryDatasourceChangeGeneration.get(refId) ?? 0) + 1);
     this.mutateQuery(refId, (_query, index, queries) => {
       queries.splice(index, 1);
       return queries;

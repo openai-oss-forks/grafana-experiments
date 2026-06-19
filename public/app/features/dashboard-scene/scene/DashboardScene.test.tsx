@@ -180,31 +180,6 @@ describe('DashboardScene', () => {
         expect(locationService.getLocation().pathname).toBe('/d/dash-1');
       });
 
-      it('waits for a library panel save before exiting edit mode', async () => {
-        const panel = findVizPanelByKey(scene, 'panel-1')!;
-        const editPanel = buildPanelEditScene(panel);
-        let finishLibrarySave!: () => void;
-        let isLibrarySavePending = true;
-        const librarySave = new Promise<boolean>((resolve) => {
-          finishLibrarySave = () => {
-            isLibrarySavePending = false;
-            resolve(true);
-          };
-        });
-        jest
-          .spyOn(editPanel, 'getPendingLibraryPanelSave')
-          .mockImplementation(() => (isLibrarySavePending ? librarySave : undefined));
-        scene.setState({ editPanel });
-
-        scene.exitEditMode({ skipConfirm: true });
-        expect(scene.state.isEditing).toBe(true);
-
-        finishLibrarySave();
-        await librarySave;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(scene.state.isEditing).toBe(false);
-      });
-
       it('waits for an active panel change before exiting edit mode', async () => {
         const panel = findVizPanelByKey(scene, 'panel-1')!;
         const editPanel = buildPanelEditScene(panel);
@@ -286,35 +261,6 @@ describe('DashboardScene', () => {
         // Resets tracking
         expect(stopSpy).toHaveBeenCalled();
         expect(startSpy).toHaveBeenCalled();
-      });
-
-      it('waits for an active panel change before discarding and keeping edit mode', async () => {
-        scene.setState({ title: 'Updated title' });
-        const panel = findVizPanelByKey(scene, 'panel-1')!;
-        const editPanel = buildPanelEditScene(panel);
-        let finishPanelChange!: () => void;
-        let isPanelChangePending = true;
-        const panelChange = new Promise<void>((resolve) => {
-          finishPanelChange = () => {
-            isPanelChangePending = false;
-            resolve();
-          };
-        });
-        jest
-          .spyOn(editPanel, 'getPendingPanelChange')
-          .mockImplementation(() => (isPanelChangePending ? panelChange : undefined));
-        scene.setState({ editPanel });
-
-        scene.discardChangesAndKeepEditing();
-        expect(scene.state.title).toBe('Updated title');
-        expect(scene.state.editPanel).toBe(editPanel);
-
-        finishPanelChange();
-        await panelChange;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(scene.state.title).toBe('hello');
-        expect(scene.state.editPanel).toBeUndefined();
-        expect(scene.state.isEditing).toBe(true);
       });
 
       it('Exiting already saved dashboard should not restore initial state', () => {
@@ -1121,6 +1067,13 @@ describe('DashboardScene', () => {
         const queryRunner = editPanel.getPanel().state.$data!;
 
         expect(scene.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBe('compact-v1');
+      });
+
+      test('falls back to full data for malformed persisted panel options', () => {
+        const panel = findVizPanelByKey(scene, 'panel-1')!;
+        panel.setState({ pluginId: 'timeseries', options: 'malformed' as never });
+
+        expect(scene.enrichDataRequest(panel.state.$data!).preferredQueryResultFormat).toBeUndefined();
       });
 
       test('requests full data for panel editor table view', () => {

@@ -185,7 +185,7 @@ describe('VisualizationSuggestions', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('does not replace a configured new panel when the picker is reopened', async () => {
+  it('does not replace a selected visualization when a new-panel picker is reopened', async () => {
     const onChange = jest.fn();
     const data: PanelData = {
       series: [toDataFrame({ fields: [{ name: 'value', type: FieldType.number, values: [10, 20, 30] }] })],
@@ -198,8 +198,8 @@ describe('VisualizationSuggestions', () => {
         onChange={onChange}
         data={data}
         panel={{ type: 'barchart' } as never}
-        isNewPanel={true}
-        hasPickedViz={true}
+        isNewPanel
+        hasPickedViz
       />
     );
 

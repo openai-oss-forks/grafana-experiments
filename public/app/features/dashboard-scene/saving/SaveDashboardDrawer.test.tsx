@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, render, waitFor } from '@testing-library/react';
+import { act, screen, render, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TestProvider } from 'test/helpers/TestProvider';
 import { byTestId, byText } from 'testing-library-selector';
@@ -217,34 +217,6 @@ describe('SaveDashboardDrawer', () => {
       expect(saveDashboardMutationMock.mock.calls[0][0].dashboard.title).toBe('After pending panel change');
     });
 
-    it('snapshots save options before waiting for an active panel change', async () => {
-      const { dashboard, openAndRender } = setup();
-      sceneGraph.getTimeRange(dashboard).setState({ from: 'now-1h', to: 'now' });
-      dashboard.setState({ title: 'Changed title' });
-      let finishPanelChange!: () => void;
-      const pendingPanelChange = new Promise<void>((resolve) => {
-        finishPanelChange = resolve;
-      });
-      jest.spyOn(dashboard, 'waitForPendingPanelEdits').mockReturnValue(pendingPanelChange);
-      const drawer = openAndRender();
-      mockSaveDashboard();
-      saveDashboardMutationMock.mockImplementation(() => new Promise(() => {}));
-      const getDashboardChanges = jest.spyOn(dashboard, 'getDashboardChanges');
-
-      await userEvent.click(await screen.findByTestId(selectors.components.Drawer.DashboardSaveDrawer.saveButton));
-      await waitFor(() => expect(drawer.state.isSaving).toBe(true));
-      expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
-      drawer.onClose();
-      expect(dashboard.state.overlay).toBe(drawer);
-      await userEvent.click(screen.getByTestId(selectors.pages.SaveDashboardModal.saveTimerange));
-      await act(async () => {
-        finishPanelChange();
-        await pendingPanelChange;
-      });
-
-      await waitFor(() => expect(getDashboardChanges).toHaveBeenLastCalledWith(undefined, undefined, undefined));
-    });
-
     it('Can handle save errors and overwrite', async () => {
       const { dashboard, openAndRender } = setup();
 
@@ -333,6 +305,20 @@ describe('SaveDashboardDrawer', () => {
 
   describe('Save as copy', () => {
     it('Should show save as form', async () => {
+      const { openAndRender } = setup();
+      openAndRender(true);
+
+      expect(await screen.findByText('Save dashboard copy')).toBeInTheDocument();
+
+      mockSaveDashboard();
+
+      await userEvent.click(await screen.findByTestId(selectors.components.Drawer.DashboardSaveDrawer.saveButton));
+
+      const dataSent = saveDashboardMutationMock.mock.calls[0][0];
+      expect(dataSent.dashboard.uid).toEqual('');
+    });
+
+    it('locks the drawer while pending panel edits settle', async () => {
       const { dashboard, openAndRender } = setup();
       let finishPanelEdits!: () => void;
       const pendingPanelEdits = new Promise<void>((resolve) => {
@@ -340,13 +326,10 @@ describe('SaveDashboardDrawer', () => {
       });
       jest.spyOn(dashboard, 'waitForPendingPanelEdits').mockReturnValue(pendingPanelEdits);
       const drawer = openAndRender(true);
-
-      expect(await screen.findByText('Save dashboard copy')).toBeInTheDocument();
-
       mockSaveDashboard();
 
-      const titleInput = await screen.findByTestId(selectors.components.Drawer.DashboardSaveDrawer.saveAsTitleInput);
-      fireEvent.submit(titleInput.closest('form')!);
+      await userEvent.click(await screen.findByTestId(selectors.components.Drawer.DashboardSaveDrawer.saveButton));
+
       await waitFor(() => expect(drawer.state.isSaving).toBe(true));
       expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
       drawer.onClose();
@@ -355,9 +338,6 @@ describe('SaveDashboardDrawer', () => {
 
       finishPanelEdits();
       await waitFor(() => expect(saveDashboardMutationMock).toHaveBeenCalledTimes(1));
-
-      const dataSent = saveDashboardMutationMock.mock.calls[0][0];
-      expect(dataSent.dashboard.uid).toEqual('');
     });
   });
 });

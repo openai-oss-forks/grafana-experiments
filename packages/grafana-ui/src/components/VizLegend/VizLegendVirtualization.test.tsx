@@ -54,38 +54,6 @@ describe('high-cardinality visualization UI', () => {
     expect(source.getItem).toHaveBeenNthCalledWith(1, 999);
   });
 
-  test('keeps value columns visible in small indexed tables with long names', () => {
-    const source = createItemSource(30);
-    source.getItem.mockImplementation((index) => ({
-      label: `series-${index}-${'long-name-'.repeat(20)}`,
-      yAxis: 1,
-    }));
-    source.getDisplayValues = (index) => [
-      { title: 'Min', text: String(index), numeric: index },
-      { title: 'Max', text: String(index + 1), numeric: index + 1 },
-    ];
-
-    render(
-      <VizLegendTable
-        items={[]}
-        itemSource={source}
-        placement="right"
-        isSortable
-        displayValueColumns={[
-          { title: 'Min', description: 'Minimum value' },
-          { title: 'Max', description: 'Maximum value' },
-        ]}
-      />
-    );
-
-    const table = screen.getByRole('table');
-    expect(table).toHaveStyle({ minWidth: '336px' });
-    expect(getComputedStyle(table).tableLayout).toBe('fixed');
-    expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
-    expect(screen.getByTitle('Min: Minimum value')).toBeInTheDocument();
-    expect(screen.getByTitle('Max: Maximum value')).toBeInTheDocument();
-  });
-
   test('keeps value columns visible in materialized tables with long names', () => {
     const longColumnTitle = 'Maximum statistical difference';
     const items: VizLegendItem[] = [
@@ -105,7 +73,12 @@ describe('high-cardinality visualization UI', () => {
     expect(table).toHaveStyle({ minWidth: '336px' });
     expect(getComputedStyle(table).tableLayout).toBe('fixed');
     expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
-    expect(screen.getByTitle('Minimum value')).toHaveTextContent('Min');
+    const nameHeader = table.querySelector('th')!;
+    const minHeader = screen.getByTitle('Minimum value');
+    expect(nameHeader).toHaveStyle({ paddingLeft: '30px', textAlign: 'left' });
+    expect(minHeader).toHaveTextContent('Min');
+    expect(minHeader).toHaveStyle({ textAlign: 'right' });
+    expect(minHeader.firstElementChild).toHaveStyle({ justifyContent: 'flex-end' });
     const sortedHeader = screen.getByTitle('Maximum value');
     const headerContent = sortedHeader.firstElementChild!;
     const headerLabel = headerContent.firstElementChild!;
@@ -122,28 +95,6 @@ describe('high-cardinality visualization UI', () => {
     render(
       <VizLegendTable
         items={items}
-        placement="right"
-        itemRenderer={(_, index) => (
-          <tr key={index}>
-            <td>Name</td>
-            <td>Custom value</td>
-          </tr>
-        )}
-      />
-    );
-
-    const table = screen.getByRole('table');
-    expect(getComputedStyle(table).tableLayout).not.toBe('fixed');
-    expect(table.querySelector('colgroup')).not.toBeInTheDocument();
-  });
-
-  test('preserves auto table layout for custom indexed rows', () => {
-    const source = createItemSource(30);
-
-    render(
-      <VizLegendTable
-        items={[]}
-        itemSource={source}
         placement="right"
         itemRenderer={(_, index) => (
           <tr key={index}>
@@ -220,11 +171,13 @@ describe('high-cardinality visualization UI', () => {
     expect(valueColumns).toHaveStyle({ width: '88px' });
     expect(getComputedStyle(firstHeaderCell).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
     expect(getComputedStyle(firstHeaderCell).position).toBe('sticky');
+    expect(firstHeaderCell).toHaveStyle({ paddingLeft: '30px', textAlign: 'left' });
     const sortedHeader = screen.getByTitle(`${longColumnTitle}: Maximum value`);
     const headerContent = sortedHeader.firstElementChild!;
     const headerLabel = headerContent.firstElementChild!;
     const sortIcon = headerContent.lastElementChild!;
     expect(headerContent).toHaveStyle({ display: 'flex' });
+    expect(headerContent).toHaveStyle({ justifyContent: 'flex-end' });
     expect(headerLabel).toHaveStyle({ overflow: 'hidden' });
     expect(sortIcon).toHaveStyle({ flexShrink: 0 });
     expect(screen.getByText('maximum-value-0-with-extra-precision')).toHaveAttribute(

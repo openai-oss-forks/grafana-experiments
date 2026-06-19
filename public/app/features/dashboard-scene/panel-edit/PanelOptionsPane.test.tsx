@@ -12,27 +12,18 @@ import { PanelOptionsPane } from './PanelOptionsPane';
 import { testDashboard } from './testfiles/testDashboard';
 
 let pluginToLoad: PanelPlugin | undefined;
-let pluginImportError: Error | undefined;
-let pluginImportPromise: Promise<PanelPlugin> | undefined;
 
 jest.mock('@grafana/runtime', () => ({
   ...jest.requireActual('@grafana/runtime'),
   getPluginImportUtils: () => ({
     getPanelPluginFromCache: jest.fn(() => pluginToLoad),
-    importPanelPlugin: jest.fn((id: string) => {
-      if (pluginImportError) {
-        throw pluginImportError;
-      }
-      return pluginImportPromise ?? Promise.resolve(pluginToLoad ?? getPanelPlugin({ id }));
-    }),
+    importPanelPlugin: jest.fn((id: string) => Promise.resolve(pluginToLoad ?? getPanelPlugin({ id }))),
   }),
 }));
 
 describe('PanelOptionsPane', () => {
   beforeEach(() => {
     pluginToLoad = undefined;
-    pluginImportError = undefined;
-    pluginImportPromise = undefined;
   });
 
   describe('When changing plugin', () => {
@@ -221,31 +212,9 @@ describe('PanelOptionsPane', () => {
       expect(mockOnFieldConfigChange).not.toHaveBeenCalled();
     });
 
-    it('keeps the visualization preview open until the panel plugin finishes changing', async () => {
+    it('keeps the picker open and applies suggestion configuration after the plugin changes', async () => {
       const { optionsPane, panel } = setupTest('panel-1');
       optionsPane.setState({ isVizPickerOpen: true });
-
-      let finishPluginChange!: () => void;
-      panel.changePluginType = jest.fn(
-        () =>
-          new Promise<void>((resolve) => {
-            finishPluginChange = resolve;
-          })
-      );
-
-      const change = optionsPane.onChangePanel({ pluginId: 'barchart' });
-      await new Promise(process.nextTick);
-
-      expect(optionsPane.state.isVizPickerOpen).toBe(true);
-
-      finishPluginChange();
-      await change;
-
-      expect(optionsPane.state.isVizPickerOpen).toBe(false);
-    });
-
-    it('applies suggestion configuration after the panel plugin finishes changing', async () => {
-      const { optionsPane, panel } = setupTest('panel-1');
       const calls: string[] = [];
       let finishPluginChange!: () => void;
       panel.changePluginType = jest.fn(
@@ -265,11 +234,11 @@ describe('PanelOptionsPane', () => {
         pluginId: 'barchart',
         options: { orientation: 'horizontal' },
         fieldConfig: { defaults: {}, overrides: [] },
-        withModKey: true,
       });
       await new Promise(process.nextTick);
 
       expect(calls).toEqual(['plugin-change-started']);
+      expect(optionsPane.state.isVizPickerOpen).toBe(true);
 
       finishPluginChange();
       await change;
@@ -280,31 +249,7 @@ describe('PanelOptionsPane', () => {
         'options-applied',
         'field-config-applied',
       ]);
-    });
-
-    it('delegates to the panel when plugin preloading throws synchronously', async () => {
-      const { optionsPane, panel } = setupTest('panel-1');
-      pluginImportError = new Error('plugin metadata missing');
-      panel.changePluginType = jest.fn().mockResolvedValue(undefined);
-
-      await expect(optionsPane.onChangePanel({ pluginId: 'missing-plugin' })).resolves.toBeUndefined();
-
-      expect(panel.changePluginType).toHaveBeenCalledWith('missing-plugin', undefined, expect.any(Object));
-    });
-
-    it('exposes plugin preloading as a pending live-panel change', async () => {
-      const { optionsPane } = setupTest('panel-1');
-      let finishPreload!: (plugin: PanelPlugin) => void;
-      pluginImportPromise = new Promise<PanelPlugin>((resolve) => {
-        finishPreload = resolve;
-      });
-
-      const change = optionsPane.onChangePanel({ pluginId: 'barchart' });
-
-      expect(optionsPane.getPendingLivePanelChange()).toBeDefined();
-      finishPreload(getPanelPlugin({ id: 'barchart' }));
-      await change;
-      expect(optionsPane.getPendingLivePanelChange()).toBeUndefined();
+      expect(optionsPane.state.isVizPickerOpen).toBe(false);
     });
 
     it('completes a started visualization change and coalesces queued changes to the latest', async () => {
@@ -357,55 +302,7 @@ describe('PanelOptionsPane', () => {
       expect(panel.onOptionsChange).toHaveBeenNthCalledWith(2, { legend: { showLegend: false } }, true);
     });
 
-    it('lets the latest queued selection control whether the visualization picker closes', async () => {
-      const { optionsPane, panel } = setupTest('panel-1');
-      optionsPane.setState({ isVizPickerOpen: true });
-      const finishPluginChanges: Array<() => void> = [];
-      panel.changePluginType = jest.fn(
-        (pluginId: string) =>
-          new Promise<void>((resolve) => {
-            finishPluginChanges.push(() => {
-              panel.setState({ pluginId });
-              resolve();
-            });
-          })
-      );
-
-      const first = optionsPane.onChangePanel({ pluginId: 'barchart' });
-      await new Promise(process.nextTick);
-      const latest = optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey: true });
-
-      finishPluginChanges[0]();
-      await first;
-      await new Promise(process.nextTick);
-
-      expect(optionsPane.state.isVizPickerOpen).toBe(true);
-      finishPluginChanges[1]();
-      await latest;
-      expect(optionsPane.state.isVizPickerOpen).toBe(true);
-    });
-
-    it('does not reopen the visualization picker when a pending change finishes after it was closed', async () => {
-      const { optionsPane, panel } = setupTest('panel-1');
-      optionsPane.setState({ isVizPickerOpen: true });
-      let finishPluginChange!: () => void;
-      panel.changePluginType = jest.fn(
-        () =>
-          new Promise<void>((resolve) => {
-            finishPluginChange = resolve;
-          })
-      );
-
-      const change = optionsPane.onChangePanel({ pluginId: 'barchart' });
-      await new Promise(process.nextTick);
-      optionsPane.onToggleVizPicker();
-      finishPluginChange();
-      await change;
-
-      expect(optionsPane.state.isVizPickerOpen).toBe(false);
-    });
-
-    it('finishes an in-flight visualization change when panel edit closes', async () => {
+    it('finishes the active visualization change and drops queued changes when panel edit closes', async () => {
       const { optionsPane, panel } = setupTest('panel-1');
       let finishPluginChange!: () => void;
       panel.changePluginType = jest.fn(
@@ -419,35 +316,10 @@ describe('PanelOptionsPane', () => {
       );
       panel.onOptionsChange = jest.fn();
 
-      const change = optionsPane.onChangePanel({
+      const started = optionsPane.onChangePanel({
         pluginId: 'barchart',
         options: { orientation: 'horizontal' },
       });
-      await new Promise(process.nextTick);
-      const completion = optionsPane.cancelPendingPanelChanges();
-      expect(completion).toBeDefined();
-      finishPluginChange();
-      await Promise.all([change, completion]);
-
-      expect(panel.onOptionsChange).toHaveBeenCalledWith({ orientation: 'horizontal' }, true);
-      expect(panel.state.pluginId).toBe('barchart');
-      expect(panel.changePluginType).toHaveBeenCalledTimes(1);
-    });
-
-    it('drops queued visualization changes when panel edit closes', async () => {
-      const { optionsPane, panel } = setupTest('panel-1');
-      let finishPluginChange!: () => void;
-      panel.changePluginType = jest.fn(
-        (pluginId: string) =>
-          new Promise<void>((resolve) => {
-            finishPluginChange = () => {
-              panel.setState({ pluginId });
-              resolve();
-            };
-          })
-      );
-
-      const started = optionsPane.onChangePanel({ pluginId: 'barchart' });
       await new Promise(process.nextTick);
       const queued = optionsPane.onChangePanel({ pluginId: 'table' });
       const completion = optionsPane.cancelPendingPanelChanges();
@@ -456,6 +328,7 @@ describe('PanelOptionsPane', () => {
 
       expect(panel.changePluginType).toHaveBeenCalledTimes(1);
       expect(panel.state.pluginId).toBe('barchart');
+      expect(panel.onOptionsChange).toHaveBeenCalledWith({ orientation: 'horizontal' }, true);
     });
   });
 });

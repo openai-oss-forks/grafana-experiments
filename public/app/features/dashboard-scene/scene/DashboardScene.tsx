@@ -998,7 +998,9 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
     const transformations = dataProvider instanceof SceneDataTransformer ? dataProvider.state.transformations : [];
     const hasTimeComparison =
       panel?.state.$timeRange instanceof PanelTimeRange && Boolean(panel.state.$timeRange.state.compareWith);
-    const legend = panel?.state.options ? Reflect.get(panel.state.options, 'legend') : undefined;
+    const panelOptions = panel?.state.options;
+    const legend =
+      typeof panelOptions === 'object' && panelOptions !== null ? Reflect.get(panelOptions, 'legend') : undefined;
     const legendCalcs = typeof legend === 'object' && legend !== null ? Reflect.get(legend, 'calcs') : undefined;
     const isTableView = Boolean(dashboard.state.editPanel?.state.tableView);
     const inspector = dashboard.state.overlay;
@@ -1013,7 +1015,7 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
       hasTimeComparison,
       fieldConfig: panel?.state.fieldConfig,
       legendCalcs,
-      panelOptions: panel?.state.options,
+      panelOptions,
     });
 
     return {

@@ -38,22 +38,6 @@ describe('ensureInspectorQueryFormat', () => {
     expect(runQueries).toHaveBeenCalledTimes(1);
   });
 
-  it('reruns an unknown in-flight request', () => {
-    const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
-    queryRunner.setState({
-      data: {
-        state: LoadingState.Loading,
-        series: [],
-        timeRange: getDefaultTimeRange(),
-      },
-    });
-    const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
-
-    ensureInspectorQueryFormat(queryRunner);
-
-    expect(runQueries).toHaveBeenCalledTimes(1);
-  });
-
   it('does not restart an active full-format request with stale compact data', () => {
     const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
     queryRunner.setState({

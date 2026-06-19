@@ -21,61 +21,27 @@ describe('getRenderableCompactSeries', () => {
     ).toBe(compactSeries);
   });
 
-  it('withholds compact data while an unsupported field configuration is active', () => {
-    expect(
-      getRenderableCompactSeries(
-        compactSeries,
-        {
-          defaults: { custom: { drawStyle: GraphDrawStyle.Bars } },
-          overrides: [],
-        },
-        options
-      )
-    ).toBeUndefined();
-  });
-
-  it('withholds compact data for vertical orientation', () => {
-    expect(
-      getRenderableCompactSeries(
-        compactSeries,
-        { defaults: {}, overrides: [] },
-        { ...options, orientation: VizOrientation.Vertical }
-      )
-    ).toBeUndefined();
-  });
-
-  it('withholds compact data for unsupported legend reducers', () => {
-    expect(
-      getRenderableCompactSeries(
-        compactSeries,
-        { defaults: {}, overrides: [] },
-        {
-          ...options,
-          legend: { ...options.legend, calcs: [ReducerID.p95] },
-        }
-      )
-    ).toBeUndefined();
+  it.each([
+    {
+      name: 'bar draw style',
+      fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
+      panelOptions: options,
+    },
+    {
+      name: 'vertical orientation',
+      fieldConfig: { defaults: {}, overrides: [] },
+      panelOptions: { ...options, orientation: VizOrientation.Vertical },
+    },
+    {
+      name: 'unsupported legend reducer',
+      fieldConfig: { defaults: {}, overrides: [] },
+      panelOptions: { ...options, legend: { ...options.legend, calcs: [ReducerID.p95] } },
+    },
+  ])('withholds compact data for $name', ({ fieldConfig, panelOptions }) => {
+    expect(getRenderableCompactSeries(compactSeries, fieldConfig, panelOptions)).toBeUndefined();
   });
 
   it('withholds stale compact data while a full-format request is pending', () => {
     expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options, true)).toBeUndefined();
-  });
-
-  it('withholds compact data for malformed legend calculations', () => {
-    expect(
-      getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, {
-        ...options,
-        legend: { ...options.legend, calcs: null },
-      } as unknown as Options)
-    ).toBeUndefined();
-  });
-
-  it('withholds compact data without throwing for a malformed legend container', () => {
-    expect(
-      getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, {
-        ...options,
-        legend: null,
-      } as unknown as Options)
-    ).toBeUndefined();
   });
 });

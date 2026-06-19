@@ -149,42 +149,29 @@ describe('PanelDataPaneNext', () => {
       ]);
     });
 
-    it('ignores a stale datasource load failure after a newer choice succeeds', async () => {
+    it('does not apply a stale datasource load to a replacement query with the same refId', async () => {
       const prometheus = dataSourceSettings('prom-1', 'prometheus');
       const loki = dataSourceSettings('loki-1', 'loki');
-      const elasticsearch = dataSourceSettings('es-1', 'elasticsearch');
-      mockGetInstanceSettings.mockImplementation((ref: DataSourceRef) => {
-        if (ref.uid === loki.uid) {
-          return loki;
-        }
-        if (ref.uid === elasticsearch.uid) {
-          return elasticsearch;
-        }
-        return prometheus;
-      });
-      const loads = new Map<string, { resolve: (datasource: DataSourceApi) => void; reject: (error: Error) => void }>();
-      mockGetDataSource.mockImplementation(
-        (ref: DataSourceRef) =>
-          new Promise<DataSourceApi>((resolve, reject) => {
-            loads.set(ref.uid!, { resolve, reject });
-          })
+      mockGetInstanceSettings.mockImplementation((ref: DataSourceRef) => (ref.uid === loki.uid ? loki : prometheus));
+      let finishLoad!: (datasource: DataSourceApi) => void;
+      mockGetDataSource.mockReturnValue(
+        new Promise<DataSourceApi>((resolve) => {
+          finishLoad = resolve;
+        })
       );
-      mockQueryRunnerState.queries = [{ refId: 'A', expr: 'up', datasource: getDataSourceRef(prometheus) }];
+      mockQueryRunnerState.queries = [{ refId: 'A', expr: 'original', datasource: getDataSourceRef(prometheus) }];
       (mockQueryRunner.setState as jest.Mock).mockImplementation((update) =>
         Object.assign(mockQueryRunnerState, update)
       );
 
-      const stale = dataPane.changeDataSource(getDataSourceRef(loki), 'A');
-      const latest = dataPane.changeDataSource(getDataSourceRef(elasticsearch), 'A');
-      loads.get(elasticsearch.uid)!.resolve({
-        getDefaultQuery: () => ({ query: 'latest' }),
-      } as unknown as DataSourceApi);
-      await latest;
-      loads.get(loki.uid)!.reject(new Error('stale load failed'));
+      const change = dataPane.changeDataSource(getDataSourceRef(loki), 'A');
+      dataPane.deleteQuery('A');
+      mockQueryRunnerState.queries = [{ refId: 'A', expr: 'replacement', datasource: getDataSourceRef(prometheus) }];
+      finishLoad({ getDefaultQuery: () => ({ queryType: 'range' }) } as unknown as DataSourceApi);
+      await change;
 
-      await expect(stale).resolves.toBeUndefined();
       expect(mockQueryRunnerState.queries).toEqual([
-        { refId: 'A', expr: 'up', query: 'latest', datasource: getDataSourceRef(elasticsearch) },
+        { refId: 'A', expr: 'replacement', datasource: getDataSourceRef(prometheus) },
       ]);
     });
 

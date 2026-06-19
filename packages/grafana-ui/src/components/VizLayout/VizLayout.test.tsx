@@ -10,25 +10,20 @@ jest.mock('react-use', () => ({
 
 const useMeasureMock = jest.mocked(useMeasure);
 
+function mockLegendMeasure(width: number, height: number, left = 0) {
+  useMeasureMock.mockReturnValue([
+    jest.fn(),
+    { bottom: height, height, left, right: left + width, top: 0, width, x: left, y: 0 },
+  ]);
+}
+
 describe('VizLayout', () => {
   beforeEach(() => {
     Object.defineProperty(document.body, 'clientWidth', { configurable: true, value: 1800 });
   });
 
   it('clamps a configured legend width to its CSS max width', () => {
-    useMeasureMock.mockReturnValue([
-      jest.fn(),
-      {
-        bottom: 400,
-        height: 400,
-        left: 448,
-        right: 1120,
-        top: 0,
-        width: 672,
-        x: 448,
-        y: 0,
-      },
-    ]);
+    mockLegendMeasure(672, 400, 448);
     const renderViz = jest.fn(() => null);
 
     const { container } = render(
@@ -50,10 +45,7 @@ describe('VizLayout', () => {
   });
 
   it('ignores a stale bottom measurement when switching a configured legend to the right', () => {
-    useMeasureMock.mockReturnValue([
-      jest.fn(),
-      { bottom: 100, height: 100, left: 0, right: 900, top: 0, width: 900, x: 0, y: 0 },
-    ]);
+    mockLegendMeasure(900, 100);
     const renderViz = jest.fn(() => null);
 
     const { rerender } = render(
@@ -88,52 +80,8 @@ describe('VizLayout', () => {
     expect(renderViz).toHaveBeenCalledWith(820, 400);
   });
 
-  it('uses the measured width for an automatically sized right legend', () => {
-    useMeasureMock.mockReturnValue([
-      jest.fn(),
-      { bottom: 400, height: 400, left: 820, right: 1120, top: 0, width: 300, x: 820, y: 0 },
-    ]);
-    const renderViz = jest.fn(() => null);
-
-    render(
-      <VizLayout width={1120} height={400} legend={<VizLayout.Legend placement="right">Legend</VizLayout.Legend>}>
-        {renderViz}
-      </VizLayout>
-    );
-
-    expect(renderViz).toHaveBeenCalledWith(820, 400);
-  });
-
-  it('normalizes a negative configured width before applying layout styles', () => {
-    useMeasureMock.mockReturnValue([
-      jest.fn(),
-      { bottom: 400, height: 400, left: 0, right: 1120, top: 0, width: 1120, x: 0, y: 0 },
-    ]);
-    const renderViz = jest.fn(() => null);
-
-    const { container } = render(
-      <VizLayout
-        width={1120}
-        height={400}
-        legend={
-          <VizLayout.Legend placement="right" width={-100}>
-            Legend
-          </VizLayout.Legend>
-        }
-      >
-        {renderViz}
-      </VizLayout>
-    );
-
-    expect(renderViz).toHaveBeenCalledWith(1120, 400);
-    expect(container.firstElementChild?.lastElementChild).toHaveStyle({ width: '0px' });
-  });
-
-  it('applies an explicit zero legend width instead of using its measured width', () => {
-    useMeasureMock.mockReturnValue([
-      jest.fn(),
-      { bottom: 400, height: 400, left: 820, right: 1120, top: 0, width: 300, x: 820, y: 0 },
-    ]);
+  it('uses an explicit zero width instead of a stale measurement', () => {
+    mockLegendMeasure(300, 400, 820);
     const renderViz = jest.fn(() => null);
 
     const { container } = render(
@@ -154,11 +102,8 @@ describe('VizLayout', () => {
     expect(container.firstElementChild?.lastElementChild).toHaveStyle({ width: '0px' });
   });
 
-  it('preserves an intentional zero-width plot when the legend fills the container', () => {
-    useMeasureMock.mockReturnValue([
-      jest.fn(),
-      { bottom: 400, height: 400, left: 0, right: 1120, top: 0, width: 1120, x: 0, y: 0 },
-    ]);
+  it('preserves a zero-width plot when the configured legend fills the container', () => {
+    mockLegendMeasure(1120, 400);
     const renderViz = jest.fn(() => null);
 
     const { container } = render(

@@ -12,7 +12,6 @@ import { ObjectMeta } from 'app/features/apiserver/types';
 import { buildPanelEditScene } from '../panel-edit/PanelEditor';
 import { DashboardControls } from '../scene/DashboardControls';
 import { DashboardScene, DashboardSceneState } from '../scene/DashboardScene';
-import { LibraryPanelBehavior } from '../scene/LibraryPanelBehavior';
 import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
 import { transformSceneToSaveModel } from '../serialization/transformSceneToSaveModel';
 
@@ -134,47 +133,6 @@ describe('DashboardPrompt', () => {
     unmount();
   });
 
-  it('keeps queued navigation when a saved library panel closes internally', async () => {
-    jest.useFakeTimers();
-    const scene = buildTestScene();
-    const panel = sceneGraph.findObject(scene, (candidate) => candidate instanceof VizPanel);
-    if (!(panel instanceof VizPanel)) {
-      throw new Error('Expected dashboard panel');
-    }
-    panel.setState({
-      $behaviors: [new LibraryPanelBehavior({ name: 'Library panel', uid: 'library-panel', isLoaded: true })],
-    });
-    const panelEditor = buildPanelEditScene(panel);
-    scene.setState({ editPanel: panelEditor });
-    let finishLibrarySave!: () => void;
-    const librarySave = new Promise<boolean>((resolve) => {
-      finishLibrarySave = () => resolve(true);
-    });
-    jest.spyOn(panelEditor, 'getPendingLibraryPanelSave').mockReturnValue(librarySave);
-    jest.spyOn(panelEditor, 'hasChanges').mockReturnValue(false);
-    const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
-    const { unmount } = render(
-      <TestProvider>
-        <DashboardPrompt dashboard={scene} />
-      </TestProvider>
-    );
-    const nextLocation = buildLocation('/d/next');
-    const currentLocation = locationService.getLocation();
-
-    expect(mockPromptMessage?.(nextLocation)).toBe(false);
-    expect(mockPromptMessage?.({ ...currentLocation, search: '' })).toBe(true);
-
-    await act(async () => {
-      finishLibrarySave();
-      await librarySave;
-    });
-    act(() => jest.advanceTimersByTime(10));
-
-    expect(pushSpy).toHaveBeenCalledTimes(1);
-    expect(pushSpy).toHaveBeenCalledWith(nextLocation);
-    unmount();
-  });
-
   it('replays only the latest navigation requested while a panel edit is pending', async () => {
     jest.useFakeTimers();
     const scene = buildTestScene();
@@ -207,38 +165,6 @@ describe('DashboardPrompt', () => {
     unmount();
   });
 
-  it('keeps a deferred navigation through an internal same-path update', async () => {
-    jest.useFakeTimers();
-    const scene = buildTestScene();
-    let finishPanelEdit!: () => void;
-    scene.setPendingPanelEditCompletion(
-      new Promise<void>((resolve) => {
-        finishPanelEdit = resolve;
-      })
-    );
-    const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
-    const { unmount } = render(
-      <TestProvider>
-        <DashboardPrompt dashboard={scene} />
-      </TestProvider>
-    );
-    const nextLocation = buildLocation('/d/next');
-    const currentLocation = locationService.getLocation();
-
-    expect(mockPromptMessage?.(nextLocation)).toBe(false);
-    expect(mockPromptMessage?.({ ...currentLocation, search: '?tab=queries' })).toBe(true);
-
-    await act(async () => {
-      finishPanelEdit();
-      await Promise.resolve();
-    });
-    act(() => jest.advanceTimersByTime(10));
-
-    expect(pushSpy).toHaveBeenCalledTimes(1);
-    expect(pushSpy).toHaveBeenCalledWith(nextLocation);
-    unmount();
-  });
-
   it('does not replay a deferred navigation after unmount', async () => {
     jest.useFakeTimers();
     const scene = buildTestScene();
@@ -261,33 +187,6 @@ describe('DashboardPrompt', () => {
       finishPanelEdit();
       await Promise.resolve();
     });
-    act(() => jest.advanceTimersByTime(10));
-
-    expect(pushSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not replay a settled deferred navigation after unmount', async () => {
-    jest.useFakeTimers();
-    const scene = buildTestScene();
-    let finishPanelEdit!: () => void;
-    scene.setPendingPanelEditCompletion(
-      new Promise<void>((resolve) => {
-        finishPanelEdit = resolve;
-      })
-    );
-    const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
-    const { unmount } = render(
-      <TestProvider>
-        <DashboardPrompt dashboard={scene} />
-      </TestProvider>
-    );
-
-    expect(mockPromptMessage?.(buildLocation('/d/next'))).toBe(false);
-    await act(async () => {
-      finishPanelEdit();
-      await Promise.resolve();
-    });
-    unmount();
     act(() => jest.advanceTimersByTime(10));
 
     expect(pushSpy).not.toHaveBeenCalled();

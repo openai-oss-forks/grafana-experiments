@@ -134,7 +134,7 @@ export const VizLegendTable = <T extends unknown>({
               key={columnTitle}
               className={cx(styles.header, {
                 [styles.headerSortable]: Boolean(onToggleSort),
-                [styles.nameHeader]: isSortable,
+                [styles.nameHeader]: isSortable && columnTitle === nameSortKey,
                 [styles.withIcon]: sortKey === columnTitle,
                 'sr-only': !isSortable,
               })}
@@ -333,7 +333,11 @@ function LegendTableHeaderContent({
 }) {
   const styles = useStyles2(getStyles);
   return (
-    <span className={styles.headerContent}>
+    <span
+      className={cx(styles.headerContent, {
+        [styles.valueHeaderContent]: columnTitle !== nameSortKey,
+      })}
+    >
       <span className={styles.headerLabel}>{columnTitle}</span>
       {sortKey === columnTitle && (
         <span className={styles.headerSortIcon}>
@@ -369,7 +373,7 @@ function LegendTableHeader({
             key={columnTitle}
             className={cx(styles.header, {
               [styles.headerSortable]: Boolean(onToggleSort),
-              [styles.nameHeader]: isSortable,
+              [styles.nameHeader]: isSortable && columnTitle === nameSortKey,
               [styles.withIcon]: sortKey === columnTitle,
               'sr-only': !isSortable,
             })}
@@ -567,6 +571,9 @@ const getStyles = (theme: GrafanaTheme2) => ({
     alignItems: 'center',
     display: 'flex',
     minWidth: 0,
+  }),
+  valueHeaderContent: css({
+    justifyContent: 'flex-end',
   }),
   headerLabel: css({
     overflow: 'hidden',

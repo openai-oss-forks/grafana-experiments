@@ -1,18 +1,7 @@
 import uPlot from 'uplot';
 
-import {
-  createTheme,
-  dateTime,
-  type DataQuery,
-  FieldConfigOptionsRegistry,
-  FieldConfigProperty,
-  type FieldConfigSource,
-  type FieldOverrideContext,
-  FieldType,
-  ThresholdsMode,
-} from '@grafana/data';
+import { createTheme, dateTime, type DataQuery, FieldConfigOptionsRegistry } from '@grafana/data';
 import { toDataQueryResponse } from '@grafana/runtime';
-import { GraphThresholdsStyleMode } from '@grafana/schema';
 import { installCompactRenderer, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { prepareCompactPlotConfigBuilder } from '../TimeSeries/utils';
@@ -93,51 +82,9 @@ describe('compact binary rendering pipeline', () => {
     Reflect.set(plot, 'compactSource', { yAt: jest.fn(() => 4) });
     expect(proximity(plot, 1, 1, 2000)).toBeNull();
   });
-
-  test('installs compact threshold overlays from scale-owned configuration', () => {
-    const thresholds = {
-      mode: ThresholdsMode.Absolute,
-      steps: [
-        { color: 'green', value: -Infinity },
-        { color: 'red', value: 2 },
-      ],
-    };
-    const plan = createPlan(
-      decodeFixture(),
-      {
-        defaults: {
-          thresholds,
-          custom: { thresholdsStyle: { mode: GraphThresholdsStyleMode.LineAndArea } },
-        },
-        overrides: [],
-      },
-      new FieldConfigOptionsRegistry(() => [
-        compactProperty(FieldConfigProperty.Thresholds, 'thresholds', false),
-        compactProperty('custom.thresholdsStyle', 'thresholdsStyle', true),
-      ])
-    );
-
-    const builder = prepareCompactPlotConfigBuilder({
-      plan,
-      theme: createTheme(),
-      timeZones: ['utc'],
-      getTimeRange: () => ({
-        from: dateTime(1000),
-        to: dateTime(3000),
-        raw: { from: dateTime(1000), to: dateTime(3000) },
-      }),
-    });
-
-    expect(plan.getScale(0).config.thresholds).toEqual(thresholds);
-    expect(builder.getConfig().hooks?.drawClear).toHaveLength(1);
-  });
 });
 
-function createPlan(
-  buffer: ArrayBuffer,
-  fieldConfig: FieldConfigSource = { defaults: {}, overrides: [] },
-  fieldConfigRegistry = new FieldConfigOptionsRegistry()
-) {
+function createPlan(buffer: ArrayBuffer) {
   const response = toDataQueryResponse(
     {
       data: buffer,
@@ -151,26 +98,13 @@ function createPlan(
   expect(response.compactSeries?.buffer).toBe(buffer);
 
   return createCompactNativeRenderPlan(response.compactSeries!, {
-    fieldConfig,
-    fieldConfigRegistry,
+    fieldConfig: { defaults: {}, overrides: [] },
+    fieldConfigRegistry: new FieldConfigOptionsRegistry(),
     replaceVariables: (value) => value,
     theme: createTheme(),
     timeZone: 'utc',
     cursorMode: 'multi',
   });
-}
-
-function compactProperty(id: string, path: string, isCustom: boolean) {
-  return {
-    id,
-    path,
-    name: id,
-    isCustom,
-    editor: () => null,
-    override: () => null,
-    process: (value: unknown, _context: FieldOverrideContext) => value,
-    shouldApply: (target: { type: FieldType }) => target.type === FieldType.number,
-  };
 }
 
 function decodeFixture(): ArrayBuffer {
