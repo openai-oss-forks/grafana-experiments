@@ -32,7 +32,10 @@ describe('default grid browser search placeholders', () => {
 
   function enterViewport(element: HTMLElement) {
     act(() => {
-      LazyLoader.callbacks[element.id]?.({ isIntersecting: true, target: element } as IntersectionObserverEntry);
+      LazyLoader.callbacks[element.id]?.({
+        isIntersecting: true,
+        target: element,
+      } as unknown as IntersectionObserverEntry);
     });
   }
 
@@ -93,7 +96,7 @@ describe('default grid browser search placeholders', () => {
   it('keeps only the persistent panel title visible after loading', async () => {
     const panel = new VizPanel({ title: 'Persistent panel title' });
     const { container } = render(
-      <LazyLoader placeholder={<DashboardPanelTitlePlaceholder panel={panel} />}>
+      <LazyLoader key="panel-1" placeholder={<DashboardPanelTitlePlaceholder panel={panel} />}>
         <div data-testid="loaded-panel-content">
           <div data-viz-panel-key="panel-1">
             <div data-testid="data-testid header-container">
