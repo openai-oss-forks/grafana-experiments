@@ -15,6 +15,7 @@ import { usePointerDistance } from '../../utils/usePointerDistance';
 import { useElementSelection } from '../ElementSelectionContext/ElementSelectionContext';
 import { Icon } from '../Icon/Icon';
 import { LoadingBar } from '../LoadingBar/LoadingBar';
+import { Spinner } from '../Spinner/Spinner';
 import { Text } from '../Text/Text';
 import { Tooltip } from '../Tooltip/Tooltip';
 
@@ -211,6 +212,9 @@ export function PanelChrome({
   }
 
   const testid = typeof title === 'string' ? selectors.components.Panels.Panel.title(title) : 'Panel';
+  const streamingLabel = onCancelQuery
+    ? t('grafana-ui.panel-chrome.tooltip-stop-streaming', 'Stop streaming')
+    : t('grafana-ui.panel-chrome.tooltip-streaming', 'Streaming');
 
   // Handle drag & selection events
   // Mainly the tricky bit of differentiating between dragging and selecting
@@ -314,15 +318,14 @@ export function PanelChrome({
       )}
 
       {loadingState === LoadingState.Streaming && (
-        <Tooltip
-          content={
-            onCancelQuery
-              ? t('grafana-ui.panel-chrome.tooltip-stop-streaming', 'Stop streaming')
-              : t('grafana-ui.panel-chrome.tooltip-streaming', 'Streaming')
-          }
-        >
-          <TitleItem className={dragClassCancel} data-testid="panel-streaming" onClick={onCancelQuery}>
-            <Icon name="circle-mono" size="md" className={styles.streaming} />
+        <Tooltip content={streamingLabel}>
+          <TitleItem
+            className={dragClassCancel}
+            data-testid="panel-streaming"
+            onClick={onCancelQuery}
+            aria-label={streamingLabel}
+          >
+            <Spinner size="sm" inline />
           </TitleItem>
         </Tooltip>
       )}
@@ -609,15 +612,6 @@ const getStyles = (theme: GrafanaTheme2) => {
     }),
     pointer: css({
       cursor: 'pointer',
-    }),
-    streaming: css({
-      label: 'panel-streaming',
-      marginRight: 0,
-      color: theme.colors.success.text,
-
-      '&:hover': {
-        color: theme.colors.success.text,
-      },
     }),
     title: css({
       label: 'panel-title',

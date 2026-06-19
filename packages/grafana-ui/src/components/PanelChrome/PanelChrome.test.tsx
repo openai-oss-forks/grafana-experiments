@@ -157,10 +157,16 @@ it('renders loading indicator in the panel header if loadingState is loading reg
   expect(screen.getByLabelText('Panel loading bar')).toBeInTheDocument();
 });
 
-it('renders streaming indicator in the panel header if loadingState is streaming', () => {
-  setup({ loadingState: LoadingState.Streaming });
+it('renders a cancellable streaming spinner in the panel header', async () => {
+  const onCancelQuery = jest.fn();
+  const { user } = setup({ loadingState: LoadingState.Streaming, onCancelQuery });
 
-  expect(screen.getByTestId('panel-streaming')).toBeInTheDocument();
+  const control = screen.getByRole('button', { name: 'Stop streaming' });
+  expect(control).toHaveAttribute('data-testid', 'panel-streaming');
+  expect(screen.getByTestId('Spinner')).toBeInTheDocument();
+
+  await user.click(control);
+  expect(onCancelQuery).toHaveBeenCalledTimes(1);
 });
 
 it('collapses the controlled panel when user clicks on the chevron or the title', async () => {
