@@ -70,10 +70,6 @@ interface DashboardPanelRenderSuspensionProps {
   suspendGraphNGOffscreen?: boolean;
 }
 
-interface DashboardPanelLazyLoaderProps extends DashboardPanelRenderSuspensionProps {
-  placeholder?: ReactNode;
-}
-
 interface GraphNGRenderSuspensionState {
   graphNGRendererActive: boolean;
   setWrapperRef: (element: HTMLDivElement | null) => void;
@@ -209,8 +205,8 @@ function useGraphNGRenderSuspension(
   return { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture };
 }
 
-export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPanelLazyLoaderProps>(
-  ({ children, className, placeholder, suspendGraphNGOffscreen = true }, ref) => {
+export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPanelRenderSuspensionProps>(
+  ({ children, className, suspendGraphNGOffscreen = true }, ref) => {
     const { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture } = useGraphNGRenderSuspension(
       suspendGraphNGOffscreen,
       ref
@@ -221,7 +217,7 @@ export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPane
         key="dashboard-panel-lazy-loader"
         ref={setWrapperRef}
         className={className}
-        placeholder={placeholder}
+        renderBeforeActivation
         onFocusCapture={onFocusCapture}
         onBlurCapture={onBlurCapture}
       >

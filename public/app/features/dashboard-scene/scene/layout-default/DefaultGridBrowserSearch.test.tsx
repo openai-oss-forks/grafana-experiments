@@ -1,17 +1,49 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 
-import { LazyLoader, SceneGridLayout, SceneGridRow, SceneQueryRunner, VizPanel } from '@grafana/scenes';
+import { getDefaultTimeRange, LoadingState } from '@grafana/data';
+import { getPanelPlugin } from '@grafana/data/test';
+import { setPluginImportUtils } from '@grafana/runtime';
+import {
+  LazyLoader,
+  SceneGridLayout,
+  SceneGridRow,
+  SceneObjectBase,
+  SceneQueryRunner,
+  type SceneComponentProps,
+  VizPanel,
+} from '@grafana/scenes';
 
-import { DashboardPanelTitlePlaceholder } from '../layouts-shared/DashboardPanelTitlePlaceholder';
+import { DashboardScene } from '../DashboardScene';
 
 import { DashboardGridItem } from './DashboardGridItem';
+import { DefaultGridLayoutManager } from './DefaultGridLayoutManager';
 
-jest.mock('react-use', () => ({
-  ...jest.requireActual('react-use'),
-  useMeasure: () => [jest.fn(), { width: 1200, height: 800 }],
-}));
+const pluginId = 'browser-search-test-panel';
+const panelPlugin = getPanelPlugin({ id: pluginId, skipDataQuery: false }, () => (
+  <div data-testid="loaded-panel-visualization" />
+));
+let resolvePanelPlugin: (plugin: typeof panelPlugin) => void = () => {};
 
-describe('default grid browser search placeholders', () => {
+setPluginImportUtils({
+  importPanelPlugin: () =>
+    new Promise<typeof panelPlugin>((resolve) => {
+      resolvePanelPlugin = resolve;
+    }),
+  getPanelPluginFromCache: () => undefined,
+});
+
+class TestSceneObject extends SceneObjectBase {
+  public static Component = ({ model }: SceneComponentProps<TestSceneObject>) => {
+    model.useState();
+    return <div data-testid="default-lazy-child" />;
+  };
+
+  public constructor() {
+    super({});
+  }
+}
+
+describe('default grid browser search', () => {
   const originalObserver = LazyLoader.observer;
 
   beforeEach(() => {
@@ -39,9 +71,27 @@ describe('default grid browser search placeholders', () => {
     });
   }
 
-  it('renders panel and section titles without activating offscreen scene objects', async () => {
-    const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
-    const panel = new VizPanel({ key: 'panel-1', title: 'Offscreen panel title', $data: queryRunner });
+  function getContainingLazyLoader(element: HTMLElement): HTMLElement | undefined {
+    let ancestor = element.parentElement;
+    while (ancestor && !LazyLoader.callbacks[ancestor.id]) {
+      ancestor = ancestor.parentElement;
+    }
+    return ancestor ?? undefined;
+  }
+
+  function renderLazyDashboard() {
+    const queryRunner = new SceneQueryRunner({
+      queries: [{ refId: 'A' }],
+      runQueriesMode: 'manual',
+      _hasFetchedData: true,
+      data: { state: LoadingState.Done, series: [], timeRange: getDefaultTimeRange() },
+    });
+    const panel = new VizPanel({
+      key: 'panel-1',
+      pluginId,
+      title: 'Persistent panel title',
+      $data: queryRunner,
+    });
     const gridItem = new DashboardGridItem({
       key: 'grid-item-1',
       x: 0,
@@ -53,80 +103,91 @@ describe('default grid browser search placeholders', () => {
     const row = new SceneGridRow({
       key: 'row-1',
       y: 0,
-      title: 'Offscreen section title',
+      title: 'Persistent section title',
+      renderBeforeActivation: true,
       children: [gridItem],
     });
     const grid = new SceneGridLayout({ isLazy: true, children: [row] });
-    const GridComponent = grid.Component;
 
-    const { container } = render(<GridComponent model={grid} />);
+    new DashboardScene({ body: new DefaultGridLayoutManager({ grid }) });
+
+    const GridComponent = grid.Component;
+    const result = render(<GridComponent model={grid} />);
+
+    return { ...result, gridItem, panel, queryRunner, row };
+  }
+
+  it('preserves the default LazyLoader mounting behavior for callers that do not opt in', async () => {
+    const model = new TestSceneObject();
+    const Component = model.Component;
+    const { container } = render(
+      <LazyLoader key="default-lazy-loader">
+        <Component model={model} />
+      </LazyLoader>
+    );
+    const loader = container.firstElementChild;
+
+    expect(loader).toBeInstanceOf(HTMLElement);
+    expect(model.isActive).toBe(false);
+    expect(screen.queryByTestId('default-lazy-child')).not.toBeInTheDocument();
+
+    enterViewport(loader as HTMLElement);
+
+    await waitFor(() => expect(model.isActive).toBe(true));
+    expect(screen.getByTestId('default-lazy-child')).toBeInTheDocument();
+  });
+
+  it('renders real panel and section title shells without activating offscreen scene objects', async () => {
+    const { container, gridItem, panel, queryRunner, row } = renderLazyDashboard();
 
     await waitFor(() => expect(container.querySelectorAll('[data-griditem-key]')).toHaveLength(2));
 
-    expect(screen.getByText('Offscreen panel title')).toBeInTheDocument();
-    expect(screen.getByText('Offscreen section title')).toBeInTheDocument();
+    expect(await screen.findByText('Persistent panel title')).toBeInTheDocument();
+    expect(screen.getByText('Persistent section title')).toBeInTheDocument();
     expect(row.isActive).toBe(false);
     expect(gridItem.isActive).toBe(false);
     expect(panel.isActive).toBe(false);
     expect(queryRunner.isActive).toBe(false);
+    expect(screen.queryByTestId('loaded-panel-visualization')).not.toBeInTheDocument();
   });
 
-  it('keeps the searchable section title mounted when the row loads', async () => {
-    const row = new SceneGridRow({ key: 'row-1', title: 'Persistent section title', children: [], y: 0 });
-    const grid = new SceneGridLayout({ isLazy: true, children: [row] });
-    const GridComponent = grid.Component;
-    const { container } = render(<GridComponent model={grid} />);
+  it('preserves title DOM nodes while activating the panel only at the existing lazy boundary', async () => {
+    const { container, gridItem, panel, queryRunner, row } = renderLazyDashboard();
 
-    await waitFor(() => expect(container.querySelector('[data-griditem-key="row-1"]')).toBeInTheDocument());
+    const panelTitle = await screen.findByText('Persistent panel title');
+    const sectionTitle = screen.getByText('Persistent section title');
+    const sectionLoader = container.querySelector<HTMLElement>('[data-griditem-key="row-1"]');
+    const gridItemLoader = container.querySelector<HTMLElement>('[data-griditem-key="grid-item-1"]');
+    const panelLoader = getContainingLazyLoader(panelTitle);
 
-    const title = screen.getByText('Persistent section title');
-    const sectionShell = container.querySelector<HTMLElement>('[data-griditem-key="row-1"]');
-    expect(sectionShell).not.toBeNull();
+    expect(sectionLoader).not.toBeNull();
+    expect(gridItemLoader).not.toBeNull();
+    expect(panelLoader).toBeInstanceOf(HTMLElement);
 
-    enterViewport(sectionShell!);
+    enterViewport(sectionLoader!);
+    enterViewport(gridItemLoader!);
 
-    await waitFor(() => expect(row.isActive).toBe(true));
+    await waitFor(() => {
+      expect(row.isActive).toBe(true);
+      expect(gridItem.isActive).toBe(true);
+    });
+    expect(screen.getByText('Persistent section title')).toBe(sectionTitle);
+    expect(screen.getByText('Persistent panel title')).toBe(panelTitle);
+    expect(panel.isActive).toBe(false);
+    expect(queryRunner.isActive).toBe(false);
 
-    const renderedTitle = sectionShell!.querySelector<HTMLElement>('button[data-testid] [role="heading"]');
-    expect(title).toBeInTheDocument();
-    expect(renderedTitle).not.toBeNull();
-    expect(getComputedStyle(renderedTitle!).visibility).toBe('hidden');
-  });
+    enterViewport(panelLoader!);
 
-  it('keeps only the persistent panel title visible after loading', async () => {
-    const panel = new VizPanel({ title: 'Persistent panel title' });
-    const { container } = render(
-      <LazyLoader key="panel-1" placeholder={<DashboardPanelTitlePlaceholder panel={panel} />}>
-        <div data-testid="loaded-panel-content">
-          <div data-viz-panel-key="panel-1">
-            <div data-testid="data-testid header-container">
-              <h2>Persistent panel title</h2>
-            </div>
-            <DashboardPanelTitlePlaceholder panel={panel} />
-          </div>
-        </div>
-      </LazyLoader>
-    );
+    await waitFor(() => {
+      expect(panel.isActive).toBe(true);
+      expect(queryRunner.isActive).toBe(true);
+    });
+    expect(screen.getByText('Persistent panel title')).toBe(panelTitle);
+    expect(screen.queryByTestId('loaded-panel-visualization')).not.toBeInTheDocument();
 
-    const persistentTitle = screen.getByText('Persistent panel title');
-    const lazyLoader = container.firstElementChild;
-    expect(lazyLoader).toBeInstanceOf(HTMLElement);
+    await act(async () => resolvePanelPlugin(panelPlugin));
 
-    enterViewport(lazyLoader as HTMLElement);
-
-    await waitFor(() => expect(screen.getByTestId('loaded-panel-content')).toBeInTheDocument());
-
-    const renderedTitle = container.querySelector<HTMLElement>(
-      '[data-viz-panel-key] [data-testid="data-testid header-container"] h2'
-    );
-    const nestedPlaceholder = container.querySelector<HTMLElement>(
-      '[data-viz-panel-key] [data-dashboard-panel-title-placeholder]'
-    );
-
-    expect(persistentTitle).toBeInTheDocument();
-    expect(renderedTitle).not.toBeNull();
-    expect(nestedPlaceholder).not.toBeNull();
-    expect(getComputedStyle(renderedTitle!).visibility).toBe('hidden');
-    expect(getComputedStyle(nestedPlaceholder!).visibility).toBe('hidden');
+    await waitFor(() => expect(screen.getByTestId('loaded-panel-visualization')).toBeInTheDocument());
+    expect(screen.getByText('Persistent panel title')).toBe(panelTitle);
   });
 });

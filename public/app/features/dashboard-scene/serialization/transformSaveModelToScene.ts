@@ -272,6 +272,7 @@ function createRowFromPanelModel(row: PanelModel, content: SceneGridItemLike[]):
   return new SceneGridRow({
     key: getVizPanelKeyForPanelId(row.id),
     title: row.title,
+    renderBeforeActivation: true,
     y: row.gridPos.y,
     isCollapsed: row.collapsed,
     children: children,

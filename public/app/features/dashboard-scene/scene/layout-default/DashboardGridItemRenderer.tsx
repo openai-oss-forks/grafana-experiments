@@ -9,7 +9,6 @@ import { useDashboardState } from '../../utils/utils';
 import { SoloPanelContextValueWithSearchStringFilter } from '../PanelSearchLayout';
 import { renderMatchingSoloPanels, useSoloPanelContext } from '../SoloPanelContext';
 import { DashboardPanelLazyLoader, DashboardPanelRenderSuspender } from '../layouts-shared/DashboardPanelLazyLoader';
-import { DashboardPanelTitlePlaceholder } from '../layouts-shared/DashboardPanelTitlePlaceholder';
 import { getIsLazy, shouldSuspendGraphNGOffscreen } from '../layouts-shared/utils';
 
 import { DashboardGridItem, RepeatDirection } from './DashboardGridItem';
@@ -28,7 +27,6 @@ function PanelWrapper({ panel, isLazy, suspendGraphNGOffscreen, containerRef }: 
         key={panel.state.key!}
         ref={containerRef}
         className={panelWrapper}
-        placeholder={<DashboardPanelTitlePlaceholder panel={panel} />}
         suspendGraphNGOffscreen={suspendGraphNGOffscreen}
       >
         <panel.Component model={panel} />
