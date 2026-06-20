@@ -45,6 +45,7 @@ export class DashboardGridItem
 {
   public static Component = DashboardGridItemRenderer;
 
+  protected _renderBeforeActivation = true;
   protected _variableDependency = new DashboardGridItemVariableDependencyHandler(this);
 
   public readonly isDashboardLayoutItem = true;

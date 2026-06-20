@@ -1,5 +1,233 @@
+diff --git a/dist/esm/packages/scenes/src/components/VizPanel/VizPanelRenderer.js b/dist/esm/packages/scenes/src/components/VizPanel/VizPanelRenderer.js
+index 5aa43dc06b3f65808f5aa70cc6d69e58b62e8316..ba891b478dc334bb7b8ef2639b6dfe4615f3030f 100644
+--- a/dist/esm/packages/scenes/src/components/VizPanel/VizPanelRenderer.js
++++ b/dist/esm/packages/scenes/src/components/VizPanel/VizPanelRenderer.js
+@@ -10,6 +10,7 @@ import { css, cx } from '@emotion/css';
+ import { debounce } from 'lodash';
+ import { VizPanelSeriesLimit } from './VizPanelSeriesLimit.js';
+ import { useLazyLoaderIsInView } from '../layout/LazyLoader.js';
++import { SceneComponentActivationContext } from '../../core/SceneComponentWrapper.js';
+ 
+ function VizPanelRenderer({ model }) {
+   var _a;
+@@ -44,7 +45,7 @@ function VizPanelRenderer({ model }) {
+     () => debounce(setPanelAttention, 100, { leading: true, trailing: false }),
+     [setPanelAttention]
+   );
+-  const profiler = useMemo(() => model.getProfiler(), [model]);
++  const profiler = useMemo(() => model.isActive ? model.getProfiler() : void 0, [model, model.isActive]);
+   const currentRenderStart = performance.now();
+   const endRenderCallbackRef = React.useRef(null);
+   useLayoutEffect(() => {
+@@ -61,24 +62,54 @@ function VizPanelRenderer({ model }) {
+       endRenderCallbackRef.current = null;
+     }
+   });
+-  const plugin = model.getPlugin();
++  const plugin = model.isActive ? model.getPlugin() : void 0;
+   const { dragClass, dragClassCancel } = getDragClasses(model);
+   const dragHooks = getDragHooks(model);
+-  const dataObject = sceneGraph.getData(model);
+-  const rawData = dataObject.useState();
+-  const dataWithSeriesLimit = useDataWithSeriesLimit(rawData.data, seriesLimit, seriesLimitShowAll);
+-  const dataWithFieldConfig = model.applyFieldConfig(dataWithSeriesLimit);
+-  const sceneTimeRange = sceneGraph.getTimeRange(model);
+-  const timeZone = sceneTimeRange.getTimeZone();
+-  const timeRange = model.getTimeRange(dataWithFieldConfig);
++  const dataObject = model.isActive ? sceneGraph.getData(model) : void 0;
++  const rawData = useActiveSceneObjectState(dataObject, model.isActive);
++  const dataWithSeriesLimit = useDataWithSeriesLimit(model.isActive ? rawData.data : void 0, seriesLimit, seriesLimitShowAll);
++  const dataWithFieldConfig = model.isActive ? model.applyFieldConfig(dataWithSeriesLimit) : void 0;
++  const sceneTimeRange = model.isActive ? sceneGraph.getTimeRange(model) : void 0;
++  const timeZone = sceneTimeRange == null ? void 0 : sceneTimeRange.getTimeZone();
++  const timeRange = model.isActive ? model.getTimeRange(dataWithFieldConfig) : void 0;
+   const isInView = useLazyLoaderIsInView();
++  const activationControlled = React.useContext(SceneComponentActivationContext)?.target === model;
+   useEffect(() => {
+-    if (dataObject.isInViewChanged) {
++    if (dataObject == null ? void 0 : dataObject.isInViewChanged) {
+       dataObject.isInViewChanged(isInView);
+     }
+   }, [isInView, dataObject]);
+   const titleInterpolated = model.interpolate(title, void 0, "text");
+   const alertStateStyles = useStyles2(getAlertStateStyles);
++  if (!model.isActive || activationControlled && (!plugin || !plugin.panel)) {
++    const shellContent = model.isActive ? !plugin ? /* @__PURE__ */ React.createElement(Trans, { i18nKey: "grafana-scenes.components.viz-panel-renderer.loading-plugin-panel" }, "Loading plugin panel...") : /* @__PURE__ */ React.createElement(Trans, { i18nKey: "grafana-scenes.components.viz-panel-renderer.panel-plugin-has-no-panel-component" }, "Panel plugin has no panel component") : null;
++    return /* @__PURE__ */ React.createElement("div", { className: relativeWrapper }, /* @__PURE__ */ React.createElement("div", { ref, className: absoluteWrapper, "data-viz-panel-key": model.state.key }, width > 0 && height > 0 && /* @__PURE__ */ React.createElement(
++      PanelChrome,
++      {
++        title: titleInterpolated,
++        width,
++        height,
++        selectionId: model.state.key,
++        displayMode,
++        dragClass,
++        dragClassCancel,
++        onFocus: setPanelAttention,
++        onMouseEnter: setPanelAttention,
++        onMouseMove: debouncedMouseMove,
++        onDragStart: (e) => {
++          var _a2;
++          (_a2 = dragHooks.onDragStart) == null ? void 0 : _a2.call(dragHooks, e, model);
++        },
++        showMenuAlways,
++        ...collapsible ? {
++          collapsible: Boolean(collapsible),
++          collapsed,
++          onToggleCollapse: model.onToggleCollapse
++        } : { hoverHeader, hoverHeaderOffset }
++      },
++      () => shellContent
++    )));
++  }
+   if (!plugin) {
+     return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(Trans, { i18nKey: "grafana-scenes.components.viz-panel-renderer.loading-plugin-panel" }, "Loading plugin panel..."));
+   }
+@@ -233,6 +264,17 @@ function VizPanelRenderer({ model }) {
+     )))))
+   )));
+ }
++function useActiveSceneObjectState(model, active) {
++  const [_, forceRender] = React.useState(0);
++  useEffect(() => {
++    if (!active || !model) {
++      return;
++    }
++    const subscription = model.subscribeToState(() => forceRender((value) => value + 1));
++    return () => subscription.unsubscribe();
++  }, [active, model]);
++  return (model == null ? void 0 : model.state) || {};
++}
+ function useDataWithSeriesLimit(data, seriesLimit, showAllSeries) {
+   return useMemo(() => {
+     if (!(data == null ? void 0 : data.series) || !seriesLimit || showAllSeries) {
+diff --git a/dist/esm/packages/scenes/src/components/layout/LazyLoader.js b/dist/esm/packages/scenes/src/components/layout/LazyLoader.js
+index 82b134261cbbd4566ffeaeb7091a7ac4a6593b19..1af739dbd37f73a261a25d08940b892d3ee539cc 100644
+--- a/dist/esm/packages/scenes/src/components/layout/LazyLoader.js
++++ b/dist/esm/packages/scenes/src/components/layout/LazyLoader.js
+@@ -4,6 +4,7 @@ import { uniqueId } from 'lodash';
+ import { css } from '@emotion/css';
+ import { useStyles2 } from '@grafana/ui';
+ import { t } from '@grafana/i18n';
++import { SceneComponentActivationContext } from '../../core/SceneComponentWrapper.js';
+ 
+ function useUniqueId() {
+   var _a;
+@@ -12,11 +13,12 @@ function useUniqueId() {
+   return idRefLazy.current;
+ }
+ const LazyLoader = React.forwardRef(
+-  ({ children, onLoad, onChange, className, ...rest }, ref) => {
++  ({ children, onLoad, onChange, className, activationTarget, ...rest }, ref) => {
+     const id = useUniqueId();
+     const { hideEmpty } = useStyles2(getStyles);
+     const [loaded, setLoaded] = useState(false);
+     const [isInView, setIsInView] = useState(false);
++    const [activatedTarget, setActivatedTarget] = useState(void 0);
+     const innerRef = useRef(null);
+     useImperativeHandle(ref, () => innerRef.current);
+     useEffectOnce(() => {
+@@ -40,7 +42,14 @@ const LazyLoader = React.forwardRef(
+         }
+       };
+     });
+-    return /* @__PURE__ */ React.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
++    const activation = activationTarget ? {
++      target: activationTarget,
++      shouldActivate: loaded,
++      targetActivated: activatedTarget === activationTarget || activationTarget.isActive,
++      onTargetActivated: setActivatedTarget
++    } : void 0;
++    const content = loaded || activationTarget ? /* @__PURE__ */ React.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, /* @__PURE__ */ React.createElement(SceneComponentActivationContext.Provider, { value: activation }, children)) : t("grafana-scenes.components.lazy-loader.placeholder", "\xA0");
++    return /* @__PURE__ */ React.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, content);
+   }
+ );
+ function getStyles() {
+diff --git a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js
+index e38359161447e76f2ecb831df8f47f3e277aaf18..fa1179a904525cafec10fd9978e9d917aa643998 100644
+--- a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js
++++ b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridLayoutRenderer.js
+@@ -81,6 +81,7 @@ const GridItemWrapper = React.forwardRef((props, ref) => {
+   const { grid, layoutItem, index, totalCount, isLazy, style, onLoad, onChange, children, ...divProps } = props;
+   const sceneChild = grid.getSceneLayoutChild(layoutItem.i);
+   const className = (_a = sceneChild.getClassName) == null ? void 0 : _a.call(sceneChild);
++  const activationTarget = sceneChild.renderBeforeActivation ? sceneChild : void 0;
+   const innerContent = /* @__PURE__ */ React.createElement(sceneChild.Component, { model: sceneChild, key: sceneChild.state.key });
+   if (isLazy) {
+     return /* @__PURE__ */ React.createElement(
+@@ -91,7 +92,8 @@ const GridItemWrapper = React.forwardRef((props, ref) => {
+         "data-griditem-key": sceneChild.state.key,
+         className: cx(className, props.className),
+         style,
+-        ref
++        ref,
++        activationTarget
+       },
+       innerContent,
+       children
+diff --git a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js
+index 3471bc98bc8bd55fbc56dcabbc58a6fdf45e6f47..620c27fb342c033aa99074f56ece4b6ff4a125c8 100644
+--- a/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js
++++ b/dist/esm/packages/scenes/src/components/layout/grid/SceneGridRow.js
+@@ -21,6 +21,7 @@ class SceneGridRow extends SceneObjectBase {
+       height: 1,
+       width: GRID_COLUMN_COUNT
+     });
++    this._renderBeforeActivation = state.renderBeforeActivation === true;
+     this._variableDependency = new VariableDependencyConfig(this, {
+       statePaths: ["title"],
+       handleTimeMacros: true
+@@ -78,7 +79,7 @@ function SceneGridRowRenderer({ model }) {
+     },
+     isCollapsible && /* @__PURE__ */ React.createElement(Icon, { name: isCollapsed ? "angle-right" : "angle-down" }),
+     /* @__PURE__ */ React.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text"))
+-  ), /* @__PURE__ */ React.createElement("span", { className: cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), actions && /* @__PURE__ */ React.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React.createElement("div", { className: cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React.createElement(Icon, { name: "draggabledots" })));
++  ), /* @__PURE__ */ React.createElement("span", { className: cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), model.isActive && actions && /* @__PURE__ */ React.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React.createElement("div", { className: cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React.createElement(Icon, { name: "draggabledots" })));
+ }
+ const getSceneGridRowStyles = (theme) => {
+   return {
+diff --git a/dist/esm/packages/scenes/src/core/SceneComponentWrapper.js b/dist/esm/packages/scenes/src/core/SceneComponentWrapper.js
+index 6aa70d174471f01dfcce6c38acefac7915fb8a4b..2cafddd91fccc9ce3825c936a8567182ab30ad14 100644
+--- a/dist/esm/packages/scenes/src/core/SceneComponentWrapper.js
++++ b/dist/esm/packages/scenes/src/core/SceneComponentWrapper.js
+@@ -1,15 +1,26 @@
+ import React, { useState, useEffect } from 'react';
+ 
++const SceneComponentActivationContext = React.createContext(void 0);
+ function SceneComponentWrapperWithoutMemo({ model, ...otherProps }) {
+   var _a;
+   const Component = (_a = model.constructor["Component"]) != null ? _a : EmptyRenderer;
+   const [_, setValue] = useState(0);
++  const activation = React.useContext(SceneComponentActivationContext);
++  const controlsActivation = (activation == null ? void 0 : activation.target) === model;
++  const activationBlocked = activation !== void 0 && !controlsActivation && !activation.targetActivated;
++  const shouldActivate = !controlsActivation || activation.shouldActivate;
+   useEffect(() => {
++    if (activationBlocked || !shouldActivate) {
++      return;
++    }
+     const unsub = model.activate();
++    if (controlsActivation) {
++      activation.onTargetActivated(model);
++    }
+     setValue((prevState) => prevState + 1);
+     return unsub;
+-  }, [model]);
+-  if (!model.isActive && !model.renderBeforeActivation) {
++  }, [activationBlocked, controlsActivation, model, shouldActivate]);
++  if (activationBlocked || !model.isActive && !model.renderBeforeActivation && !controlsActivation) {
+     return null;
+   }
+   return /* @__PURE__ */ React.createElement(Component, { ...otherProps, model });
+@@ -19,5 +30,5 @@ function EmptyRenderer(_) {
+   return null;
+ }
+ 
+-export { SceneComponentWrapper };
++export { SceneComponentActivationContext, SceneComponentWrapper };
+ //# sourceMappingURL=SceneComponentWrapper.js.map
 diff --git a/dist/esm/packages/scenes/src/core/SceneObjectBase.js b/dist/esm/packages/scenes/src/core/SceneObjectBase.js
-index a26c64b2e71f44b18487aa529ff46d13429d9b46..1523775082e7e7df8cfd2493fc41041322182df0 100644
+index 6ea4a1e03e279bc2d706b8e0a25f37100a1e6d81..bd529efcc1eff825b9e9787183edbd1722542d57 100644
 --- a/dist/esm/packages/scenes/src/core/SceneObjectBase.js
 +++ b/dist/esm/packages/scenes/src/core/SceneObjectBase.js
 @@ -1,4 +1,4 @@
@@ -17,7 +245,7 @@ index a26c64b2e71f44b18487aa529ff46d13429d9b46..1523775082e7e7df8cfd2493fc410413
    const shouldActivateOrKeepAlive = (_a = options == null ? void 0 : options.shouldActivateOrKeepAlive) != null ? _a : false;
    useEffect(() => {
      let unactivate;
-@@ -302,7 +302,9 @@ function useSceneObjectState(model, options) {
+@@ -301,7 +301,9 @@ function useSceneObjectState(model, options) {
      const s = model.subscribeToState((state) => {
        setState(state);
      });
@@ -76,11 +304,64 @@ index e67aed0ac602d179795ee9efb4c6f10eef8b83c7..95e0233bf34fc29d1f0f963972e9dd41
    }
    scanStateForDependencies(state) {
      this._dependencies.clear();
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index c7c24191c3dba3245c7784cd6ac31bb865ed60b1..583068e818a4be0fbd58257cdf121371ac02f219 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -3037,6 +3037,8 @@ declare class SceneGridLayoutDragStartEvent extends BusEventWithPayload<{
+ 
+ interface SceneGridRowState extends SceneGridItemStateLike {
+     title: string;
++    /** Render the row shell while activation remains controlled by a lazy layout. */
++    renderBeforeActivation?: boolean;
+     isCollapsible?: boolean;
+     isCollapsed?: boolean;
+     actions?: SceneObject;
+@@ -3148,6 +3150,8 @@ declare class SplitLayout extends SceneObjectBase<SplitLayoutState> {
+ interface Props$1 extends Omit<React__default.HTMLProps<HTMLDivElement>, 'onChange' | 'children'> {
+     children: React__default.ReactNode;
+     key: string;
++    /** Render this target immediately while deferring its activation until the loader intersects. */
++    activationTarget?: SceneObject;
+     onLoad?: () => void;
+     onChange?: (isInView: boolean) => void;
+ }
 diff --git a/dist/index.js b/dist/index.js
-index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e951732f6b6 100644
+index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db95681022 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -442,7 +442,7 @@ class SceneObjectBase {
+@@ -117,17 +117,28 @@ function SceneComponentWrapperWithoutMemo({ model, ...otherProps }) {
+   var _a;
+   const Component = (_a = model.constructor["Component"]) != null ? _a : EmptyRenderer;
+   const [_, setValue] = React.useState(0);
++  const activation = React.useContext(SceneComponentActivationContext);
++  const controlsActivation = (activation == null ? void 0 : activation.target) === model;
++  const activationBlocked = activation !== void 0 && !controlsActivation && !activation.targetActivated;
++  const shouldActivate = !controlsActivation || activation.shouldActivate;
+   React.useEffect(() => {
++    if (activationBlocked || !shouldActivate) {
++      return;
++    }
+     const unsub = model.activate();
++    if (controlsActivation) {
++      activation.onTargetActivated(model);
++    }
+     setValue((prevState) => prevState + 1);
+     return unsub;
+-  }, [model]);
+-  if (!model.isActive && !model.renderBeforeActivation) {
++  }, [activationBlocked, controlsActivation, model, shouldActivate]);
++  if (activationBlocked || !model.isActive && !model.renderBeforeActivation && !controlsActivation) {
+     return null;
+   }
+   return /* @__PURE__ */ React__default.default.createElement(Component, { ...otherProps, model });
+ }
+ const SceneComponentWrapper = React__default.default.memo(SceneComponentWrapperWithoutMemo);
++const SceneComponentActivationContext = React__default.default.createContext(void 0);
+ function EmptyRenderer(_) {
+   return null;
+ }
+@@ -442,7 +453,7 @@ class SceneObjectBase {
  function useSceneObjectState(model, options) {
    var _a;
    const [_, setState] = React.useState(model.state);
@@ -89,7 +370,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
    const shouldActivateOrKeepAlive = (_a = options == null ? void 0 : options.shouldActivateOrKeepAlive) != null ? _a : false;
    React.useEffect(() => {
      let unactivate;
-@@ -453,7 +453,9 @@ function useSceneObjectState(model, options) {
+@@ -452,7 +463,9 @@ function useSceneObjectState(model, options) {
      const s = model.subscribeToState((state) => {
        setState(state);
      });
@@ -100,7 +381,138 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
        setState(model.state);
      }
      return () => {
-@@ -8730,8 +8730,8 @@ class SceneDataTransformer extends SceneObjectBase {
+@@ -7554,11 +7567,12 @@ function useUniqueId() {
+   return idRefLazy.current;
+ }
+ const LazyLoader = React__default.default.forwardRef(
+-  ({ children, onLoad, onChange, className, ...rest }, ref) => {
++  ({ children, onLoad, onChange, className, activationTarget, ...rest }, ref) => {
+     const id = useUniqueId();
+     const { hideEmpty } = ui.useStyles2(getStyles$8);
+     const [loaded, setLoaded] = React.useState(false);
+     const [isInView, setIsInView] = React.useState(false);
++    const [activatedTarget, setActivatedTarget] = React.useState(void 0);
+     const innerRef = React.useRef(null);
+     React.useImperativeHandle(ref, () => innerRef.current);
+     reactUse.useEffectOnce(() => {
+@@ -7582,7 +7596,14 @@ const LazyLoader = React__default.default.forwardRef(
+         }
+       };
+     });
+-    return /* @__PURE__ */ React__default.default.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, !loaded ? i18n.t("grafana-scenes.components.lazy-loader.placeholder", "\xA0") : /* @__PURE__ */ React__default.default.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, children));
++    const activation = activationTarget ? {
++      target: activationTarget,
++      shouldActivate: loaded,
++      targetActivated: activatedTarget === activationTarget || activationTarget.isActive,
++      onTargetActivated: setActivatedTarget
++    } : void 0;
++    const content = loaded || activationTarget ? /* @__PURE__ */ React__default.default.createElement(LazyLoaderInViewContext.Provider, { value: isInView }, /* @__PURE__ */ React__default.default.createElement(SceneComponentActivationContext.Provider, { value: activation }, children)) : i18n.t("grafana-scenes.components.lazy-loader.placeholder", "\xA0");
++    return /* @__PURE__ */ React__default.default.createElement("div", { id, ref: innerRef, className: `${hideEmpty} ${className}`, ...rest }, content);
+   }
+ );
+ function getStyles$8() {
+@@ -7645,7 +7666,7 @@ function VizPanelRenderer({ model }) {
+     () => lodash.debounce(setPanelAttention, 100, { leading: true, trailing: false }),
+     [setPanelAttention]
+   );
+-  const profiler = React.useMemo(() => model.getProfiler(), [model]);
++  const profiler = React.useMemo(() => model.isActive ? model.getProfiler() : void 0, [model, model.isActive]);
+   const currentRenderStart = performance.now();
+   const endRenderCallbackRef = React__default.default.useRef(null);
+   React.useLayoutEffect(() => {
+@@ -7662,24 +7683,55 @@ function VizPanelRenderer({ model }) {
+       endRenderCallbackRef.current = null;
+     }
+   });
+-  const plugin = model.getPlugin();
++  const plugin = model.isActive ? model.getPlugin() : void 0;
+   const { dragClass, dragClassCancel } = getDragClasses(model);
+   const dragHooks = getDragHooks(model);
+-  const dataObject = sceneGraph.getData(model);
+-  const rawData = dataObject.useState();
+-  const dataWithSeriesLimit = useDataWithSeriesLimit(rawData.data, seriesLimit, seriesLimitShowAll);
+-  const dataWithFieldConfig = model.applyFieldConfig(dataWithSeriesLimit);
+-  const sceneTimeRange = sceneGraph.getTimeRange(model);
+-  const timeZone = sceneTimeRange.getTimeZone();
+-  const timeRange = model.getTimeRange(dataWithFieldConfig);
++  const dataObject = model.isActive ? sceneGraph.getData(model) : void 0;
++  const rawData = useActiveSceneObjectState(dataObject, model.isActive);
++  const dataWithSeriesLimit = useDataWithSeriesLimit(model.isActive ? rawData.data : void 0, seriesLimit, seriesLimitShowAll);
++  const dataWithFieldConfig = model.isActive ? model.applyFieldConfig(dataWithSeriesLimit) : void 0;
++  const sceneTimeRange = model.isActive ? sceneGraph.getTimeRange(model) : void 0;
++  const timeZone = sceneTimeRange == null ? void 0 : sceneTimeRange.getTimeZone();
++  const timeRange = model.isActive ? model.getTimeRange(dataWithFieldConfig) : void 0;
+   const isInView = useLazyLoaderIsInView();
++  const activation = React.useContext(SceneComponentActivationContext);
++  const activationControlled = (activation == null ? void 0 : activation.target) === model;
+   React.useEffect(() => {
+-    if (dataObject.isInViewChanged) {
++    if (dataObject == null ? void 0 : dataObject.isInViewChanged) {
+       dataObject.isInViewChanged(isInView);
+     }
+   }, [isInView, dataObject]);
+   const titleInterpolated = model.interpolate(title, void 0, "text");
+   const alertStateStyles = ui.useStyles2(getAlertStateStyles);
++  if (!model.isActive || activationControlled && (!plugin || !plugin.panel)) {
++    const shellContent = model.isActive ? !plugin ? /* @__PURE__ */ React__default.default.createElement(i18n.Trans, { i18nKey: "grafana-scenes.components.viz-panel-renderer.loading-plugin-panel" }, "Loading plugin panel...") : /* @__PURE__ */ React__default.default.createElement(i18n.Trans, { i18nKey: "grafana-scenes.components.viz-panel-renderer.panel-plugin-has-no-panel-component" }, "Panel plugin has no panel component") : null;
++    return /* @__PURE__ */ React__default.default.createElement("div", { className: relativeWrapper }, /* @__PURE__ */ React__default.default.createElement("div", { ref, className: absoluteWrapper, "data-viz-panel-key": model.state.key }, width > 0 && height > 0 && /* @__PURE__ */ React__default.default.createElement(
++      ui.PanelChrome,
++      {
++        title: titleInterpolated,
++        width,
++        height,
++        selectionId: model.state.key,
++        displayMode,
++        dragClass,
++        dragClassCancel,
++        onFocus: setPanelAttention,
++        onMouseEnter: setPanelAttention,
++        onMouseMove: debouncedMouseMove,
++        onDragStart: (e) => {
++          var _a2;
++          (_a2 = dragHooks.onDragStart) == null ? void 0 : _a2.call(dragHooks, e, model);
++        },
++        showMenuAlways,
++        ...collapsible ? {
++          collapsible: Boolean(collapsible),
++          collapsed,
++          onToggleCollapse: model.onToggleCollapse
++        } : { hoverHeader, hoverHeaderOffset }
++      },
++      () => shellContent
++    )));
++  }
+   if (!plugin) {
+     return /* @__PURE__ */ React__default.default.createElement("div", null, /* @__PURE__ */ React__default.default.createElement(i18n.Trans, { i18nKey: "grafana-scenes.components.viz-panel-renderer.loading-plugin-panel" }, "Loading plugin panel..."));
+   }
+@@ -7834,6 +7886,17 @@ function VizPanelRenderer({ model }) {
+     )))))
+   )));
+ }
++function useActiveSceneObjectState(model, active) {
++  const [_, forceRender] = React.useState(0);
++  React.useEffect(() => {
++    if (!active || !model) {
++      return;
++    }
++    const subscription = model.subscribeToState(() => forceRender((value) => value + 1));
++    return () => subscription.unsubscribe();
++  }, [active, model]);
++  return (model == null ? void 0 : model.state) || {};
++}
+ function useDataWithSeriesLimit(data, seriesLimit, showAllSeries) {
+   return React.useMemo(() => {
+     if (!(data == null ? void 0 : data.series) || !seriesLimit || showAllSeries) {
+@@ -7846,7 +7909,7 @@ function useDataWithSeriesLimit(data, seriesLimit, showAllSeries) {
+   }, [data, seriesLimit, showAllSeries]);
+ }
+ function getDragClasses(panel) {
+-  var _a, _b;
++  var _a;
+   const parentLayout = sceneGraph.getLayout(panel);
+   const isDraggable = parentLayout == null ? void 0 : parentLayout.isDraggable();
+   if (!parentLayout || !isDraggable || itemDraggingDisabled(panel, parentLayout)) {
+@@ -8730,8 +8793,8 @@ class SceneDataTransformer extends SceneObjectBase {
      if (data === this._prevDataFromSource) {
        return true;
      }
@@ -111,7 +523,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
        if (this.state.data && data.state !== this.state.data.state) {
          this.setState({ data: { ...this.state.data, state: data.state } });
        }
-@@ -10099,11 +10099,11 @@ class VariableDependencyConfig {
+@@ -10099,11 +10162,11 @@ class VariableDependencyConfig {
    }
    getNames() {
      const prevState = this._state;
@@ -128,7 +540,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
        this.scanStateForDependencies(newState);
      }
      return this._dependencies;
-@@ -10117,6 +10117,7 @@ class VariableDependencyConfig {
+@@ -10117,6 +10180,7 @@ class VariableDependencyConfig {
    }
    setPaths(paths) {
      this._statePaths = paths;
@@ -136,3 +548,43 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..d2eaf7514734bd17abf5e8727e8a7e95
    }
    scanStateForDependencies(state) {
      this._dependencies.clear();
+@@ -13744,10 +13808,11 @@ const gridWrapperClass = css.css({
+   width: "100%"
+ });
+ const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
+-  var _a;
++  var _a, _b;
+   const { grid, layoutItem, index, totalCount, isLazy, style, onLoad, onChange, children, ...divProps } = props;
+   const sceneChild = grid.getSceneLayoutChild(layoutItem.i);
+   const className = (_a = sceneChild.getClassName) == null ? void 0 : _a.call(sceneChild);
++  const activationTarget = sceneChild.renderBeforeActivation ? sceneChild : void 0;
+   const innerContent = /* @__PURE__ */ React__default.default.createElement(sceneChild.Component, { model: sceneChild, key: sceneChild.state.key });
+   if (isLazy) {
+     return /* @__PURE__ */ React__default.default.createElement(
+@@ -13758,7 +13823,8 @@ const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
+         "data-griditem-key": sceneChild.state.key,
+         className: css.cx(className, props.className),
+         style,
+-        ref
++        ref,
++        activationTarget
+       },
+       innerContent,
+       children
+@@ -14162,6 +14228,7 @@ class SceneGridRow extends SceneObjectBase {
+       height: 1,
+       width: GRID_COLUMN_COUNT
+     });
++    this._renderBeforeActivation = state.renderBeforeActivation === true;
+     this._variableDependency = new VariableDependencyConfig(this, {
+       statePaths: ["title"],
+       handleTimeMacros: true
+@@ -14219,7 +14286,7 @@ function SceneGridRowRenderer({ model }) {
+     },
+     isCollapsible && /* @__PURE__ */ React__default.default.createElement(ui.Icon, { name: isCollapsed ? "angle-right" : "angle-down" }),
+     /* @__PURE__ */ React__default.default.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text"))
+-  ), /* @__PURE__ */ React__default.default.createElement("span", { className: css.cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), actions && /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React__default.default.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React__default.default.createElement("div", { className: css.cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React__default.default.createElement(ui.Icon, { name: "draggabledots" })));
++  ), /* @__PURE__ */ React__default.default.createElement("span", { className: css.cx(styles.panelCount, isCollapsed && styles.panelCountCollapsed) }, "(", count, " ", panels, ")"), model.isActive && actions && /* @__PURE__ */ React__default.default.createElement("div", { className: styles.rowActions }, /* @__PURE__ */ React__default.default.createElement(actions.Component, { model: actions }))), isDraggable && isCollapsed && /* @__PURE__ */ React__default.default.createElement("div", { className: css.cx(styles.dragHandle, layoutDragClass) }, /* @__PURE__ */ React__default.default.createElement(ui.Icon, { name: "draggabledots" })));
+ }
+ const getSceneGridRowStyles = (theme) => {
+   return {

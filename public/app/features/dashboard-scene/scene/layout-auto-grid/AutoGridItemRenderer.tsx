@@ -79,6 +79,7 @@ export function AutoGridItemRenderer({ model }: SceneComponentProps<AutoGridItem
                 isLazy && (!isConditionallyHidden || !renderHidden) ? (
                   <DashboardPanelLazyLoader
                     key={item.state.key!}
+                    activationTarget={item}
                     suspendGraphNGOffscreen={suspendGraphNGOffscreen}
                     className={wrapperClassName}
                   >

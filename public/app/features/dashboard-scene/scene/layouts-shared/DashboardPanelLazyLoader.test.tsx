@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { ReactNode, Ref, useEffect } from 'react';
 
+import type { SceneObject } from '@grafana/scenes';
 import { useGraphNGRenderVisibility } from 'app/core/components/GraphNG/GraphNGRenderVisibility';
 
 import {
@@ -20,15 +21,22 @@ jest.mock('@grafana/scenes', () => {
   return {
     LazyLoader: React.forwardRef(
       (
-        { children, ...props }: { children: ReactNode; onFocusCapture?: () => void; onBlurCapture?: () => void },
+        {
+          children,
+          activationTarget,
+          ...props
+        }: {
+          children: ReactNode;
+          activationTarget?: SceneObject;
+          onFocusCapture?: () => void;
+          onBlurCapture?: () => void;
+        },
         ref: Ref<HTMLDivElement>
-      ) => {
-        return (
-          <div ref={ref} {...props}>
-            {children}
-          </div>
-        );
-      }
+      ) => (
+        <div ref={ref} data-activation-target={activationTarget ? 'true' : undefined} {...props}>
+          {children}
+        </div>
+      )
     ),
   };
 });
@@ -109,6 +117,17 @@ describe('DashboardPanelLazyLoader', () => {
     const graphNGRendererActive = useGraphNGRenderVisibility();
     return <button data-graphng-active={graphNGRendererActive}>focused control</button>;
   }
+
+  test('forwards the scene activation target to the lazy loader', () => {
+    const activationTarget = {} as SceneObject;
+    const { container } = render(
+      <DashboardPanelLazyLoader activationTarget={activationTarget}>
+        <PanelLifecycleProbe />
+      </DashboardPanelLazyLoader>
+    );
+
+    expect(container.firstElementChild).toHaveAttribute('data-activation-target', 'true');
+  });
 
   test('suspends GraphNG without unmounting the panel and restores it on reentry', () => {
     render(
