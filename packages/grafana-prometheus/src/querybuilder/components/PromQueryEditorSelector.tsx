@@ -46,6 +46,10 @@ export const PromQueryEditorSelector = memo<Props>((props) => {
   const sanitizedBuilderParseErrorHelpUrl = builderParseErrorHelp?.url
     ? textUtil.sanitizeUrl(builderParseErrorHelp.url)
     : undefined;
+  const parseErrorMessage = t(
+    'grafana-prometheus.querybuilder.prom-query-editor-selector.body-syntax-error',
+    'There is a syntax error, or the query structure cannot be visualized when switching to the builder mode. Parts of the query may be lost.'
+  );
   // This should be filled in from the defaults by now.
   const editorMode = query.editorMode!;
 
@@ -102,14 +106,9 @@ export const PromQueryEditorSelector = memo<Props>((props) => {
           'Parsing error: Switch to the builder mode?'
         )}
         body={
-          <Stack direction="column" gap={2}>
-            <div>
-              {t(
-                'grafana-prometheus.querybuilder.prom-query-editor-selector.body-syntax-error',
-                'There is a syntax error, or the query structure cannot be visualized when switching to the builder mode. Parts of the query may be lost.'
-              )}
-            </div>
-            {builderParseErrorHelp?.text && (
+          builderParseErrorHelp?.text ? (
+            <Stack direction="column" gap={2}>
+              <div>{parseErrorMessage}</div>
               <div>
                 {builderParseErrorHelp.text}
                 {sanitizedBuilderParseErrorHelpUrl &&
@@ -123,8 +122,10 @@ export const PromQueryEditorSelector = memo<Props>((props) => {
                     </>
                   )}
               </div>
-            )}
-          </Stack>
+            </Stack>
+          ) : (
+            parseErrorMessage
+          )
         }
         confirmText={t('grafana-prometheus.querybuilder.prom-query-editor-selector.confirmText-continue', 'Continue')}
         onConfirm={() => {
