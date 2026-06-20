@@ -14,17 +14,9 @@ import {
 import { VariableFormatID } from '@grafana/schema';
 import { ALL_VARIABLE_TEXT, ALL_VARIABLE_VALUE } from 'app/features/variables/constants';
 
-import { DashboardVariableSet } from './DashboardVariableSet';
-
 const PROMETHEUS_DATASOURCE_TYPE = 'prometheus';
 const INITIAL_PROMETHEUS_ALL_VALUE = '.*';
 const REGEX_SYNTAX = /[\\^$*+?()[\]{}|]/;
-
-/**
- * Opts a dashboard into retaining regex-like custom query-variable values that
- * are not exact members of the variable's refreshed options.
- */
-export const PRESERVE_CUSTOM_REGEX_VALUES_DASHBOARD_TAG = 'preserve-custom-regex-values';
 
 /**
  * Prometheus can render an implicit All selection without enumerating its
@@ -58,7 +50,7 @@ export class DashboardQueryVariable extends QueryVariable {
     const skipNextValidation = this.skipNextValidation;
     super.interceptStateUpdateAfterValidation(stateUpdate);
 
-    if (skipNextValidation || this.state.allowCustomValue === false || !this.shouldPreserveCustomRegexValues()) {
+    if (skipNextValidation || this.state.allowCustomValue === false) {
       return;
     }
 
@@ -104,19 +96,6 @@ export class DashboardQueryVariable extends QueryVariable {
 
     stateUpdate.value = isEqual(values, currentValues) ? currentValues : values;
     stateUpdate.text = isEqual(texts, currentTexts) ? this.state.text : texts;
-  }
-
-  private shouldPreserveCustomRegexValues(): boolean {
-    if (!(this.parent instanceof DashboardVariableSet)) {
-      return false;
-    }
-
-    const dashboardState = this.parent.parent?.state;
-    if (!dashboardState || !('tags' in dashboardState) || !Array.isArray(dashboardState.tags)) {
-      return false;
-    }
-
-    return dashboardState.tags.includes(PRESERVE_CUSTOM_REGEX_VALUES_DASHBOARD_TAG);
   }
 
   private canUseInitialPrometheusAllValue(): boolean {

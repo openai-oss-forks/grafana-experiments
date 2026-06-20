@@ -1,26 +1,13 @@
 import { lastValueFrom, of } from 'rxjs';
 
-import {
-  SceneObjectBase,
-  SceneVariableValueChangedEvent,
-  type SceneObjectState,
-  type VariableValueOption,
-} from '@grafana/scenes';
+import { SceneVariableValueChangedEvent, type VariableValueOption } from '@grafana/scenes';
 import { ALL_VARIABLE_TEXT, ALL_VARIABLE_VALUE } from 'app/features/variables/constants';
 
-import { DashboardQueryVariable, PRESERVE_CUSTOM_REGEX_VALUES_DASHBOARD_TAG } from './DashboardQueryVariable';
-import { DashboardVariableSet } from './DashboardVariableSet';
-
-interface TestDashboardState extends SceneObjectState {
-  tags: string[];
-  $variables: DashboardVariableSet;
-}
-
-class TestDashboard extends SceneObjectBase<TestDashboardState> {}
+import { DashboardQueryVariable } from './DashboardQueryVariable';
 
 describe('DashboardQueryVariable', () => {
   it.each(['engine-.*', '^engine-(a|b)$', '/engine-[ab]+/i'])(
-    'preserves the opted-in custom regex value %s when refreshed options contain no exact match',
+    'preserves the custom regex value %s without a dashboard opt-in when refreshed options contain no exact match',
     async (regexValue) => {
       const value = [regexValue];
       const text = [regexValue];
@@ -33,7 +20,7 @@ describe('DashboardQueryVariable', () => {
     }
   );
 
-  it('preserves an opted-in regex value when the refreshed options are empty', async () => {
+  it('preserves a regex value when the refreshed options are empty', async () => {
     const value = ['engine-.*'];
     const text = ['engine-.*'];
     const { variable } = createVariable({ value, text });
@@ -56,7 +43,7 @@ describe('DashboardQueryVariable', () => {
     expect(variable.state.text).toEqual(['Engine A', 'regex label']);
   });
 
-  it('preserves an opted-in single-value regex', async () => {
+  it('preserves a single-value regex', async () => {
     const { variable } = createVariable({
       value: 'engine-.*',
       text: 'regex label',
@@ -107,15 +94,6 @@ describe('DashboardQueryVariable', () => {
     subscription.unsubscribe();
   });
 
-  it('retains the upstream fallback behavior for dashboards without the opt-in tag', async () => {
-    const { variable } = createVariable({}, []);
-
-    await refreshOptions(variable, engineOptions);
-
-    expect(variable.state.value).toEqual([ALL_VARIABLE_VALUE]);
-    expect(variable.state.text).toEqual([ALL_VARIABLE_TEXT]);
-  });
-
   it('retains the upstream fallback behavior when allowCustomValue is false', async () => {
     const { variable } = createVariable({ allowCustomValue: false });
 
@@ -125,7 +103,7 @@ describe('DashboardQueryVariable', () => {
     expect(variable.state.text).toEqual([ALL_VARIABLE_TEXT]);
   });
 
-  it('preserves an opted-in regex when allowCustomValue uses its enabled default', async () => {
+  it('preserves a regex when allowCustomValue uses its enabled default', async () => {
     const value = ['engine-.*'];
     const text = ['engine-.*'];
     const { variable } = createVariable({ value, text, allowCustomValue: undefined });
@@ -154,10 +132,7 @@ const engineOptions: VariableValueOption[] = [
   { label: 'Engine B', value: 'engine-b' },
 ];
 
-function createVariable(
-  state: Partial<DashboardQueryVariable['state']> = {},
-  tags = [PRESERVE_CUSTOM_REGEX_VALUES_DASHBOARD_TAG]
-) {
+function createVariable(state: Partial<DashboardQueryVariable['state']> = {}) {
   const variable = new DashboardQueryVariable({
     name: 'engine',
     value: ['engine-.*'],
@@ -169,12 +144,8 @@ function createVariable(
     allowCustomValue: true,
     ...state,
   });
-  const dashboard = new TestDashboard({
-    tags,
-    $variables: new DashboardVariableSet({ variables: [variable] }),
-  });
 
-  return { dashboard, variable };
+  return { variable };
 }
 
 async function refreshOptions(variable: DashboardQueryVariable, options: VariableValueOption[]) {
