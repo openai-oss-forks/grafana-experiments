@@ -1,6 +1,6 @@
 import { ForwardedRef, forwardRef, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 
-import { LazyLoader } from '@grafana/scenes';
+import { LazyLoader, type SceneObject } from '@grafana/scenes';
 import { GraphNGRenderVisibilityProvider } from 'app/core/components/GraphNG/GraphNGRenderVisibility';
 
 export const OFFSCREEN_GRAPHNG_SUSPEND_DELAY = 60_000;
@@ -68,6 +68,10 @@ interface DashboardPanelRenderSuspensionProps {
   children: ReactNode;
   className?: string;
   suspendGraphNGOffscreen?: boolean;
+}
+
+interface DashboardPanelLazyLoaderProps extends DashboardPanelRenderSuspensionProps {
+  activationTarget?: SceneObject;
 }
 
 interface GraphNGRenderSuspensionState {
@@ -205,8 +209,8 @@ function useGraphNGRenderSuspension(
   return { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture };
 }
 
-export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPanelRenderSuspensionProps>(
-  ({ children, className, suspendGraphNGOffscreen = true }, ref) => {
+export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPanelLazyLoaderProps>(
+  ({ activationTarget, children, className, suspendGraphNGOffscreen = true }, ref) => {
     const { graphNGRendererActive, setWrapperRef, onBlurCapture, onFocusCapture } = useGraphNGRenderSuspension(
       suspendGraphNGOffscreen,
       ref
@@ -217,7 +221,7 @@ export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPane
         key="dashboard-panel-lazy-loader"
         ref={setWrapperRef}
         className={className}
-        renderBeforeActivation
+        activationTarget={activationTarget}
         onFocusCapture={onFocusCapture}
         onBlurCapture={onBlurCapture}
       >

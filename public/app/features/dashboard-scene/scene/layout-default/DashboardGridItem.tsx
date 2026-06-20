@@ -45,6 +45,7 @@ export class DashboardGridItem
 {
   public static Component = DashboardGridItemRenderer;
 
+  protected _renderBeforeActivation = true;
   protected _variableDependency = new DashboardGridItemVariableDependencyHandler(this);
 
   public readonly isDashboardLayoutItem = true;
@@ -107,10 +108,6 @@ export class DashboardGridItem
 
   public getClassName(): string {
     return this.state.variableName ? 'panel-repeater-grid-item' : '';
-  }
-
-  public shouldRenderBeforeActivation(): boolean {
-    return true;
   }
 
   public getOptions(): OptionsPaneCategoryDescriptor[] {

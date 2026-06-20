@@ -25,6 +25,7 @@ function PanelWrapper({ panel, isLazy, suspendGraphNGOffscreen, containerRef }: 
     return (
       <DashboardPanelLazyLoader
         key={panel.state.key!}
+        activationTarget={panel}
         ref={containerRef}
         className={panelWrapper}
         suspendGraphNGOffscreen={suspendGraphNGOffscreen}

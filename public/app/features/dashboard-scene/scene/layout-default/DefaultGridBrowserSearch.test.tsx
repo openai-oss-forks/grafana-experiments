@@ -32,14 +32,22 @@ setPluginImportUtils({
   getPanelPluginFromCache: () => undefined,
 });
 
-class TestSceneObject extends SceneObjectBase {
+interface TestSceneObjectState {
+  child?: TestSceneObject;
+  name: string;
+}
+
+class TestSceneObject extends SceneObjectBase<TestSceneObjectState> {
   public static Component = ({ model }: SceneComponentProps<TestSceneObject>) => {
-    model.useState();
-    return <div data-testid="default-lazy-child" />;
+    const { child, name } = model.useState();
+    return <div data-testid={name}>{child && <child.Component model={child} />}</div>;
   };
 
-  public constructor() {
-    super({});
+  public constructor(name = 'default-lazy-child', child?: TestSceneObject, onActivate?: (name: string) => void) {
+    super({ child, name });
+    if (onActivate) {
+      this.addActivationHandler(() => onActivate(name));
+    }
   }
 }
 
@@ -79,13 +87,14 @@ describe('default grid browser search', () => {
     return ancestor ?? undefined;
   }
 
-  function renderLazyDashboard() {
+  function renderLazyDashboard(isCollapsed = false) {
     const queryRunner = new SceneQueryRunner({
       queries: [{ refId: 'A' }],
       runQueriesMode: 'manual',
       _hasFetchedData: true,
       data: { state: LoadingState.Done, series: [], timeRange: getDefaultTimeRange() },
     });
+    const dataSubscriptionSpy = jest.spyOn(queryRunner, 'subscribeToState');
     const panel = new VizPanel({
       key: 'panel-1',
       pluginId,
@@ -105,6 +114,7 @@ describe('default grid browser search', () => {
       y: 0,
       title: 'Persistent section title',
       renderBeforeActivation: true,
+      isCollapsed,
       children: [gridItem],
     });
     const grid = new SceneGridLayout({ isLazy: true, children: [row] });
@@ -114,7 +124,7 @@ describe('default grid browser search', () => {
     const GridComponent = grid.Component;
     const result = render(<GridComponent model={grid} />);
 
-    return { ...result, gridItem, panel, queryRunner, row };
+    return { ...result, dataSubscriptionSpy, gridItem, panel, queryRunner, row };
   }
 
   it('preserves the default LazyLoader mounting behavior for callers that do not opt in', async () => {
@@ -137,8 +147,37 @@ describe('default grid browser search', () => {
     expect(screen.getByTestId('default-lazy-child')).toBeInTheDocument();
   });
 
+  it('activates only the target at the lazy boundary, then activates its descendants', async () => {
+    const activationOrder: string[] = [];
+    const recordActivation = (name: string) => {
+      activationOrder.push(name);
+    };
+    const child = new TestSceneObject('nested-lazy-child', undefined, recordActivation);
+    const target = new TestSceneObject('target-lazy-child', child, recordActivation);
+    const Component = target.Component;
+    const { container } = render(
+      <LazyLoader key="targeted-lazy-loader" activationTarget={target}>
+        <Component model={target} />
+      </LazyLoader>
+    );
+    const loader = container.firstElementChild;
+
+    expect(loader).toBeInstanceOf(HTMLElement);
+    expect(screen.getByTestId('target-lazy-child')).toBeInTheDocument();
+    expect(screen.queryByTestId('nested-lazy-child')).not.toBeInTheDocument();
+    expect(target.isActive).toBe(false);
+    expect(child.isActive).toBe(false);
+
+    enterViewport(loader as HTMLElement);
+
+    await waitFor(() => expect(child.isActive).toBe(true));
+    expect(target.isActive).toBe(true);
+    expect(screen.getByTestId('nested-lazy-child')).toBeInTheDocument();
+    expect(activationOrder).toEqual(['target-lazy-child', 'nested-lazy-child']);
+  });
+
   it('renders real panel and section title shells without activating offscreen scene objects', async () => {
-    const { container, gridItem, panel, queryRunner, row } = renderLazyDashboard();
+    const { container, dataSubscriptionSpy, gridItem, panel, queryRunner, row } = renderLazyDashboard();
 
     await waitFor(() => expect(container.querySelectorAll('[data-griditem-key]')).toHaveLength(2));
 
@@ -148,11 +187,25 @@ describe('default grid browser search', () => {
     expect(gridItem.isActive).toBe(false);
     expect(panel.isActive).toBe(false);
     expect(queryRunner.isActive).toBe(false);
+    expect(dataSubscriptionSpy).not.toHaveBeenCalled();
     expect(screen.queryByTestId('loaded-panel-visualization')).not.toBeInTheDocument();
   });
 
+  it('keeps collapsed section titles searchable without mounting their panels', async () => {
+    const { container, gridItem, panel, queryRunner, row } = renderLazyDashboard(true);
+
+    await waitFor(() => expect(container.querySelectorAll('[data-griditem-key]')).toHaveLength(1));
+
+    expect(screen.getByText('Persistent section title')).toBeInTheDocument();
+    expect(screen.queryByText('Persistent panel title')).not.toBeInTheDocument();
+    expect(row.isActive).toBe(false);
+    expect(gridItem.isActive).toBe(false);
+    expect(panel.isActive).toBe(false);
+    expect(queryRunner.isActive).toBe(false);
+  });
+
   it('preserves title DOM nodes while activating the panel only at the existing lazy boundary', async () => {
-    const { container, gridItem, panel, queryRunner, row } = renderLazyDashboard();
+    const { container, dataSubscriptionSpy, gridItem, panel, queryRunner, row } = renderLazyDashboard();
 
     const panelTitle = await screen.findByText('Persistent panel title');
     const sectionTitle = screen.getByText('Persistent section title');
@@ -175,12 +228,14 @@ describe('default grid browser search', () => {
     expect(screen.getByText('Persistent panel title')).toBe(panelTitle);
     expect(panel.isActive).toBe(false);
     expect(queryRunner.isActive).toBe(false);
+    expect(dataSubscriptionSpy).not.toHaveBeenCalled();
 
     enterViewport(panelLoader!);
 
     await waitFor(() => {
       expect(panel.isActive).toBe(true);
       expect(queryRunner.isActive).toBe(true);
+      expect(dataSubscriptionSpy).toHaveBeenCalled();
     });
     expect(screen.getByText('Persistent panel title')).toBe(panelTitle);
     expect(screen.queryByTestId('loaded-panel-visualization')).not.toBeInTheDocument();
