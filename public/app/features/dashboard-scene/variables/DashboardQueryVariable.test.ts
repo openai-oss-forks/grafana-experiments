@@ -69,6 +69,19 @@ describe('DashboardQueryVariable', () => {
     expect(variable.state.text).toBe('regex label');
   });
 
+  it('uses the refreshed option when a single-value regex matches its label', async () => {
+    const { variable } = createVariable({
+      value: 'engine-.*',
+      text: 'engine-.*',
+      isMulti: false,
+    });
+
+    await refreshOptions(variable, [{ label: 'engine-.*', value: 'engine-a' }]);
+
+    expect(variable.state.value).toBe('engine-a');
+    expect(variable.state.text).toBe('engine-.*');
+  });
+
   it('uses the refreshed label when a regex-like value is also an exact option', async () => {
     const value = ['engine-.*'];
     const { variable } = createVariable({ value, text: ['stale label'] });
@@ -103,17 +116,25 @@ describe('DashboardQueryVariable', () => {
     expect(variable.state.text).toEqual([ALL_VARIABLE_TEXT]);
   });
 
-  it.each([false, undefined])(
-    'retains the upstream fallback behavior when allowCustomValue is %s',
-    async (allowCustomValue) => {
-      const { variable } = createVariable({ allowCustomValue });
+  it('retains the upstream fallback behavior when allowCustomValue is false', async () => {
+    const { variable } = createVariable({ allowCustomValue: false });
 
-      await refreshOptions(variable, engineOptions);
+    await refreshOptions(variable, engineOptions);
 
-      expect(variable.state.value).toEqual([ALL_VARIABLE_VALUE]);
-      expect(variable.state.text).toEqual([ALL_VARIABLE_TEXT]);
-    }
-  );
+    expect(variable.state.value).toEqual([ALL_VARIABLE_VALUE]);
+    expect(variable.state.text).toEqual([ALL_VARIABLE_TEXT]);
+  });
+
+  it('preserves an opted-in regex when allowCustomValue uses its enabled default', async () => {
+    const value = ['engine-.*'];
+    const text = ['engine-.*'];
+    const { variable } = createVariable({ value, text, allowCustomValue: undefined });
+
+    await refreshOptions(variable, engineOptions);
+
+    expect(variable.state.value).toBe(value);
+    expect(variable.state.text).toBe(text);
+  });
 
   it.each(['missing-engine', 'api.prod.example.com', 'engine-[', '/engine/z'])(
     'retains the upstream fallback behavior for the non-regex value %s',

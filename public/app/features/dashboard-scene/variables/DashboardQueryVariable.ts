@@ -58,7 +58,7 @@ export class DashboardQueryVariable extends QueryVariable {
     const skipNextValidation = this.skipNextValidation;
     super.interceptStateUpdateAfterValidation(stateUpdate);
 
-    if (skipNextValidation || this.state.allowCustomValue !== true || !this.shouldPreserveCustomRegexValues()) {
+    if (skipNextValidation || this.state.allowCustomValue === false || !this.shouldPreserveCustomRegexValues()) {
       return;
     }
 
@@ -70,7 +70,7 @@ export class DashboardQueryVariable extends QueryVariable {
     const options = stateUpdate.options ?? [];
     if (Array.isArray(currentValue)) {
       this.preserveMultiValueRegexes(stateUpdate, currentValue, options);
-    } else if (!hasExactOption(currentValue, options) && isValidRegexLikeValue(currentValue)) {
+    } else if (!hasMatchingOption(currentValue, this.state.text, options) && isValidRegexLikeValue(currentValue)) {
       stateUpdate.value = currentValue;
       stateUpdate.text = this.state.text;
     }
@@ -134,8 +134,8 @@ function isAllValue(value: VariableValue): boolean {
   return value === ALL_VARIABLE_VALUE || (Array.isArray(value) && value[0] === ALL_VARIABLE_VALUE);
 }
 
-function hasExactOption(value: VariableValueSingle, options: VariableValueOption[]): boolean {
-  return options.some((option) => option.value === value);
+function hasMatchingOption(value: VariableValueSingle, text: VariableValue, options: VariableValueOption[]): boolean {
+  return options.some((option) => option.value === value || option.label === text);
 }
 
 function isValidRegexLikeValue(value: VariableValueSingle): value is string {
