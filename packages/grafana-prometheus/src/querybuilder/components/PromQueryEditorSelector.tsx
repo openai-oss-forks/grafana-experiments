@@ -2,12 +2,12 @@
 import { isEqual } from 'lodash';
 import { memo, SyntheticEvent, useCallback, useEffect, useState } from 'react';
 
-import { CoreApp, LoadingState } from '@grafana/data';
+import { CoreApp, LoadingState, textUtil } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { t, Trans } from '@grafana/i18n';
 import { EditorHeader, EditorRows, FlexItem } from '@grafana/plugin-ui';
 import { reportInteraction } from '@grafana/runtime';
-import { Button, ConfirmModal, Space } from '@grafana/ui';
+import { Button, ConfirmModal, Space, Stack, TextLink } from '@grafana/ui';
 
 import { PromQueryEditorProps } from '../../components/types';
 import { PromQuery } from '../../types';
@@ -42,6 +42,14 @@ export const PromQueryEditorSelector = memo<Props>((props) => {
   const { flag: explain, setFlag: setExplain } = useFlag(promQueryEditorExplainKey);
 
   const query = getQueryWithDefaults(props.query, app, defaultEditor);
+  const builderParseErrorHelp = props.datasource.builderParseErrorHelp;
+  const sanitizedBuilderParseErrorHelpUrl = builderParseErrorHelp?.url
+    ? textUtil.sanitizeUrl(builderParseErrorHelp.url)
+    : undefined;
+  const parseErrorMessage = t(
+    'grafana-prometheus.querybuilder.prom-query-editor-selector.body-syntax-error',
+    'There is a syntax error, or the query structure cannot be visualized when switching to the builder mode. Parts of the query may be lost.'
+  );
   // This should be filled in from the defaults by now.
   const editorMode = query.editorMode!;
 
@@ -97,10 +105,28 @@ export const PromQueryEditorSelector = memo<Props>((props) => {
           'grafana-prometheus.querybuilder.prom-query-editor-selector.title-parsing-error-switch-builder',
           'Parsing error: Switch to the builder mode?'
         )}
-        body={t(
-          'grafana-prometheus.querybuilder.prom-query-editor-selector.body-syntax-error',
-          'There is a syntax error, or the query structure cannot be visualized when switching to the builder mode. Parts of the query may be lost.'
-        )}
+        body={
+          builderParseErrorHelp?.text ? (
+            <Stack direction="column" gap={2}>
+              <div>{parseErrorMessage}</div>
+              <div>
+                {builderParseErrorHelp.text}
+                {sanitizedBuilderParseErrorHelpUrl &&
+                  sanitizedBuilderParseErrorHelpUrl !== 'about:blank' &&
+                  builderParseErrorHelp.linkText && (
+                    <>
+                      {' '}
+                      <TextLink external href={sanitizedBuilderParseErrorHelpUrl}>
+                        {builderParseErrorHelp.linkText}
+                      </TextLink>
+                    </>
+                  )}
+              </div>
+            </Stack>
+          ) : (
+            parseErrorMessage
+          )
+        }
         confirmText={t('grafana-prometheus.querybuilder.prom-query-editor-selector.confirmText-continue', 'Continue')}
         onConfirm={() => {
           changeEditorMode(query, QueryEditorMode.Builder, onChange);
