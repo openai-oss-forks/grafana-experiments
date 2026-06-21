@@ -508,7 +508,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
  }
  function getDragClasses(panel) {
 -  var _a, _b;
-+  var _a;
++  var _a, _b;
    const parentLayout = sceneGraph.getLayout(panel);
    const isDraggable = parentLayout == null ? void 0 : parentLayout.isDraggable();
    if (!parentLayout || !isDraggable || itemDraggingDisabled(panel, parentLayout)) {
@@ -553,7 +553,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
  });
  const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
 -  var _a;
-+  var _a, _b;
++  var _a;
    const { grid, layoutItem, index, totalCount, isLazy, style, onLoad, onChange, children, ...divProps } = props;
    const sceneChild = grid.getSceneLayoutChild(layoutItem.i);
    const className = (_a = sceneChild.getClassName) == null ? void 0 : _a.call(sceneChild);
