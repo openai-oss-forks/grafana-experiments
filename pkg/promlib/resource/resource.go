@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"net/url"
@@ -27,7 +26,7 @@ import (
 
 const multiBatchContentType = "application/prometheus.multibatch"
 const preferredMultiBatchContentType = "application/com.openai.prometheus.multibatch"
-const streamBufferSize = 32 * 1024
+const multiBatchPluginErrorMessage = "An error occurred within the plugin"
 
 var browserOnlyResourceHeaders = []string{
 	compact.Header,
@@ -113,7 +112,33 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 
 	isMultiBatchResponse := isMultiBatchContentType(resp.Header.Get("Content-Type"))
 	if isCompactMultiBatchRequest(req) {
-		return r.executeCompactMultiBatchStream(ctx, req, resp, sender)
+		query, err := compactMultiBatchQueryFromRequest(req)
+		if err != nil {
+			return err
+		}
+		encoder := newMultiBatchResponseEncoder(
+			ctx,
+			r.log,
+			sender,
+			resp.StatusCode,
+			compactMultiBatchResponseHeaders(resp.Header),
+			"Failed to stream compact Prometheus multi-batch response",
+			func() multiBatchFrame {
+				frame, err := buildJSONDataResponseFrame(
+					query,
+					backend.DataResponse{
+						Status: backend.StatusInternal,
+						Error:  fmt.Errorf("%s", multiBatchPluginErrorMessage),
+					},
+					true,
+				)
+				if err != nil {
+					return multiBatchErrorFrame(multiBatchPluginErrorMessage)
+				}
+				return frame
+			},
+		)
+		return r.executeCompactMultiBatchStream(req, resp, query, encoder)
 	}
 
 	// frontend sets the X-Grafana-Cache with the desired response cache control value. Streaming
@@ -140,61 +165,94 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 			headers.Set("Cache-Control", "no-store")
 			headers.Set("Content-Type", preferredMultiBatchContentType+"; version=1")
 
-			body := append(multiBatchResponseHeader(), multiBatchPayloadFrame(multiBatchPayloadTypeJSONL, multiBatchFinalFlag, multiBatchPayloadEncodingIdentity, buf.Bytes())...)
-			return sender.Send(&backend.CallResourceResponse{
-				Status:  resp.StatusCode,
-				Headers: headers,
-				Body:    body,
-			})
+			encoder := newMultiBatchResponseEncoder(
+				ctx,
+				r.log,
+				sender,
+				resp.StatusCode,
+				headers,
+				"Failed to stream Prometheus multi-batch response",
+				func() multiBatchFrame {
+					return multiBatchErrorFrame(multiBatchPluginErrorMessage)
+				},
+			)
+			return encoder.finish(encoder.writeFrame(multiBatchFrame{
+				payloadType:     multiBatchPayloadTypeJSONL,
+				flags:           multiBatchFinalFlag,
+				payloadEncoding: multiBatchPayloadEncodingIdentity,
+				payload:         buf.Bytes(),
+			}))
 		}
 
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  resp.StatusCode,
-			Headers: resp.Header,
-			Body:    buf.Bytes(),
-		})
+		encoder := newJSONResponseEncoder(sender, resp.StatusCode, resp.Header)
+		return encoder.finish(encoder.write(buf.Bytes()))
 	}
 
 	headers := resp.Header.Clone()
 	headers.Del("Content-Length")
 	headers.Del("X-Grafana-Cache")
 	headers.Set("Cache-Control", "no-store")
+	encoder := newMultiBatchResponseEncoder(
+		ctx,
+		r.log,
+		sender,
+		resp.StatusCode,
+		headers,
+		"Failed to stream Prometheus multi-batch response",
+		func() multiBatchFrame {
+			return multiBatchErrorFrame(multiBatchPluginErrorMessage)
+		},
+	)
+	return r.executeMultiBatchStream(resp, encoder)
+}
 
-	buf := make([]byte, streamBufferSize)
-	sentHeader := false
+func (r *Resource) executeMultiBatchStream(
+	resp *http.Response,
+	encoder *multiBatchResponseEncoder,
+) error {
+	return encoder.finish(streamMultiBatchResponse(resp, encoder))
+}
+
+func streamMultiBatchResponse(
+	resp *http.Response,
+	encoder *multiBatchResponseEncoder,
+) error {
+	// Do not commit the downstream response until a complete first frame has
+	// been read. After MBRH is sent, a read error can then be represented by a
+	// final error frame without leaving a truncated frame in the stream.
+	if err := readMultiBatchResponseHeader(resp.Body); err != nil {
+		return err
+	}
+	firstFrame, err := readMultiBatchFrame(resp.Body)
+	if err != nil {
+		return err
+	}
+	if !isSupportedMultiBatchPayloadType(firstFrame.payloadType) {
+		return fmt.Errorf("unsupported upstream Prometheus multi-batch payload type: %d", firstFrame.payloadType)
+	}
+
+	if err := encoder.writeFrame(firstFrame); err != nil {
+		return err
+	}
+	if firstFrame.flags&multiBatchFinalFlag != 0 {
+		return nil
+	}
+
 	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			chunk := append([]byte(nil), buf[:n]...)
-			chunkHeaders := http.Header(nil)
-			if !sentHeader {
-				chunkHeaders = headers
-			}
-			if err := sender.Send(&backend.CallResourceResponse{
-				Status:  resp.StatusCode,
-				Headers: chunkHeaders,
-				Body:    chunk,
-			}); err != nil {
-				return err
-			}
-			sentHeader = true
+		frame, err := readMultiBatchFrame(resp.Body)
+		if err != nil {
+			return err
 		}
-		if readErr == io.EOF {
-			break
+		if !isSupportedMultiBatchPayloadType(frame.payloadType) {
+			return fmt.Errorf("unsupported upstream Prometheus multi-batch payload type: %d", frame.payloadType)
 		}
-		if readErr != nil {
-			return readErr
+		if err := encoder.writeFrame(frame); err != nil {
+			return err
+		}
+		if frame.flags&multiBatchFinalFlag != 0 {
+			return nil
 		}
 	}
-
-	if !sentHeader {
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  resp.StatusCode,
-			Headers: headers,
-		})
-	}
-
-	return nil
 }
 
 func (r *Resource) queryResource(ctx context.Context, req *backend.CallResourceRequest) (*http.Response, error) {
