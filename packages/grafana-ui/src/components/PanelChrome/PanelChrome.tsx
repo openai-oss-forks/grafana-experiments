@@ -211,6 +211,7 @@ export function PanelChrome({
   }
 
   const testid = typeof title === 'string' ? selectors.components.Panels.Panel.title(title) : 'Panel';
+  const isLoadingOrStreaming = loadingState === LoadingState.Loading || loadingState === LoadingState.Streaming;
 
   // Handle drag & selection events
   // Mainly the tricky bit of differentiating between dragging and selecting
@@ -313,20 +314,7 @@ export function PanelChrome({
         </div>
       )}
 
-      {loadingState === LoadingState.Streaming && (
-        <Tooltip
-          content={
-            onCancelQuery
-              ? t('grafana-ui.panel-chrome.tooltip-stop-streaming', 'Stop streaming')
-              : t('grafana-ui.panel-chrome.tooltip-streaming', 'Streaming')
-          }
-        >
-          <TitleItem className={dragClassCancel} data-testid="panel-streaming" onClick={onCancelQuery}>
-            <Icon name="circle-mono" size="md" className={styles.streaming} />
-          </TitleItem>
-        </Tooltip>
-      )}
-      {loadingState === LoadingState.Loading && onCancelQuery && (
+      {isLoadingOrStreaming && onCancelQuery && (
         <DelayRender delay={2000}>
           <Tooltip content={t('grafana-ui.panel-chrome.tooltip-cancel', 'Cancel query')}>
             <TitleItem
@@ -368,7 +356,7 @@ export function PanelChrome({
         ref={ref}
       >
         <div className={styles.loadingBarContainer}>
-          {loadingState === LoadingState.Loading ? (
+          {isLoadingOrStreaming ? (
             <LoadingBar
               width={loadingBarWidth}
               ariaLabel={t('grafana-ui.panel-chrome.ariaLabel-panel-loading', 'Panel loading bar')}
@@ -609,15 +597,6 @@ const getStyles = (theme: GrafanaTheme2) => {
     }),
     pointer: css({
       cursor: 'pointer',
-    }),
-    streaming: css({
-      label: 'panel-streaming',
-      marginRight: 0,
-      color: theme.colors.success.text,
-
-      '&:hover': {
-        color: theme.colors.success.text,
-      },
     }),
     title: css({
       label: 'panel-title',
