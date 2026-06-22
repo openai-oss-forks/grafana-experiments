@@ -1,4 +1,4 @@
-import { screen, render } from '@testing-library/react';
+import { act, screen, render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useToggle } from 'react-use';
 
@@ -157,10 +157,42 @@ it('renders loading indicator in the panel header if loadingState is loading reg
   expect(screen.getByLabelText('Panel loading bar')).toBeInTheDocument();
 });
 
-it('renders streaming indicator in the panel header if loadingState is streaming', () => {
+it('renders loading indicator instead of streaming indicator if loadingState is streaming', () => {
   setup({ loadingState: LoadingState.Streaming });
 
-  expect(screen.getByTestId('panel-streaming')).toBeInTheDocument();
+  expect(screen.getByLabelText('Panel loading bar')).toBeInTheDocument();
+  expect(screen.queryByTestId('panel-streaming')).not.toBeInTheDocument();
+});
+
+it.each([LoadingState.NotStarted, LoadingState.Done, LoadingState.Error, undefined])(
+  'does not render loading indicator if loadingState is %s',
+  (loadingState) => {
+    setup({ loadingState });
+
+    expect(screen.queryByLabelText('Panel loading bar')).not.toBeInTheDocument();
+  }
+);
+
+it('renders a delayed cancel action while streaming', async () => {
+  jest.useFakeTimers();
+  try {
+    const onCancelQuery = jest.fn();
+    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+
+    setup({ loadingState: LoadingState.Streaming, onCancelQuery, title: 'Streaming panel' });
+
+    expect(screen.queryByTestId('icon-sync-slash')).not.toBeInTheDocument();
+    act(() => {
+      jest.advanceTimersByTime(2000);
+    });
+
+    const cancelAction = screen.getByTestId('icon-sync-slash').closest('button');
+    expect(cancelAction).not.toBeNull();
+    await user.click(cancelAction!);
+    expect(onCancelQuery).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('collapses the controlled panel when user clicks on the chevron or the title', async () => {
