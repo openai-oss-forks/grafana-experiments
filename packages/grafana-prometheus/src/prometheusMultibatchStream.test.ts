@@ -538,6 +538,40 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[0].data[0].fields[1].values).toEqual([1]);
   });
 
+  it('decodes a non-multibatch Prometheus JSON fallback for a compact dashboard request', async () => {
+    const target: PromQuery = { expr: 'up', legendFormat: '{{job}}', refId: 'A' };
+    const request = requestForTarget(target);
+    global.fetch = jest.fn().mockResolvedValue({
+      arrayBuffer: jest.fn().mockResolvedValue(
+        new TextEncoder().encode(
+          JSON.stringify({
+            status: 'success',
+            data: {
+              resultType: 'matrix',
+              result: [{ metric: { job: 'api' }, values: [[0, '1']] }],
+            },
+          })
+        ).buffer
+      ),
+      body: null,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(toDataQueryResponseMock).not.toHaveBeenCalled();
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
+    expect(responses[0].data[0].fields[0].values).toEqual([0]);
+    expect(responses[0].data[0].fields[1].values).toEqual([1]);
+  });
+
   it('preserves Prometheus warnings and infos on decoded API payload frames', async () => {
     const target: PromQuery = { expr: 'up', refId: 'A' };
     const request = requestForTarget(target, false);
