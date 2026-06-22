@@ -96,15 +96,14 @@ func (r *subQueryREST) Connect(ctx context.Context, name string, opts runtime.Ob
 		// all errors get converted into k8 errors when sent in responder.Error and lose important context like downstream info
 		var e errutil.Error
 		if errors.As(err, &e) && e.Source == errutil.SourceDownstream {
-			errorResponse := &backend.QueryDataResponse{Responses: map[string]backend.DataResponse{
-				"A": {
-					Error:       errors.New(e.LogMessage),
-					ErrorSource: backend.ErrorSourceDownstream,
-					Status:      backend.StatusBadRequest,
-				},
-			}}
 			responder.Object(int(backend.StatusBadRequest),
-				query.NewQueryDataResponse(errorResponse),
+				&query.QueryDataResponse{QueryDataResponse: backend.QueryDataResponse{Responses: map[string]backend.DataResponse{
+					"A": {
+						Error:       errors.New(e.LogMessage),
+						ErrorSource: backend.ErrorSourceDownstream,
+						Status:      backend.StatusBadRequest,
+					},
+				}}},
 			)
 			return
 		}
@@ -114,7 +113,7 @@ func (r *subQueryREST) Connect(ctx context.Context, name string, opts runtime.Ob
 			return
 		}
 		responder.Object(query.GetResponseCode(rsp),
-			query.NewQueryDataResponse(rsp),
+			&query.QueryDataResponse{QueryDataResponse: *rsp},
 		)
 	}), nil
 }

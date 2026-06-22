@@ -156,7 +156,6 @@ func (s *QueryData) fetch(traceCtx context.Context, client *client.Client, q *mo
 		Frames: data.Frames{},
 		Error:  nil,
 	}
-	responseHeaders := http.Header{}
 
 	var (
 		wg sync.WaitGroup
@@ -169,8 +168,7 @@ func (s *QueryData) fetch(traceCtx context.Context, client *client.Client, q *mo
 			defer wg.Done()
 			res := s.instantQuery(traceCtx, client, q)
 			m.Lock()
-			addDataResponse(&res.response, dr)
-			mergeResponseHeaders(responseHeaders, res.headers)
+			addDataResponse(&res, dr)
 			m.Unlock()
 		}()
 	}
@@ -181,8 +179,7 @@ func (s *QueryData) fetch(traceCtx context.Context, client *client.Client, q *mo
 			defer wg.Done()
 			res := s.rangeQuery(traceCtx, client, q)
 			m.Lock()
-			addDataResponse(&res.response, dr)
-			mergeResponseHeaders(responseHeaders, res.headers)
+			addDataResponse(&res, dr)
 			m.Unlock()
 		}()
 	}
@@ -193,28 +190,25 @@ func (s *QueryData) fetch(traceCtx context.Context, client *client.Client, q *mo
 			defer wg.Done()
 			res := s.exemplarQuery(traceCtx, client, q)
 			m.Lock()
-			if res.response.Error != nil {
+			if res.Error != nil {
 				// If exemplar query returns error, we want to only log it and
 				// continue with other results processing
-				logger.Error("Exemplar query failed", "query", q.Expr, "err", res.response.Error)
+				logger.Error("Exemplar query failed", "query", q.Expr, "err", res.Error)
 			}
-			dr.Frames = append(dr.Frames, res.response.Frames...)
-			mergeResponseHeaders(responseHeaders, res.headers)
+			dr.Frames = append(dr.Frames, res.Frames...)
 			m.Unlock()
 		}()
 	}
 	wg.Wait()
-	addResponseHeadersToDataResponse(dr, responseHeaders)
 
 	return dr
 }
 
-func (s *QueryData) rangeQuery(ctx context.Context, c *client.Client, q *models.Query) queryHTTPResponse {
+func (s *QueryData) rangeQuery(ctx context.Context, c *client.Client, q *models.Query) backend.DataResponse {
 	res, err := c.QueryRange(ctx, q)
 	if err != nil {
-		return queryHTTPResponse{response: addErrorSourceToDataResponse(err)}
+		return addErrorSourceToDataResponse(err)
 	}
-	responseHeaders := extractProxiedResponseHeaders(res.Header)
 
 	defer func() {
 		err := res.Body.Close()
@@ -223,24 +217,20 @@ func (s *QueryData) rangeQuery(ctx context.Context, c *client.Client, q *models.
 		}
 	}()
 
-	return queryHTTPResponse{response: s.parseResponse(ctx, q, res), headers: responseHeaders}
+	return s.parseResponse(ctx, q, res)
 }
 
-func (s *QueryData) instantQuery(ctx context.Context, c *client.Client, q *models.Query) queryHTTPResponse {
+func (s *QueryData) instantQuery(ctx context.Context, c *client.Client, q *models.Query) backend.DataResponse {
 	res, err := c.QueryInstant(ctx, q)
 	if err != nil {
-		return queryHTTPResponse{response: addErrorSourceToDataResponse(err)}
+		return addErrorSourceToDataResponse(err)
 	}
-	responseHeaders := extractProxiedResponseHeaders(res.Header)
 
 	// This is only for health check fall back scenario
 	if res.StatusCode != 200 && q.RefId == "__healthcheck__" {
-		return queryHTTPResponse{
-			response: backend.DataResponse{
-				Error:       errors.New(res.Status),
-				ErrorSource: backend.ErrorSourceFromHTTPStatus(res.StatusCode),
-			},
-			headers: responseHeaders,
+		return backend.DataResponse{
+			Error:       errors.New(res.Status),
+			ErrorSource: backend.ErrorSourceFromHTTPStatus(res.StatusCode),
 		}
 	}
 
@@ -251,10 +241,10 @@ func (s *QueryData) instantQuery(ctx context.Context, c *client.Client, q *model
 		}
 	}()
 
-	return queryHTTPResponse{response: s.parseResponse(ctx, q, res), headers: responseHeaders}
+	return s.parseResponse(ctx, q, res)
 }
 
-func (s *QueryData) exemplarQuery(ctx context.Context, c *client.Client, q *models.Query) queryHTTPResponse {
+func (s *QueryData) exemplarQuery(ctx context.Context, c *client.Client, q *models.Query) backend.DataResponse {
 	res, err := c.QueryExemplars(ctx, q)
 	if err != nil {
 		response := backend.DataResponse{
@@ -264,9 +254,8 @@ func (s *QueryData) exemplarQuery(ctx context.Context, c *client.Client, q *mode
 		if backend.IsDownstreamHTTPError(err) {
 			response.ErrorSource = backend.ErrorSourceDownstream
 		}
-		return queryHTTPResponse{response: response}
+		return response
 	}
-	responseHeaders := extractProxiedResponseHeaders(res.Header)
 
 	defer func() {
 		err := res.Body.Close()
@@ -274,7 +263,7 @@ func (s *QueryData) exemplarQuery(ctx context.Context, c *client.Client, q *mode
 			s.log.Warn("Failed to close response body", "error", err)
 		}
 	}()
-	return queryHTTPResponse{response: s.parseResponse(ctx, q, res), headers: responseHeaders}
+	return s.parseResponse(ctx, q, res)
 }
 
 func addDataResponse(res *backend.DataResponse, dr *backend.DataResponse) {

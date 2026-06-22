@@ -10,7 +10,6 @@ import (
 	"github.com/grafana/grafana/pkg/api/routing"
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/middleware"
-	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 	"github.com/grafana/grafana/pkg/services/accesscontrol"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/dashboards"
@@ -307,7 +306,7 @@ func toJsonStreamingResponse(ctx context.Context, features featuremgmt.FeatureTo
 		}
 	}
 
-	return response.JSONStreaming(statusCode, querydataresponse.New(qdr))
+	return response.JSONStreaming(statusCode, qdr)
 }
 
 // swagger:response listPublicDashboardsResponse

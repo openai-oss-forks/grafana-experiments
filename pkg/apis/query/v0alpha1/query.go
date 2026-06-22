@@ -1,15 +1,12 @@
 package v0alpha1
 
 import (
-	"encoding/json"
 	"net/http"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	data "github.com/grafana/grafana-plugin-sdk-go/experimental/apis/data/v0alpha1"
-
-	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 )
 
 const OpenAPIPrefix = "com.github.grafana.grafana.pkg.apis.query.v0alpha1."
@@ -35,43 +32,6 @@ type QueryDataResponse struct {
 
 	// Backend wrapper (external dependency)
 	backend.QueryDataResponse `json:",inline"`
-
-	ProxiedUpstreamHeaders querydataresponse.ProxiedUpstreamHeaders `json:"proxied_upstream_headers,omitempty"`
-}
-
-func NewQueryDataResponse(response *backend.QueryDataResponse) *QueryDataResponse {
-	wrapped := querydataresponse.New(response)
-	return &QueryDataResponse{
-		QueryDataResponse:      backend.QueryDataResponse{Responses: wrapped.Results},
-		ProxiedUpstreamHeaders: wrapped.ProxiedUpstreamHeaders,
-	}
-}
-
-func (r QueryDataResponse) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		metav1.TypeMeta        `json:",inline"`
-		Results                backend.Responses                        `json:"results"`
-		ProxiedUpstreamHeaders querydataresponse.ProxiedUpstreamHeaders `json:"proxied_upstream_headers,omitempty"`
-	}{
-		TypeMeta:               r.TypeMeta,
-		Results:                r.Responses,
-		ProxiedUpstreamHeaders: r.ProxiedUpstreamHeaders,
-	})
-}
-
-func (r *QueryDataResponse) UnmarshalJSON(data []byte) error {
-	decoded := struct {
-		metav1.TypeMeta        `json:",inline"`
-		Results                backend.Responses                        `json:"results"`
-		ProxiedUpstreamHeaders querydataresponse.ProxiedUpstreamHeaders `json:"proxied_upstream_headers,omitempty"`
-	}{}
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	r.TypeMeta = decoded.TypeMeta
-	r.QueryDataResponse = backend.QueryDataResponse{Responses: decoded.Results}
-	r.ProxiedUpstreamHeaders = decoded.ProxiedUpstreamHeaders
-	return nil
 }
 
 func (QueryDataResponse) OpenAPIModelName() string {

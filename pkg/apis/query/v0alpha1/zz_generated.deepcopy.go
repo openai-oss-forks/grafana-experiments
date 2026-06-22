@@ -194,21 +194,6 @@ func (in *QueryDataResponse) DeepCopyInto(out *QueryDataResponse) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.QueryDataResponse.DeepCopyInto(&out.QueryDataResponse)
-	if in.ProxiedUpstreamHeaders != nil {
-		in, out := &in.ProxiedUpstreamHeaders, &out.ProxiedUpstreamHeaders
-		*out = make(map[string]map[string]string, len(*in))
-		for key, val := range *in {
-			if val == nil {
-				(*out)[key] = nil
-				continue
-			}
-			outVal := make(map[string]string, len(val))
-			for header, value := range val {
-				outVal[header] = value
-			}
-			(*out)[key] = outVal
-		}
-	}
 	return
 }
 

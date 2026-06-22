@@ -18,6 +18,7 @@ import (
 	sdkapi "github.com/grafana/grafana-plugin-sdk-go/experimental/apis/data/v0alpha1"
 	"github.com/stretchr/testify/require"
 
+	promcompact "github.com/grafana/grafana/pkg/promlib/compact"
 	"github.com/grafana/grafana/pkg/promlib/models"
 )
 
@@ -72,35 +73,31 @@ func TestRangeResponseDatasourceTimeIntervalFloorsStep(t *testing.T) {
 	require.Equal(t, "Expr: \nStep: 1m0s", dr.Frames[0].Meta.ExecutedQueryString)
 }
 
-func TestRangeResponseIncludesProxiedHeadersInResultMetadata(t *testing.T) {
-	query, err := loadStoredQuery(filepath.Join("../testdata", "range_simple.query.json"))
+func TestRangeResponseTricksterHeadersDoNotDisableCompactEncoding(t *testing.T) {
+	queryFileName := filepath.Join("../testdata", "range_nan.query.json")
+	responseFileName := filepath.Join("../testdata", "range_nan.result.json")
+
+	query, err := loadStoredQuery(queryFileName)
 	require.NoError(t, err)
 
 	//nolint:gosec
-	responseBytes, err := os.ReadFile(filepath.Join("../testdata", "range_simple.result.json"))
+	responseBytes, err := os.ReadFile(responseFileName)
 	require.NoError(t, err)
 
 	result, err := runQueryWithJSONDataAndHeaders(
 		responseBytes,
 		query,
 		json.RawMessage(`{"timeInterval": "15s"}`),
-		http.Header{
-			"X-Trickster-Result": {"cache-hit"},
-			"X-Trickster-Metric": {"1"},
-			"X-Not-Proxied":      {"secret"},
-		},
+		http.Header{"X-Trickster-Result": {"engine=DeltaProxyCache; status=hit"}},
 	)
 	require.NoError(t, err)
 
-	frames := result.Responses["A"].Frames
-	require.NotEmpty(t, frames)
-	custom, ok := frames[0].Meta.Custom.(map[string]any)
-	require.True(t, ok)
-	responseHeaders, ok := custom["proxied_upstream_headers"].(http.Header)
-	require.True(t, ok)
-	require.Equal(t, "cache-hit", responseHeaders.Get("X-Trickster-Result"))
-	require.Equal(t, "1", responseHeaders.Get("X-Trickster-Metric"))
-	require.Empty(t, responseHeaders.Get("X-Not-Proxied"))
+	request := query.Queries[0]
+	compact, err := promcompact.NewQueryDataResponse(result, map[string]promcompact.QueryRequest{
+		request.RefID: {Start: request.TimeRange.From, End: request.TimeRange.To},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, compact)
 }
 
 func TestExemplarResponses(t *testing.T) {
@@ -209,7 +206,12 @@ func runQueryWithJSONData(response []byte, q *backend.QueryDataRequest, jsonData
 	return runQueryWithJSONDataAndHeaders(response, q, jsonData, nil)
 }
 
-func runQueryWithJSONDataAndHeaders(response []byte, q *backend.QueryDataRequest, jsonData json.RawMessage, responseHeaders http.Header) (*backend.QueryDataResponse, error) {
+func runQueryWithJSONDataAndHeaders(
+	response []byte,
+	q *backend.QueryDataRequest,
+	jsonData json.RawMessage,
+	responseHeaders http.Header,
+) (*backend.QueryDataResponse, error) {
 	tCtx, err := setupWithJSONData(jsonData)
 	if err != nil {
 		return nil, err
@@ -218,8 +220,8 @@ func runQueryWithJSONDataAndHeaders(response []byte, q *backend.QueryDataRequest
 	// Create initial response
 	res := &http.Response{
 		StatusCode: 200,
-		Header:     responseHeaders.Clone(),
 		Body:       io.NopCloser(bytes.NewReader(response)),
+		Header:     responseHeaders.Clone(),
 		Request: &http.Request{
 			URL: &url.URL{
 				Path: "api/v1/query_range",
@@ -230,8 +232,8 @@ func runQueryWithJSONDataAndHeaders(response []byte, q *backend.QueryDataRequest
 	// Create a proper clone for the exemplar response with a different path
 	exemplarRes := &http.Response{
 		StatusCode: 200,
-		Header:     responseHeaders.Clone(),
 		Body:       io.NopCloser(bytes.NewReader(response)),
+		Header:     responseHeaders.Clone(),
 		Request: &http.Request{
 			URL: &url.URL{
 				Path: "api/v1/query_exemplars",
