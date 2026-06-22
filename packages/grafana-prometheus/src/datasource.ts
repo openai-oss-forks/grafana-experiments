@@ -82,6 +82,10 @@ import {
 import { utf8Support, wrapUtf8Filters } from './utf8_support';
 import { PrometheusVariableSupport } from './variables';
 
+function isTerminalMultiBatchResponse(response: DataQueryResponse): boolean {
+  return response.state === LoadingState.Done || response.state === LoadingState.Error;
+}
+
 export class PrometheusDatasource
   extends DataSourceWithBackend<PromQuery, PromOptions>
   implements DataSourceWithQueryImportSupport<PromQuery>, DataSourceWithQueryExportSupport<PromQuery>
@@ -538,6 +542,7 @@ export class PrometheusDatasource
     if (targets.length === 1) {
       const responseKey = `${request.requestId}-prometheus-multibatch`;
       const target = targets[0];
+      let trackedTerminalResponse = false;
       return queryPrometheusMultiBatch(this.uid, request, target, {
         httpMethod: this.queryHttpMethod,
         customQueryParameters: this.customQueryParameters,
@@ -554,7 +559,8 @@ export class PrometheusDatasource
           });
         }),
         tap((response) => {
-          if (response.state === LoadingState.Done) {
+          if (!trackedTerminalResponse && isTerminalMultiBatchResponse(response)) {
+            trackedTerminalResponse = true;
             trackQuery(response, request, startTime);
           }
         })
@@ -568,6 +574,7 @@ export class PrometheusDatasource
       const completedTargets = new Set<string>();
       const targetKeys = targets.map((target, index) => target.refId ?? String(index));
       const responseKey = `${request.requestId}-prometheus-multibatch`;
+      let trackedTerminalResponse = false;
 
       const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
         latestDataByTarget.set(targetKey, response.data);
@@ -597,7 +604,7 @@ export class PrometheusDatasource
           error: errors[0],
           errors: errors.length > 0 ? errors : undefined,
           key: responseKey,
-          state: allTargetsDone ? LoadingState.Done : LoadingState.Streaming,
+          state: errors.length > 0 ? LoadingState.Error : allTargetsDone ? LoadingState.Done : LoadingState.Streaming,
         };
         const combinedResponse = combinedCompactSeries
           ? rawCombinedResponse
@@ -605,7 +612,8 @@ export class PrometheusDatasource
               exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
             });
 
-        if (combinedResponse.state === LoadingState.Done) {
+        if (!trackedTerminalResponse && isTerminalMultiBatchResponse(combinedResponse)) {
+          trackedTerminalResponse = true;
           trackQuery(combinedResponse, request, startTime);
         }
         subscriber.next(combinedResponse);

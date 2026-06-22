@@ -360,7 +360,7 @@ describe('Prometheus multi-batch streaming', () => {
 
     expect(text).not.toHaveBeenCalled();
     expect(responses).toHaveLength(1);
-    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].state).toBe(LoadingState.Error);
     expect(responses[0].error?.message).toBe('local_rate_limited');
   });
 
@@ -396,8 +396,102 @@ describe('Prometheus multi-batch streaming', () => {
     );
 
     expect(responses).toHaveLength(1);
-    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].state).toBe(LoadingState.Error);
     expect(responses[0].error?.message).toBe('401: Unauthorized');
+  });
+
+  it('keeps a non-final JSONL error through the final status batch', async () => {
+    const target: PromQuery = { expr: '__ERROR_ON_FIRST_BATCH__', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const message = 'synthetic multibatch error on first batch';
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(
+            JSON.stringify({ type: 'error', frame: 'synthetic', error: message }),
+            0,
+            PAYLOAD_ENCODING_IDENTITY,
+            PAYLOAD_TYPE_JSONL
+          ),
+          frame(
+            JSON.stringify({ type: 'status', frame: 'synthetic', data: { isIncomplete: false } }),
+            FINAL_BATCH_FLAG,
+            PAYLOAD_ENCODING_IDENTITY,
+            PAYLOAD_TYPE_JSONL
+          )
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? 'application/com.openai.prometheus.multibatch; version=1' : null,
+      },
+      ok: true,
+      status: 200,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(2);
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Error, LoadingState.Error]);
+    expect(responses.map((response) => response.error?.message)).toEqual([message, message]);
+  });
+
+  it('preserves error state for compact JSON fallback frames', async () => {
+    const target: PromQuery = { expr: '__ERROR_ON_FINAL_BATCH__', refId: 'A' };
+    const request = requestForTarget(target);
+    const error = { message: 'synthetic multibatch error on final batch', refId: 'A' };
+    toDataQueryResponseMock.mockImplementation(
+      () =>
+        ({
+          data: [],
+          error,
+          errors: [error],
+          state: LoadingState.Error,
+        }) as DataQueryResponse
+    );
+    const queryDataError = JSON.stringify({
+      results: {
+        A: {
+          error: error.message,
+          status: 200,
+        },
+      },
+    });
+    const finalStatus = JSON.stringify({ type: 'status', frame: 'synthetic', data: { isIncomplete: false } });
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(queryDataError, 0, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL),
+          frame(finalStatus, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? 'application/com.openai.prometheus.multibatch; version=1' : null,
+      },
+      ok: true,
+      status: 200,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(2);
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Error, LoadingState.Error]);
+    expect(responses.map((response) => response.error?.message)).toEqual([error.message, error.message]);
   });
 
   it('decodes regular JSON query response payload frames through the standard response decoder', async () => {

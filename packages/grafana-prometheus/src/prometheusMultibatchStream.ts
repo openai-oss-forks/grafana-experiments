@@ -479,26 +479,27 @@ class JsonlMultiBatchAccumulator {
   private schemas = new Map<string, JsonlSchema>();
   private frames = new Map<string, DataFrame>();
   private frameOrder: string[] = [];
+  private error?: DataQueryError;
 
   decode(payload: Uint8Array, query: MultiBatchQueryContext, state: LoadingState): DataQueryResponse {
     const text = new TextDecoder().decode(payload).trim();
     if (!text) {
-      return { data: this.snapshot(), state };
+      return this.response(state);
     }
 
     if (isPrometheusApiPayload(text)) {
       const error = prometheusApiPayloadError(text);
       if (error) {
-        return { data: this.snapshot(), error, errors: [error], state };
+        this.error ??= error;
+        return this.response(state);
       }
 
       this.mergeFrames(decodePrometheusApiResponse(text, query));
-      return { data: this.snapshot(), state };
+      return this.response(state);
     }
 
     const batchFrames = new Map<string, DataFrame>();
     const batchOrder: string[] = [];
-    let error: DataQueryError | undefined;
 
     for (const line of text.split(/\r?\n/)) {
       const trimmed = line.trim();
@@ -511,7 +512,8 @@ class JsonlMultiBatchAccumulator {
         event = JSON.parse(trimmed) as JsonlEvent;
       } catch {
         const payloadError = dataQueryErrorFromText(trimmed);
-        return { data: this.snapshot(), error: payloadError, errors: [payloadError], state };
+        this.error ??= payloadError;
+        return this.response(state);
       }
 
       const frameKey = jsonlFrameKey(event);
@@ -545,7 +547,7 @@ class JsonlMultiBatchAccumulator {
         case 'status':
           break;
         case 'error':
-          error = {
+          this.error ??= {
             message: event.error || event.message || 'Prometheus multi-batch response returned an error event',
           };
           break;
@@ -557,7 +559,18 @@ class JsonlMultiBatchAccumulator {
     this.mergeFrames(
       batchOrder.map((key) => batchFrames.get(key)).filter((frame): frame is DataFrame => Boolean(frame))
     );
-    return { data: this.snapshot(), error, errors: error ? [error] : undefined, state };
+    return this.response(state);
+  }
+
+  private response(state: LoadingState): DataQueryResponse {
+    return withMultiBatchLoadingState(
+      {
+        data: this.snapshot(),
+        error: this.error,
+        errors: this.error ? [this.error] : undefined,
+      },
+      state
+    );
   }
 
   private batchFrame(
@@ -1194,6 +1207,26 @@ async function streamQueryRange(
   const payloadDecoder = new ZstdPayloadDecoder();
   const jsonlAccumulator = new JsonlMultiBatchAccumulator();
   const reader = response.body.getReader();
+  let stickyErrors: DataQueryError[] | undefined;
+  const emitWithStickyErrors = (streamResponse: DataQueryResponse) => {
+    const responseErrors = streamResponse.errors?.length
+      ? streamResponse.errors
+      : streamResponse.error
+        ? [streamResponse.error]
+        : undefined;
+    stickyErrors ??= responseErrors;
+    if (!stickyErrors) {
+      emit(streamResponse);
+      return;
+    }
+
+    emit({
+      ...streamResponse,
+      error: stickyErrors[0],
+      errors: stickyErrors,
+      state: LoadingState.Error,
+    });
+  };
 
   try {
     const initialChunks: Uint8Array[] = [];
@@ -1222,7 +1255,7 @@ async function streamQueryRange(
         target,
         queryContext,
         jsonlAccumulator,
-        emit
+        emitWithStickyErrors
       );
     }
 
@@ -1240,7 +1273,7 @@ async function streamQueryRange(
         target,
         queryContext,
         jsonlAccumulator,
-        emit
+        emitWithStickyErrors
       );
     }
   } finally {
@@ -1344,8 +1377,8 @@ function decodeCompactQueryDataResponse(
   state: LoadingState
 ): DataQueryResponse {
   const arrayBuffer = isArrayBuffer(payload) ? payload : copyArrayBuffer(payload);
-  return {
-    ...toDataQueryResponse(
+  return withMultiBatchLoadingState(
+    toDataQueryResponse(
       {
         data: arrayBuffer,
         headers,
@@ -1353,8 +1386,8 @@ function decodeCompactQueryDataResponse(
       request.targets.length === 1 ? request.targets : [target],
       true
     ),
-    state,
-  };
+    state
+  );
 }
 
 function isArrayBuffer(value: unknown): value is ArrayBuffer {
@@ -1389,8 +1422,8 @@ function decodeQueryDataJsonResponse(
   target: PromQuery,
   state: LoadingState
 ): DataQueryResponse {
-  return {
-    ...toDataQueryResponse(
+  return withMultiBatchLoadingState(
+    toDataQueryResponse(
       {
         data: copyArrayBuffer(payload),
         headers,
@@ -1398,7 +1431,14 @@ function decodeQueryDataJsonResponse(
       request.targets.length === 1 ? request.targets : [target],
       request.preferredQueryResultFormat === QUERY_DATA_COMPACT_VERSION
     ),
-    state,
+    state
+  );
+}
+
+function withMultiBatchLoadingState(response: DataQueryResponse, state: LoadingState): DataQueryResponse {
+  return {
+    ...response,
+    state: response.error || response.errors?.length ? LoadingState.Error : state,
   };
 }
 

@@ -561,7 +561,7 @@ describe('PrometheusDatasource', () => {
         expect(browserFetchSpy).toHaveBeenCalledTimes(2);
         expect(responses).toHaveLength(2);
         const finalResponse = responses[responses.length - 1];
-        expect(finalResponse.state).toBe(LoadingState.Done);
+        expect(finalResponse.state).toBe(LoadingState.Error);
         expect(finalResponse.errors?.map((error) => error.message)).toEqual([
           'upstream stream failed',
           'upstream stream failed',
