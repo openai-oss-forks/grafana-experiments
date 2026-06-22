@@ -25,17 +25,35 @@ describe('ensureInspectorQueryFormat', () => {
     expect(runQueries).toHaveBeenCalledTimes(1);
   });
 
-  it('reruns when a compact request is prepared before the first response', () => {
+  it.each([
+    ['compact-v1', 1],
+    [undefined, 0],
+  ] as const)('handles a prepared %s request before the first response', (preferredQueryResultFormat, runCount) => {
     const queryRunner = new DashboardSceneQueryRunner({ queries: [{ refId: 'A' }] });
     jest.spyOn(queryRunner, 'getLastPreparedRequest').mockReturnValue({
-      requestId: 'compact-request',
-      preferredQueryResultFormat: 'compact-v1',
+      requestId: 'prepared-request',
+      preferredQueryResultFormat,
     });
     const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
 
     ensureInspectorQueryFormat(queryRunner);
 
-    expect(runQueries).toHaveBeenCalledTimes(1);
+    expect(runQueries).toHaveBeenCalledTimes(runCount);
+  });
+
+  it.each([
+    ['active', true, 0],
+    ['inactive', false, 1],
+  ] as const)('handles an %s unprepared dashboard request', (_name, active, runCount) => {
+    const queryRunner = new DashboardSceneQueryRunner({ queries: [{ refId: 'A' }] });
+    const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+    const deactivate = active ? queryRunner.activate() : undefined;
+    runQueries.mockClear();
+
+    ensureInspectorQueryFormat(queryRunner);
+
+    expect(runQueries).toHaveBeenCalledTimes(runCount);
+    deactivate?.();
   });
 
   it('does not restart an active full-format request with stale compact data', () => {

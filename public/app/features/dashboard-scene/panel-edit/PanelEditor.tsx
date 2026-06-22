@@ -85,6 +85,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private _dataProviderBeforeSkip?: SceneDataProvider;
   private _skipCommitChanges = false;
   private _libraryPanelSave?: Promise<boolean>;
+  private _queryRestartPreparedForActivation = false;
 
   public constructor(state: PanelEditorState) {
     super(state);
@@ -98,6 +99,23 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this._layoutItem = layoutItem;
 
     this.setOriginalState(this.state.panelRef);
+    const queryRunner = getQueryRunnerFor(panel);
+    const data = queryRunner?.state.data;
+    const queryNeedsRestart = Boolean(
+      data?.compactSeries !== undefined ||
+        data?.request?.preferredQueryResultFormat === 'compact-v1' ||
+        data?.state === LoadingState.Loading ||
+        data?.state === LoadingState.Streaming
+    );
+    if (
+      queryNeedsRestart &&
+      queryRunner?.state.runQueriesMode !== 'manual' &&
+      !panel.state.$data?.isActive &&
+      !queryRunner?.isActive
+    ) {
+      queryRunner?.setState({ data: undefined });
+      this._queryRestartPreparedForActivation = true;
+    }
     this.addActivationHandler(this._activationHandler.bind(this));
   }
 
@@ -152,6 +170,13 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       const currentData = currentRunner.state.data;
       const preparedRequest =
         currentRunner instanceof DashboardSceneQueryRunner ? currentRunner.getLastPreparedRequest() : undefined;
+      if (
+        currentRunner instanceof DashboardSceneQueryRunner &&
+        currentData === undefined &&
+        preparedRequest === undefined
+      ) {
+        return;
+      }
       const activeRequest = preparedRequest ?? currentData?.request;
       if (activeRequest && activeRequest.preferredQueryResultFormat !== 'compact-v1') {
         compactFallbackPending = false;
@@ -166,6 +191,9 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
 
       if ((hasCompactRequest || hasUnknownInFlightRequest) && !compactFallbackPending) {
         compactFallbackPending = true;
+        if (currentData?.compactSeries !== undefined) {
+          currentRunner.setState({ data: { ...currentData, compactSeries: undefined } });
+        }
         currentRunner.cancelQuery();
         currentRunner.runQueries();
       }
@@ -218,6 +246,12 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
 
     updateCompatibilityRunner();
     updateCompatibilityTransformer();
+    if (this._queryRestartPreparedForActivation) {
+      compactFallbackPending = Boolean(
+        queryRunner && dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat !== 'compact-v1'
+      );
+      this._queryRestartPreparedForActivation = false;
+    }
     this._subs.add(
       panel.subscribeToState((newState, prevState) => {
         // Existing compact data cannot be reused after the panel moves outside compact capabilities.
@@ -256,8 +290,20 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     );
 
     const deactivateParents = activateSceneObjectAndParentTree(panel);
-    if (queryRunner && (hasCompactData || queryRunner.state.data?.state === LoadingState.Loading)) {
+    if (
+      queryRunner &&
+      (hasCompactData ||
+        queryRunner.state.data?.state === LoadingState.Loading ||
+        queryRunner.state.data?.state === LoadingState.Streaming)
+    ) {
       compactFallbackPending = true;
+      if (
+        hasCompactData &&
+        dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat !== 'compact-v1' &&
+        queryRunner.state.data
+      ) {
+        queryRunner.setState({ data: { ...queryRunner.state.data, compactSeries: undefined } });
+      }
       queryRunner.cancelQuery();
       queryRunner.runQueries();
     }
@@ -562,7 +608,25 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     if (this._dataProviderBeforeSkip) {
       const dataProvider = this._dataProviderBeforeSkip;
       this._dataProviderBeforeSkip = undefined;
+      const restoredQueryRunner =
+        dataProvider instanceof SceneQueryRunner ? dataProvider : getQueryRunnerFor(dataProvider);
+      const shouldRestartRestoredQuery = Boolean(
+        restoredQueryRunner?.state.data?.state === LoadingState.Loading ||
+          restoredQueryRunner?.state.data?.state === LoadingState.Streaming
+      );
+      const restoredQueryWillRestartOnActivation = Boolean(
+        shouldRestartRestoredQuery &&
+          restoredQueryRunner?.state.runQueriesMode !== 'manual' &&
+          !dataProvider.isActive &&
+          !restoredQueryRunner?.isActive
+      );
+      if (restoredQueryWillRestartOnActivation) {
+        restoredQueryRunner?.setState({ data: undefined });
+      }
       panel.setState({ $data: dataProvider });
+      if (shouldRestartRestoredQuery && !restoredQueryWillRestartOnActivation) {
+        restoredQueryRunner?.runQueries();
+      }
       return;
     }
 

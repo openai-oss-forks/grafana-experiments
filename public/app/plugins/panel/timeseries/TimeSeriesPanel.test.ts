@@ -41,7 +41,7 @@ describe('getRenderableCompactSeries', () => {
     expect(getRenderableCompactSeries(compactSeries, fieldConfig, panelOptions)).toBeUndefined();
   });
 
-  it('withholds stale compact data while a full-format request is pending', () => {
+  it('withholds stale compact data for a full-format request', () => {
     expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options, true)).toBeUndefined();
   });
 });

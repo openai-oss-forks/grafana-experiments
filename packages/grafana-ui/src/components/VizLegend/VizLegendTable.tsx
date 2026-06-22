@@ -130,7 +130,7 @@ export const VizLegendTable = <T extends unknown>({
         <tr>
           {Object.keys(header).map((columnTitle) => (
             <th
-              title={header[columnTitle]}
+              title={header[columnTitle] ? `${columnTitle}: ${header[columnTitle]}` : columnTitle}
               key={columnTitle}
               className={cx(styles.header, {
                 [styles.headerSortable]: Boolean(onToggleSort),

@@ -104,12 +104,21 @@ export function ensureInspectorQueryFormat(queryRunner: SceneQueryRunner | Dashb
   const currentData = queryRunner.state.data;
   const preparedRequest =
     queryRunner instanceof DashboardSceneQueryRunner ? queryRunner.getLastPreparedRequest() : undefined;
+  if (
+    queryRunner instanceof DashboardSceneQueryRunner &&
+    queryRunner.isActive &&
+    currentData === undefined &&
+    preparedRequest === undefined
+  ) {
+    return;
+  }
   const activeRequest = preparedRequest ?? currentData?.request;
   const hasCompactRequest = activeRequest
     ? activeRequest.preferredQueryResultFormat === 'compact-v1'
     : currentData?.compactSeries !== undefined;
   const hasUnknownInFlightRequest =
-    currentData == null || (currentData.state === LoadingState.Loading && currentData.request == null);
+    activeRequest == null &&
+    (currentData == null || (currentData.state === LoadingState.Loading && currentData.request == null));
 
   if (hasCompactRequest || hasUnknownInFlightRequest) {
     // runQueries cancels the active stream before preparing the inspector's full-format request.

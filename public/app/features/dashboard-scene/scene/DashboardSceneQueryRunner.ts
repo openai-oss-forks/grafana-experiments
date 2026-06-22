@@ -26,6 +26,9 @@ export class DashboardSceneQueryRunner extends SceneQueryRunner {
   public constructor(initialState: DashboardSceneQueryRunnerState) {
     super(initialState);
     this.wrapPrepareRequests();
+    this.addActivationHandler(() => () => {
+      this.lastPreparedRequest = undefined;
+    });
   }
 
   public override runQueries(): void {
@@ -39,6 +42,11 @@ export class DashboardSceneQueryRunner extends SceneQueryRunner {
 
   public getLastPreparedRequest(): Readonly<PreparedRequestSnapshot> | undefined {
     return this.lastPreparedRequest;
+  }
+
+  public override cancelQuery(): void {
+    this.lastPreparedRequest = undefined;
+    super.cancelQuery();
   }
 
   private wrapPrepareRequests() {

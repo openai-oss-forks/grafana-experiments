@@ -11,7 +11,6 @@ import {
   useDataLinksContext,
   FieldConfigSource,
   FieldType,
-  LoadingState,
 } from '@grafana/data';
 import { config, getPluginImportUtils, PanelDataErrorView } from '@grafana/runtime';
 import { TooltipDisplayMode, VizOrientation } from '@grafana/schema';
@@ -45,10 +44,10 @@ export function getRenderableCompactSeries(
   compactSeries: CompactTimeSeriesData | undefined,
   fieldConfig: FieldConfigSource,
   options: Options,
-  isFullFormatRequestPending = false
+  hasFullFormatRequest = false
 ): CompactTimeSeriesData | undefined {
   return compactSeries &&
-    !isFullFormatRequestPending &&
+    !hasFullFormatRequest &&
     isCompactTimeSeriesPanelConfigurationSupported({
       fieldConfig,
       legendCalcs: options.legend?.calcs,
@@ -87,16 +86,8 @@ export const TimeSeriesPanel = ({
   const theme = useTheme2();
 
   const userCanExecuteActions = useMemo(() => canExecuteActions?.() ?? false, [canExecuteActions]);
-  const isFullFormatRequestPending =
-    data.state === LoadingState.Loading &&
-    data.request != null &&
-    data.request.preferredQueryResultFormat !== 'compact-v1';
-  const compactSeries = getRenderableCompactSeries(
-    data.compactSeries,
-    fieldConfig,
-    options,
-    isFullFormatRequestPending
-  );
+  const hasFullFormatRequest = data.request != null && data.request.preferredQueryResultFormat !== 'compact-v1';
+  const compactSeries = getRenderableCompactSeries(data.compactSeries, fieldConfig, options, hasFullFormatRequest);
   const hasCompactSeries = Boolean(compactSeries);
   // Vertical orientation is not available for users through config.
   // It is simplified version of horizontal time series panel and it does not support all plugins.

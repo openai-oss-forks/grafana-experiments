@@ -8,6 +8,7 @@ import {
   getDefaultTimeRange,
   LoadingState,
   PanelPlugin,
+  standardTransformersRegistry,
 } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
 import { config } from '@grafana/runtime';
@@ -27,6 +28,7 @@ import { mockDataSource } from 'app/features/alerting/unified/mocks';
 import { setupDataSources } from 'app/features/alerting/unified/testSetup/datasources';
 import { DataSourceType } from 'app/features/alerting/unified/utils/datasource';
 import * as libAPI from 'app/features/library-panels/state/api';
+import { getStandardTransformers } from 'app/features/transformers/standardTransformers';
 
 import { DashboardScene } from '../scene/DashboardScene';
 import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
@@ -84,6 +86,7 @@ const dataSources = {
 };
 
 setupDataSources(...Object.values(dataSources));
+standardTransformersRegistry.setInit(getStandardTransformers);
 
 let deactivate: CancelActivationHandler | undefined;
 
@@ -126,17 +129,28 @@ describe('PanelEditor', () => {
   });
 
   describe('Entering panel edit', () => {
-    it('reruns existing compact data through the panel editor wrapper', () => {
-      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
-      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
-      queryRunner.setState({
-        data: {
+    it.each([
+      [
+        'compact',
+        {
           state: LoadingState.Done,
           series: [],
           timeRange: getDefaultTimeRange(),
           compactSeries: createCompactSeries(),
         },
-      });
+      ],
+      [
+        'streaming',
+        {
+          state: LoadingState.Streaming,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+        },
+      ],
+    ])('restarts inactive %s data through the panel editor wrapper', (_name, data) => {
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({ data });
       const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
       const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
       const gridItem = new DashboardGridItem({ body: panel });
@@ -144,13 +158,13 @@ describe('PanelEditor', () => {
       const dashboard = new DashboardScene({
         editPanel: panelEditor,
         isEditing: true,
-        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+        $timeRange: new SceneTimeRange({ from: 'now-1h', to: 'now' }),
         body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
       });
 
       deactivate = activateFullSceneTree(dashboard);
 
-      expect(runQueries).toHaveBeenCalled();
+      expect(runQueries).toHaveBeenCalledTimes(1);
       expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
 
       deactivate();
@@ -181,17 +195,18 @@ describe('PanelEditor', () => {
       });
 
       expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
-      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(cancelQuery).not.toHaveBeenCalled();
       expect(runQueries).toHaveBeenCalledTimes(1);
+      expect(queryRunner.state.data?.compactSeries).toBeUndefined();
     });
 
-    it('restarts an active incompatible request without response metadata', async () => {
+    it('lets an unprepared request adopt incompatible configuration', async () => {
       const { panel, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor({ withCompactData: false });
 
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
 
-      expect(cancelQuery).toHaveBeenCalledTimes(1);
-      expect(runQueries).toHaveBeenCalledTimes(1);
+      expect(cancelQuery).not.toHaveBeenCalled();
+      expect(runQueries).not.toHaveBeenCalled();
     });
 
     it('reruns a compact query in full format when table view opens', async () => {
@@ -203,6 +218,7 @@ describe('PanelEditor', () => {
       expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBeUndefined();
       expect(cancelQuery).toHaveBeenCalledTimes(1);
       expect(runQueries).toHaveBeenCalledTimes(1);
+      expect(queryRunner.state.data?.compactSeries).toBeUndefined();
     });
 
     it('reruns a compact query in full format when a transformation is enabled', async () => {
@@ -609,49 +625,61 @@ describe('PanelEditor', () => {
   });
 
   describe('Changing between data and non-data visualizations', () => {
-    it('preserves queries and transformations across the round trip', async () => {
-      const queryRunner = new SceneQueryRunner({
-        datasource: { uid: 'ds1' },
-        queries: [
+    it.each([LoadingState.Loading, LoadingState.Streaming])(
+      'preserves queries and transformations and restarts a %s query across the round trip',
+      async (loadingState) => {
+        const queryRunner = new SceneQueryRunner({
+          datasource: { uid: 'ds1' },
+          queries: [
+            { refId: 'A', expr: 'up' },
+            { refId: 'B', expr: 'rate(requests_total[5m])' },
+          ],
+        });
+        const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+        const transformer = new SceneDataTransformer({
+          $data: queryRunner,
+          transformations: [{ id: 'organize', options: { excludeByName: { Time: true } }, disabled: true }],
+        });
+        const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: transformer });
+        const gridItem = new DashboardGridItem({ body: panel });
+        const panelEditor = buildPanelEditScene(panel);
+        const dashboard = new DashboardScene({
+          editPanel: panelEditor,
+          isEditing: true,
+          $timeRange: new SceneTimeRange({ from: 'now-1h', to: 'now' }),
+          body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+        });
+        pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+        deactivate = activateFullSceneTree(dashboard);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        queryRunner.setState({
+          data: {
+            state: loadingState,
+            series: [],
+            timeRange: getDefaultTimeRange(),
+          },
+        });
+        runQueries.mockClear();
+
+        pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
+        await panel.changePluginType('text');
+        expect(panel.state.$data).toBeUndefined();
+        pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+        await panel.changePluginType('timeseries');
+
+        expect(panel.state.$data).toBe(transformer);
+        expect(transformer.state.$data).toBe(queryRunner);
+        expect(queryRunner.state.datasource).toEqual({ uid: 'ds1' });
+        expect(queryRunner.state.queries).toEqual([
           { refId: 'A', expr: 'up' },
           { refId: 'B', expr: 'rate(requests_total[5m])' },
-        ],
-      });
-      jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
-      const transformer = new SceneDataTransformer({
-        $data: queryRunner,
-        transformations: [{ id: 'organize', options: { excludeByName: { Time: true } }, disabled: true }],
-      });
-      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: transformer });
-      const gridItem = new DashboardGridItem({ body: panel });
-      const panelEditor = buildPanelEditScene(panel);
-      const dashboard = new DashboardScene({
-        editPanel: panelEditor,
-        isEditing: true,
-        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
-        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
-      });
-      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
-      deactivate = activateFullSceneTree(dashboard);
-      await new Promise((resolve) => setTimeout(resolve, 1));
-
-      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'text', skipDataQuery: true }));
-      await panel.changePluginType('text');
-      expect(panel.state.$data).toBeUndefined();
-      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
-      await panel.changePluginType('timeseries');
-
-      expect(panel.state.$data).toBe(transformer);
-      expect(transformer.state.$data).toBe(queryRunner);
-      expect(queryRunner.state.datasource).toEqual({ uid: 'ds1' });
-      expect(queryRunner.state.queries).toEqual([
-        { refId: 'A', expr: 'up' },
-        { refId: 'B', expr: 'rate(requests_total[5m])' },
-      ]);
-      expect(transformer.state.transformations).toEqual([
-        { id: 'organize', options: { excludeByName: { Time: true } }, disabled: true },
-      ]);
-    });
+        ]);
+        expect(transformer.state.transformations).toEqual([
+          { id: 'organize', options: { excludeByName: { Time: true } }, disabled: true },
+        ]);
+        expect(runQueries).toHaveBeenCalledTimes(1);
+      }
+    );
   });
 
   describe('Handling library panels', () => {
@@ -902,6 +930,16 @@ async function setupCompactTimeSeriesEditor({
 
   deactivate = activateFullSceneTree(dashboard);
   await new Promise((resolve) => setTimeout(resolve, 1));
+  if (withCompactData && dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat === 'compact-v1') {
+    queryRunner.setState({
+      data: {
+        state: LoadingState.Done,
+        series: [],
+        timeRange: getDefaultTimeRange(),
+        compactSeries: createCompactSeries(),
+      },
+    });
+  }
   if (clearSpies) {
     cancelQuery.mockClear();
     runQueries.mockClear();

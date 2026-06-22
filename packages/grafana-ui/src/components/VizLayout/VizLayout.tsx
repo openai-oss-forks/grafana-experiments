@@ -76,8 +76,13 @@ export const VizLayout: VizLayoutComponentType = ({ width, height, legend, child
       legendStyle.maxWidth = maxWidth;
 
       if (legend.props.width !== undefined) {
-        const legendWidth = getConstrainedLegendWidth(legend.props.width, maxWidth, width);
-        legendStyle.width = legendWidth;
+        const configuredLegendWidth = Math.max(0, legend.props.width);
+        const measuredLegendWidth = legendMeasure.height > 0 ? legendMeasure.width : undefined;
+        const legendWidth =
+          getConstrainedLegendWidth(configuredLegendWidth, maxWidth, width) ??
+          measuredLegendWidth ??
+          Math.min(configuredLegendWidth, width);
+        legendStyle.width = configuredLegendWidth;
         size = { width: width - legendWidth, height };
       } else if (legendMeasure.width) {
         size = { width: width - legendMeasure.width, height };
@@ -119,19 +124,26 @@ interface VizSize {
   height: number;
 }
 
-function getConstrainedLegendWidth(configuredWidth: number, maxWidth: string, containerWidth: number): number {
+function getConstrainedLegendWidth(
+  configuredWidth: number,
+  maxWidth: string,
+  containerWidth: number
+): number | undefined {
   const normalizedMaxWidth = maxWidth.trim();
   let resolvedMaxWidth: number | undefined;
-  if (normalizedMaxWidth.endsWith('%')) {
+  if (normalizedMaxWidth === '0') {
+    resolvedMaxWidth = 0;
+  } else if (normalizedMaxWidth.endsWith('%')) {
     resolvedMaxWidth = (containerWidth * Number.parseFloat(normalizedMaxWidth)) / 100;
   } else if (normalizedMaxWidth.endsWith('px')) {
     resolvedMaxWidth = Number.parseFloat(normalizedMaxWidth);
   }
 
-  const constrainedMaxWidth =
-    typeof resolvedMaxWidth === 'number' && Number.isFinite(resolvedMaxWidth) ? resolvedMaxWidth : configuredWidth;
+  if (typeof resolvedMaxWidth !== 'number' || !Number.isFinite(resolvedMaxWidth)) {
+    return undefined;
+  }
 
-  return Math.max(0, Math.min(configuredWidth, constrainedMaxWidth, containerWidth));
+  return Math.max(0, Math.min(configuredWidth, resolvedMaxWidth, containerWidth));
 }
 
 /**

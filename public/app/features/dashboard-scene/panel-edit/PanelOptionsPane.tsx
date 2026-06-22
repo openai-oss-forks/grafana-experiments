@@ -149,10 +149,19 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
   }
 
   private async applyPanelPluginChange(panel: VizPanel, options: VizTypeChangeDetails, state: PanelPluginChangeState) {
-    const { options: prevOptions, fieldConfig: prevFieldConfig, pluginId: prevPluginId } = panel.state;
     const pluginId = options.pluginId;
 
-    // clear custom options
+    try {
+      await getPluginImportUtils().importPanelPlugin(pluginId);
+    } catch {
+      // VizPanel owns the plugin-not-found behavior. Preloading here only keeps
+      // changePluginType from racing a newer picker selection.
+    }
+    if (state.cancelled || state.pending) {
+      return;
+    }
+
+    const { options: prevOptions, fieldConfig: prevFieldConfig, pluginId: prevPluginId } = panel.state;
     let newFieldConfig: FieldConfigSource = {
       defaults: {
         ...prevFieldConfig.defaults,
@@ -170,19 +179,8 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
 
     const cachedOptions = cachedPluginOptions[pluginId]?.options;
     const cachedFieldConfig = cachedPluginOptions[pluginId]?.fieldConfig;
-
     if (cachedFieldConfig) {
       newFieldConfig = restoreCustomOverrideRules(newFieldConfig, cachedFieldConfig);
-    }
-
-    try {
-      await getPluginImportUtils().importPanelPlugin(pluginId);
-    } catch {
-      // VizPanel owns the plugin-not-found behavior. Preloading here only keeps
-      // changePluginType from racing a newer picker selection.
-    }
-    if (state.cancelled || state.pending) {
-      return;
     }
 
     state.pluginChangeStarted = true;

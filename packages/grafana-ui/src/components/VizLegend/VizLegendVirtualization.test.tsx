@@ -74,12 +74,12 @@ describe('high-cardinality visualization UI', () => {
     expect(getComputedStyle(table).tableLayout).toBe('fixed');
     expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
     const nameHeader = table.querySelector('th')!;
-    const minHeader = screen.getByTitle('Minimum value');
+    const minHeader = screen.getByTitle('Min: Minimum value');
     expect(nameHeader).toHaveStyle({ paddingLeft: '30px', textAlign: 'left' });
     expect(minHeader).toHaveTextContent('Min');
     expect(minHeader).toHaveStyle({ textAlign: 'right' });
     expect(minHeader.firstElementChild).toHaveStyle({ justifyContent: 'flex-end' });
-    const sortedHeader = screen.getByTitle('Maximum value');
+    const sortedHeader = screen.getByTitle(`${longColumnTitle}: Maximum value`);
     const headerContent = sortedHeader.firstElementChild!;
     const headerLabel = headerContent.firstElementChild!;
     const sortIcon = headerContent.lastElementChild!;

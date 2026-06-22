@@ -12,18 +12,20 @@ import { PanelOptionsPane } from './PanelOptionsPane';
 import { testDashboard } from './testfiles/testDashboard';
 
 let pluginToLoad: PanelPlugin | undefined;
+let mockImportPanelPlugin: (id: string) => Promise<PanelPlugin>;
 
 jest.mock('@grafana/runtime', () => ({
   ...jest.requireActual('@grafana/runtime'),
   getPluginImportUtils: () => ({
     getPanelPluginFromCache: jest.fn(() => pluginToLoad),
-    importPanelPlugin: jest.fn((id: string) => Promise.resolve(pluginToLoad ?? getPanelPlugin({ id }))),
+    importPanelPlugin: jest.fn((id: string) => mockImportPanelPlugin(id)),
   }),
 }));
 
 describe('PanelOptionsPane', () => {
   beforeEach(() => {
     pluginToLoad = undefined;
+    mockImportPanelPlugin = (id) => Promise.resolve(pluginToLoad ?? getPanelPlugin({ id }));
   });
 
   describe('When changing plugin', () => {
@@ -53,6 +55,43 @@ describe('PanelOptionsPane', () => {
       await optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey: true });
 
       expect(realPanelChange).toHaveBeenLastCalledWith(
+        'timeseries',
+        { legend: { showLegend: false } },
+        expect.any(Object)
+      );
+    });
+
+    it('uses panel configuration changed while the next plugin is preloading', async () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      let finishPreload!: () => void;
+      mockImportPanelPlugin = (id) =>
+        new Promise((resolve) => {
+          finishPreload = () => resolve(getPanelPlugin({ id }));
+        });
+      panel.changePluginType = jest.fn(async (pluginId, options = {}, fieldConfig) => {
+        panel.setState({ pluginId, options, fieldConfig });
+      });
+
+      const change = optionsPane.onChangePanel({ pluginId: 'table', withModKey: true });
+      panel.setState({
+        options: { legend: { showLegend: false } },
+        fieldConfig: {
+          ...panel.state.fieldConfig,
+          defaults: { ...panel.state.fieldConfig.defaults, unit: 'ms' },
+        },
+      });
+      finishPreload();
+      await change;
+
+      expect(panel.changePluginType).toHaveBeenCalledWith(
+        'table',
+        undefined,
+        expect.objectContaining({ defaults: expect.objectContaining({ unit: 'ms' }) })
+      );
+
+      mockImportPanelPlugin = (id) => Promise.resolve(getPanelPlugin({ id }));
+      await optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey: true });
+      expect(panel.changePluginType).toHaveBeenLastCalledWith(
         'timeseries',
         { legend: { showLegend: false } },
         expect.any(Object)

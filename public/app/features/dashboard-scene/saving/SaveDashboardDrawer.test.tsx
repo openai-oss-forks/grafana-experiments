@@ -306,7 +306,9 @@ describe('SaveDashboardDrawer', () => {
   describe('Save as copy', () => {
     it('Should show save as form', async () => {
       const { openAndRender } = setup();
-      openAndRender(true);
+      const drawer = openAndRender(true);
+      const onSaveSuccess = jest.fn();
+      act(() => drawer.setState({ onSaveSuccess }));
 
       expect(await screen.findByText('Save dashboard copy')).toBeInTheDocument();
 
@@ -316,6 +318,7 @@ describe('SaveDashboardDrawer', () => {
 
       const dataSent = saveDashboardMutationMock.mock.calls[0][0];
       expect(dataSent.dashboard.uid).toEqual('');
+      expect(onSaveSuccess).toHaveBeenCalledTimes(1);
     });
 
     it('locks the drawer while pending panel edits settle', async () => {

@@ -6,12 +6,14 @@ import { locationService } from '@grafana/runtime';
 import { SceneQueryRunner, SceneTimeRange, VizPanel, behaviors, sceneGraph } from '@grafana/scenes';
 import { Dashboard } from '@grafana/schema';
 import { Spec as DashboardV2Spec } from '@grafana/schema/apis/dashboard.grafana.app/v2';
+import { ModalsContext } from '@grafana/ui';
 import { ContextSrv, setContextSrv } from 'app/core/services/context_srv';
 import { ObjectMeta } from 'app/features/apiserver/types';
 
 import { buildPanelEditScene } from '../panel-edit/PanelEditor';
 import { DashboardControls } from '../scene/DashboardControls';
 import { DashboardScene, DashboardSceneState } from '../scene/DashboardScene';
+import { LibraryPanelBehavior } from '../scene/LibraryPanelBehavior';
 import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
 import { transformSceneToSaveModel } from '../serialization/transformSceneToSaveModel';
 
@@ -83,11 +85,7 @@ describe('DashboardPrompt', () => {
         finishPanelEdit = resolve;
       })
     );
-    const { unmount } = render(
-      <TestProvider>
-        <DashboardPrompt dashboard={scene} />
-      </TestProvider>
-    );
+    const { unmount } = renderDashboardPrompt(scene);
     const event = new Event('beforeunload', { cancelable: true });
 
     window.dispatchEvent(event);
@@ -99,28 +97,22 @@ describe('DashboardPrompt', () => {
 
   it('waits for a library panel save before replaying navigation', async () => {
     jest.useFakeTimers();
+    const initialLocation = locationService.getLocation();
+    locationService.replace({ ...initialLocation, search: '?editPanel=1' });
     const scene = buildTestScene();
-    const panel = sceneGraph.findObject(scene, (candidate) => candidate instanceof VizPanel);
-    if (!(panel instanceof VizPanel)) {
-      throw new Error('Expected dashboard panel');
-    }
-    const panelEditor = buildPanelEditScene(panel);
-    scene.setState({ editPanel: panelEditor });
+    const panelEditor = addLibraryPanelEditor(scene);
     let finishLibrarySave!: () => void;
     const librarySave = new Promise<boolean>((resolve) => {
       finishLibrarySave = () => resolve(true);
     });
     jest.spyOn(panelEditor, 'getPendingLibraryPanelSave').mockReturnValue(librarySave);
     const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
-    const { unmount } = render(
-      <TestProvider>
-        <DashboardPrompt dashboard={scene} />
-      </TestProvider>
-    );
+    const { unmount } = renderDashboardPrompt(scene);
     const nextLocation = buildLocation('/d/next');
 
     expect(mockPromptMessage?.(nextLocation)).toBe(false);
     expect(pushSpy).not.toHaveBeenCalled();
+    expect(mockPromptMessage?.(buildLocation(initialLocation.pathname))).toBe(true);
 
     await act(async () => {
       finishLibrarySave();
@@ -131,9 +123,80 @@ describe('DashboardPrompt', () => {
     expect(pushSpy).toHaveBeenCalledTimes(1);
     expect(pushSpy).toHaveBeenCalledWith(nextLocation);
     unmount();
+    locationService.replace(initialLocation);
   });
 
-  it('replays only the latest navigation requested while a panel edit is pending', async () => {
+  it('lets a newer deferred navigation supersede an in-flight modal save', async () => {
+    jest.useFakeTimers();
+    const scene = buildTestScene();
+    const panelEditor = addLibraryPanelEditor(scene);
+    panelEditor.setState({ isDirty: true });
+    let finishLibrarySave!: (saved: boolean) => void;
+    let saveStarted = false;
+    const librarySave = new Promise<boolean>((resolve) => {
+      finishLibrarySave = resolve;
+    });
+    jest
+      .spyOn(panelEditor, 'getPendingLibraryPanelSave')
+      .mockImplementation(() => (saveStarted ? librarySave : undefined));
+    jest.spyOn(panelEditor, 'onConfirmSaveLibraryPanel').mockImplementation(() => {
+      saveStarted = true;
+      return librarySave;
+    });
+    const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
+    const { unmount, showModal } = renderDashboardPrompt(scene);
+    const firstLocation = buildLocation('/d/first');
+    const latestLocation = buildLocation('/d/latest');
+
+    expect(mockPromptMessage?.(firstLocation)).toBe(false);
+    const onConfirm = showModal.mock.calls[0][1].onConfirm as () => Promise<void>;
+    const confirmation = onConfirm();
+    expect(mockPromptMessage?.(latestLocation)).toBe(false);
+
+    await act(async () => {
+      finishLibrarySave(true);
+      await Promise.all([librarySave, confirmation]);
+    });
+    act(() => jest.advanceTimersByTime(10));
+
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).toHaveBeenCalledWith(latestLocation);
+    unmount();
+  });
+
+  it('preserves the blocked destination across the URL update after saving a new dashboard', () => {
+    jest.useFakeTimers();
+    getTestContext();
+    const scene = buildTestScene({ isEditing: true });
+    scene.setState({ meta: { ...scene.state.meta, canSave: true, version: 1 } });
+    scene.setInitialSaveModel(transformSceneToSaveModel(scene));
+    scene.setState({ isDirty: true, title: 'Changed title' });
+    let onSaveSuccess: (() => void) | undefined;
+    jest.spyOn(scene, 'openSaveDrawer').mockImplementation((options) => {
+      onSaveSuccess = options.onSaveSuccess;
+    });
+    const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
+    const { unmount, showModal } = renderDashboardPrompt(scene);
+    const destination = buildLocation('/d/next');
+
+    expect(mockPromptMessage?.(destination)).toBe(false);
+    const onSaveDashboardClick = showModal.mock.calls[0][1].onSaveDashboardClick as () => void;
+    onSaveDashboardClick();
+    scene.setState({ isDirty: false, meta: { ...scene.state.meta, url: '/d/saved' } });
+    onSaveSuccess?.();
+
+    expect(mockPromptMessage?.(buildLocation('/d/saved'))).toBe(true);
+    act(() => jest.advanceTimersByTime(10));
+
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).toHaveBeenCalledWith(destination);
+    unmount();
+  });
+
+  it.each([
+    ['replays the latest external navigation', false],
+    ['drops a deferred navigation superseded by a same-dashboard navigation', true],
+  ])('%s while a panel edit is pending', async (_name, supersededBySameDashboard) => {
     jest.useFakeTimers();
     const scene = buildTestScene();
     let finishPanelEdit!: () => void;
@@ -143,16 +206,14 @@ describe('DashboardPrompt', () => {
       })
     );
     const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
-    const { unmount } = render(
-      <TestProvider>
-        <DashboardPrompt dashboard={scene} />
-      </TestProvider>
-    );
+    const { unmount } = renderDashboardPrompt(scene);
     const firstLocation = buildLocation('/d/first');
-    const latestLocation = buildLocation('/d/latest');
+    const latestLocation = buildLocation(
+      supersededBySameDashboard ? locationService.getLocation().pathname : '/d/latest'
+    );
 
     expect(mockPromptMessage?.(firstLocation)).toBe(false);
-    expect(mockPromptMessage?.(latestLocation)).toBe(false);
+    expect(mockPromptMessage?.(latestLocation)).toBe(supersededBySameDashboard);
 
     await act(async () => {
       finishPanelEdit();
@@ -160,8 +221,12 @@ describe('DashboardPrompt', () => {
     });
     act(() => jest.advanceTimersByTime(10));
 
-    expect(pushSpy).toHaveBeenCalledTimes(1);
-    expect(pushSpy).toHaveBeenCalledWith(latestLocation);
+    if (supersededBySameDashboard) {
+      expect(pushSpy).not.toHaveBeenCalled();
+    } else {
+      expect(pushSpy).toHaveBeenCalledTimes(1);
+      expect(pushSpy).toHaveBeenCalledWith(latestLocation);
+    }
     unmount();
   });
 
@@ -175,11 +240,7 @@ describe('DashboardPrompt', () => {
       })
     );
     const pushSpy = jest.spyOn(locationService, 'push').mockImplementation(() => undefined);
-    const { unmount } = render(
-      <TestProvider>
-        <DashboardPrompt dashboard={scene} />
-      </TestProvider>
-    );
+    const { unmount } = renderDashboardPrompt(scene);
 
     expect(mockPromptMessage?.(buildLocation('/d/next'))).toBe(false);
     unmount();
@@ -563,6 +624,31 @@ describe('DashboardPrompt', () => {
 
 function buildLocation(pathname: string): H.Location {
   return { pathname, search: '', hash: '', state: undefined, key: pathname };
+}
+
+function renderDashboardPrompt(scene: DashboardScene) {
+  const showModal = jest.fn();
+  const view = render(
+    <TestProvider>
+      <ModalsContext.Provider value={{ component: null, props: {}, showModal, hideModal: jest.fn() }}>
+        <DashboardPrompt dashboard={scene} />
+      </ModalsContext.Provider>
+    </TestProvider>
+  );
+  return { ...view, showModal };
+}
+
+function addLibraryPanelEditor(scene: DashboardScene) {
+  const panel = sceneGraph.findObject(scene, (candidate) => candidate instanceof VizPanel);
+  if (!(panel instanceof VizPanel)) {
+    throw new Error('Expected dashboard panel');
+  }
+  panel.setState({
+    $behaviors: [new LibraryPanelBehavior({ name: 'Library panel', uid: 'library-panel', isLoaded: true })],
+  });
+  const panelEditor = buildPanelEditScene(panel);
+  scene.setState({ editPanel: panelEditor });
+  return panelEditor;
 }
 
 function buildTestScene(overrides?: Partial<DashboardSceneState>, serializerVersion: 'v1' | 'v2' = 'v1') {

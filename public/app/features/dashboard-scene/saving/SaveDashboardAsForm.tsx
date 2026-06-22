@@ -111,6 +111,7 @@ export function SaveDashboardAsForm({ dashboard, changeInfo, drawer }: Props) {
 
       if (result.status === 'success') {
         dashboard.closeModal();
+        drawer.state.onSaveSuccess?.();
       } else {
         setContentSent({
           title: data.title,
