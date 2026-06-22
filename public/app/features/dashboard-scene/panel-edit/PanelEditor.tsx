@@ -150,6 +150,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     let compatibilityTransformer: SceneDataTransformer | undefined;
     let compatibilityTransformerSubscription: Unsubscribable | undefined;
     let compactFallbackPending = false;
+    let compactRefreshPending = false;
 
     const ensureCompatibleQueryFormat = (currentRunner: SceneQueryRunner) => {
       if (currentRunner !== getQueryRunnerFor(panel)) {
@@ -158,15 +159,11 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
 
       if (panel.getPlugin()?.meta.skipDataQuery) {
         compactFallbackPending = false;
+        compactRefreshPending = false;
         return;
       }
 
       const prefersCompact = dashboard.enrichDataRequest(currentRunner).preferredQueryResultFormat === 'compact-v1';
-      if (prefersCompact) {
-        compactFallbackPending = false;
-        return;
-      }
-
       const currentData = currentRunner.state.data;
       const preparedRequest =
         currentRunner instanceof DashboardSceneQueryRunner ? currentRunner.getLastPreparedRequest() : undefined;
@@ -178,14 +175,28 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         return;
       }
       const activeRequest = preparedRequest ?? currentData?.request;
+      const hasCompactRequest = activeRequest
+        ? activeRequest.preferredQueryResultFormat === 'compact-v1'
+        : currentData?.compactSeries !== undefined;
+
+      if (prefersCompact) {
+        compactFallbackPending = false;
+        if (hasCompactRequest) {
+          compactRefreshPending = false;
+        } else if (activeRequest && !compactRefreshPending) {
+          compactRefreshPending = true;
+          currentRunner.cancelQuery();
+          currentRunner.runQueries();
+        }
+        return;
+      }
+
+      compactRefreshPending = false;
       if (activeRequest && activeRequest.preferredQueryResultFormat !== 'compact-v1') {
         compactFallbackPending = false;
         return;
       }
 
-      const hasCompactRequest = activeRequest
-        ? activeRequest.preferredQueryResultFormat === 'compact-v1'
-        : currentData?.compactSeries !== undefined;
       const hasUnknownInFlightRequest =
         currentData == null || (currentData.state === LoadingState.Loading && currentData.request == null);
 
@@ -208,6 +219,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       compatibilityRunnerSubscription?.unsubscribe();
       compatibilityRunner = currentRunner;
       compactFallbackPending = false;
+      compactRefreshPending = false;
       if (currentRunner) {
         compatibilityRunnerSubscription = currentRunner.subscribeToState((newState, prevState) => {
           if (newState.data !== prevState.data) {

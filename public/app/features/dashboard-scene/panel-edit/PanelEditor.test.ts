@@ -235,20 +235,56 @@ describe('PanelEditor', () => {
       expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
-    it('does not restart a full-format request that retains stale compact data while loading', async () => {
+    it('reruns a full-format query as compact when switching back to time series', async () => {
+      const { panelEditor, dashboard, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'barchart', skipDataQuery: false }));
+      await panelEditor.state.optionsPane!.onChangePanel({ pluginId: 'barchart' });
+      prepareDashboardQuery(queryRunner);
+      expect(queryRunner.getLastPreparedRequest()?.preferredQueryResultFormat).toBeUndefined();
+
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          request: { preferredQueryResultFormat: undefined } as DataQueryRequest,
+        },
+      });
+      cancelQuery.mockClear();
+      runQueries.mockClear();
+      runQueries.mockImplementation(() => prepareDashboardQuery(queryRunner));
+
+      pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
+      await panelEditor.state.optionsPane!.onChangePanel({ pluginId: 'timeseries' });
+
+      expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBe('compact-v1');
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+      expect(queryRunner.getLastPreparedRequest()?.preferredQueryResultFormat).toBe('compact-v1');
+    });
+
+    it('uses the active request format over stale compact data during configuration changes', async () => {
       const { panel, queryRunner, cancelQuery, runQueries } = await setupCompactTimeSeriesEditor();
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+      cancelQuery.mockClear();
+      runQueries.mockClear();
       queryRunner.setState({
         data: {
           ...queryRunner.state.data!,
           state: LoadingState.Loading,
+          compactSeries: createCompactSeries(),
           request: { preferredQueryResultFormat: undefined } as DataQueryRequest,
         },
       });
 
-      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
-
       expect(cancelQuery).not.toHaveBeenCalled();
       expect(runQueries).not.toHaveBeenCalled();
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] }, true);
+
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
     it('restarts a compact refresh that still exposes the previous full-format response', async () => {
@@ -265,8 +301,12 @@ describe('PanelEditor', () => {
       runQueries.mockClear();
 
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] }, true);
+      expect(cancelQuery).toHaveBeenCalledTimes(1);
+      expect(runQueries).toHaveBeenCalledTimes(1);
       prepareDashboardQuery(queryRunner);
       expect(queryRunner.getLastPreparedRequest()?.preferredQueryResultFormat).toBe('compact-v1');
+      cancelQuery.mockClear();
+      runQueries.mockClear();
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
 
       expect(cancelQuery).toHaveBeenCalledTimes(1);
