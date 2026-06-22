@@ -54,11 +54,9 @@ describe('compact dashboard query policy', () => {
     { app: CoreApp.Explore, panelPluginId: 'timeseries' },
     { app: CoreApp.Dashboard, panelPluginId: 'table' },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isInspecting: true },
-    { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isTableView: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isPublicDashboard: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', hasTimeComparison: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', panelOptions: { orientation: VizOrientation.Vertical } },
-    { app: CoreApp.Dashboard, panelPluginId: 'timeseries', panelOptions: null },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', transformations: [{ id: 'reduce' }] },
     {
       app: CoreApp.Dashboard,

@@ -75,24 +75,20 @@ export const VizLayout: VizLayoutComponentType = ({ width, height, legend, child
       containerStyle.flexDirection = 'row';
       legendStyle.maxWidth = maxWidth;
 
-      if (legend.props.width !== undefined) {
-        const configuredLegendWidth = Math.max(0, legend.props.width);
-        const measuredLegendWidth = legendMeasure.height > 0 ? legendMeasure.width : undefined;
-        const legendWidth =
-          getConstrainedLegendWidth(configuredLegendWidth, maxWidth, width) ??
-          measuredLegendWidth ??
-          Math.min(configuredLegendWidth, width);
-        legendStyle.width = configuredLegendWidth;
-        size = { width: width - legendWidth, height };
-      } else if (legendMeasure.width) {
+      if (legendMeasure.width) {
         size = { width: width - legendMeasure.width, height };
+      }
+
+      if (legend.props.width) {
+        legendStyle.width = legend.props.width;
+        size = { width: width - legend.props.width, height };
       }
       break;
   }
 
   // This happens when position is switched from bottom to right
   // Then we preserve old with for one render cycle until legend is measured in it's new position
-  if (size?.width === 0 && (placement !== 'right' || legend.props.width === undefined)) {
+  if (size?.width === 0) {
     size.width = width;
   }
 
@@ -122,28 +118,6 @@ export const getVizStyles = (theme: GrafanaTheme2) => {
 interface VizSize {
   width: number;
   height: number;
-}
-
-function getConstrainedLegendWidth(
-  configuredWidth: number,
-  maxWidth: string,
-  containerWidth: number
-): number | undefined {
-  const normalizedMaxWidth = maxWidth.trim();
-  let resolvedMaxWidth: number | undefined;
-  if (normalizedMaxWidth === '0') {
-    resolvedMaxWidth = 0;
-  } else if (normalizedMaxWidth.endsWith('%')) {
-    resolvedMaxWidth = (containerWidth * Number.parseFloat(normalizedMaxWidth)) / 100;
-  } else if (normalizedMaxWidth.endsWith('px')) {
-    resolvedMaxWidth = Number.parseFloat(normalizedMaxWidth);
-  }
-
-  if (typeof resolvedMaxWidth !== 'number' || !Number.isFinite(resolvedMaxWidth)) {
-    return undefined;
-  }
-
-  return Math.max(0, Math.min(configuredWidth, resolvedMaxWidth, containerWidth));
 }
 
 /**

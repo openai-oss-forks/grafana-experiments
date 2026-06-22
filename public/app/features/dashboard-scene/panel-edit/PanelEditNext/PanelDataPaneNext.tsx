@@ -68,8 +68,6 @@ export interface PanelDataPaneNextState extends SceneObjectState {
  */
 export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
   static Component = QueryEditorContent;
-  private datasourceLoadGeneration = 0;
-  private queryDatasourceChangeGeneration = new Map<string, number>();
 
   public constructor(state: PanelDataPaneNextState) {
     super(state);
@@ -93,7 +91,6 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
   }
 
   private async loadDatasource() {
-    const loadGeneration = ++this.datasourceLoadGeneration;
     const queryRunner = getQueryRunnerFor(this.state.panelRef.resolve());
     if (!queryRunner) {
       this.setState({ datasource: undefined, dsSettings: undefined, dsError: undefined });
@@ -120,14 +117,8 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
       }
 
       const datasource = await getDataSourceSrv().get(dsRef);
-      if (loadGeneration !== this.datasourceLoadGeneration) {
-        return;
-      }
       this.setState({ datasource, dsSettings, dsError: undefined });
     } catch (err) {
-      if (loadGeneration !== this.datasourceLoadGeneration) {
-        return;
-      }
       console.error('Failed to load datasource:', err);
       this.setState({
         datasource: undefined,
@@ -216,7 +207,6 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
   };
 
   public deleteQuery = (refId: string) => {
-    this.queryDatasourceChangeGeneration.set(refId, (this.queryDatasourceChangeGeneration.get(refId) ?? 0) + 1);
     this.mutateQuery(refId, (_query, index, queries) => {
       queries.splice(index, 1);
       return queries;
@@ -309,8 +299,6 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
   };
 
   public changeDataSource = async (dsRef: DataSourceRef, queryRefId: string) => {
-    const changeGeneration = (this.queryDatasourceChangeGeneration.get(queryRefId) ?? 0) + 1;
-    this.queryDatasourceChangeGeneration.set(queryRefId, changeGeneration);
     const queryRunner = getQueryRunnerFor(this.state.panelRef.resolve());
     if (!queryRunner) {
       return;
@@ -321,41 +309,32 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
       throw new Error(`Failed to get datasource ${dsRef.uid ?? dsRef.type}`);
     }
 
-    const initialTargetQuery = queryRunner.state.queries.find(({ refId }) => refId === queryRefId);
-    if (!initialTargetQuery) {
-      return;
-    }
-
-    const previousDataSource = initialTargetQuery.datasource
-      ? getDataSourceSrv().getInstanceSettings(initialTargetQuery.datasource)
-      : undefined;
-
-    const shouldUseDefaultQuery = !previousDataSource || previousDataSource.type !== newDataSource.type;
-
-    let defaultQuery: Partial<DataQuery> | undefined;
-    if (shouldUseDefaultQuery) {
-      try {
-        const ds = await getDataSourceSrv().get(dsRef);
-        defaultQuery = ds.getDefaultQuery?.(CoreApp.PanelEditor);
-      } catch {
-        if (this.queryDatasourceChangeGeneration.get(queryRefId) !== changeGeneration) {
-          return;
-        }
-        throw new Error(`Failed to get datasource ${newDataSource.name ?? newDataSource.uid}`);
-      }
-    }
-
-    if (this.queryDatasourceChangeGeneration.get(queryRefId) !== changeGeneration) {
-      return;
-    }
-
     const queries = [...queryRunner.state.queries];
     const targetIndex = queries.findIndex(({ refId }) => refId === queryRefId);
     if (targetIndex === -1) {
       return;
     }
 
-    queries[targetIndex] = { ...defaultQuery, ...queries[targetIndex], datasource: dsRef };
+    const targetQuery = queries[targetIndex];
+    const previousDataSource = targetQuery.datasource
+      ? getDataSourceSrv().getInstanceSettings(targetQuery.datasource)
+      : undefined;
+
+    const shouldUseDefaultQuery = !previousDataSource || previousDataSource.type !== newDataSource.type;
+
+    let updatedQuery: DataQuery;
+    if (shouldUseDefaultQuery) {
+      try {
+        const ds = await getDataSourceSrv().get(dsRef);
+        updatedQuery = { ...ds.getDefaultQuery?.(CoreApp.PanelEditor), ...targetQuery, datasource: dsRef };
+      } catch {
+        throw new Error(`Failed to get datasource ${newDataSource.name ?? newDataSource.uid}`);
+      }
+    } else {
+      updatedQuery = { ...targetQuery, datasource: dsRef };
+    }
+
+    queries[targetIndex] = updatedQuery;
 
     // Set panel datasource to mixed since the query has an explicit datasource
     // This ensures per-query datasources are respected during execution
@@ -391,7 +370,7 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
       dataObjStateUpdate.minInterval = options.minInterval ?? undefined;
     }
 
-    if (options.stepSize !== Reflect.get(queryRunner.state, 'stepSize')) {
+    if (options.stepSize !== (queryRunner.state as { stepSize?: string | null }).stepSize) {
       dataObjStateUpdate.stepSize = options.stepSize ?? undefined;
     }
 

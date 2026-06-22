@@ -100,35 +100,20 @@ export class DashboardEditPane extends SceneObjectBase<DashboardEditPaneState> {
     );
 
     if (this.panelEditAction) {
-      void this.performPanelEditAction(this.panelEditAction);
+      this.performPanelEditAction(this.panelEditAction);
       this.panelEditAction = undefined;
     }
   }
 
-  public performPanelEditAction(action: DashboardEditActionEvent): Promise<void> {
-    const dashboard = getDashboardSceneFor(this);
-    return new Promise((resolve) => {
-      let attempts = 0;
-      const publishWhenActive = () => {
-        const currentSource = sceneGraph.findObject(dashboard, (candidate) => candidate === action.payload.source);
-        if (currentSource !== action.payload.source) {
-          resolve();
-          return;
-        }
+  private performPanelEditAction(action: DashboardEditActionEvent) {
+    // Some layout items are not yet active when leaving panel edit, let's wait for them to activate
+    if (!action.payload.source.isActive) {
+      trySwitchingToSourceTab(action.payload.source);
+      setTimeout(() => this.performPanelEditAction(action));
+      return;
+    }
 
-        // Some layout items are not yet active when leaving panel edit, let's wait for them to activate
-        if (!action.payload.source.isActive && attempts < 100) {
-          attempts += 1;
-          trySwitchingToSourceTab(action.payload.source);
-          setTimeout(publishWhenActive, 10);
-          return;
-        }
-
-        action.payload.source.publishEvent(action, true);
-        resolve();
-      };
-      publishWhenActive();
-    });
+    action.payload.source.publishEvent(action, true);
   }
 
   /**

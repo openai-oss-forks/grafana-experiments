@@ -1,7 +1,6 @@
 import { SceneQueryRunner, VizPanel } from '@grafana/scenes';
 
 import { DashboardScene } from './DashboardScene';
-import { LibraryPanelBehavior } from './LibraryPanelBehavior';
 import { DefaultGridLayoutManager } from './layout-default/DefaultGridLayoutManager';
 
 describe('DashboardSceneUrlSync', () => {
@@ -33,58 +32,10 @@ describe('DashboardSceneUrlSync', () => {
       scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
       expect(scene.state.editPanel).toBeDefined();
     });
-
-    it('lets edit panel win when view and edit are both present in the same URL update', () => {
-      const scene = buildTestScene();
-
-      scene.urlSync?.updateFromUrl({ viewPanel: 'panel-1', editPanel: 'panel-1' });
-
-      expect(scene.state.editPanel).toBeDefined();
-      expect(scene.state.viewPanel).toBeUndefined();
-    });
-
-    it('does not enter edit after an unloaded library panel request is cleared', () => {
-      const libraryPanel = new LibraryPanelBehavior({ name: 'Library panel', uid: 'library-panel' });
-      const scene = buildTestScene(libraryPanel);
-
-      scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
-      expect(scene.state.editPanel).toBeUndefined();
-      expect(scene.urlSync?.getUrlState().editPanel).toBe('panel-1');
-
-      scene.urlSync?.updateFromUrl({ editPanel: null });
-      libraryPanel.setState({ isLoaded: true });
-
-      expect(scene.state.editPanel).toBeUndefined();
-    });
-
-    it('does not let an older library panel load replace a newer edit request', () => {
-      const libraryPanel = new LibraryPanelBehavior({ name: 'Library panel', uid: 'library-panel' });
-      const scene = buildTestScene(libraryPanel);
-
-      scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
-      scene.urlSync?.updateFromUrl({ editPanel: 'panel-2' });
-      libraryPanel.setState({ isLoaded: true });
-
-      expect(scene.state.editPanel?.getUrlKey()).toBe('2');
-    });
-
-    it('reports a pending library panel ahead of the active editor', () => {
-      const libraryPanel = new LibraryPanelBehavior({ name: 'Library panel', uid: 'library-panel' });
-      const scene = buildTestScene(libraryPanel);
-
-      scene.urlSync?.updateFromUrl({ editPanel: 'panel-2' });
-      scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
-      expect(scene.urlSync?.getUrlState().editPanel).toBe('panel-1');
-
-      scene.urlSync?.updateFromUrl({ editPanel: 'panel-2' });
-      libraryPanel.setState({ isLoaded: true });
-
-      expect(scene.state.editPanel?.getUrlKey()).toBe('2');
-    });
   });
 });
 
-function buildTestScene(libraryPanel?: LibraryPanelBehavior) {
+function buildTestScene() {
   const scene = new DashboardScene({
     title: 'hello',
     uid: 'dash-1',
@@ -93,7 +44,6 @@ function buildTestScene(libraryPanel?: LibraryPanelBehavior) {
         title: 'Panel A',
         key: 'panel-1',
         pluginId: 'table',
-        $behaviors: libraryPanel ? [libraryPanel] : undefined,
         $data: new SceneQueryRunner({ key: 'data-query-runner', queries: [{ refId: 'A' }] }),
       }),
 

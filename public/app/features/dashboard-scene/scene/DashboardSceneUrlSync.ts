@@ -1,5 +1,3 @@
-import { Unsubscribable } from 'rxjs';
-
 import { SceneObjectUrlSyncHandler, SceneObjectUrlValues, VizPanel } from '@grafana/scenes';
 import { contextSrv } from 'app/core/services/context_srv';
 
@@ -14,8 +12,6 @@ import { UNCONFIGURED_PANEL_PLUGIN_ID } from './UnconfiguredPanel';
 import { DefaultGridLayoutManager } from './layout-default/DefaultGridLayoutManager';
 
 export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
-  private pendingLibraryPanelEdit?: { editPanelKey: string; subscription: Unsubscribable };
-
   constructor(private _scene: DashboardScene) {}
 
   getKeys(): string[] {
@@ -29,7 +25,7 @@ export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
       autofitpanels: this.getAutoFitPanels(),
       viewPanel: state.viewPanel,
       editview: state.editview?.getUrlKey(),
-      editPanel: this.pendingLibraryPanelEdit?.editPanelKey || state.editPanel?.getUrlKey() || undefined,
+      editPanel: state.editPanel?.getUrlKey() || undefined,
       shareView: state.shareView,
       orgId: contextSrv.user.orgId.toString(),
     };
@@ -73,7 +69,6 @@ export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
 
     // Handle edit panel state
     if (typeof values.editPanel === 'string') {
-      this.cancelPendingLibraryPanelEdit();
       const panel = findEditPanel(this._scene, values.editPanel);
 
       if (!panel) {
@@ -82,7 +77,7 @@ export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
       }
 
       // We cannot simultaneously be in edit and view panel state.
-      if (this._scene.state.viewPanel || update.viewPanel) {
+      if (this._scene.state.viewPanel) {
         update.viewPanel = undefined;
       }
 
@@ -93,15 +88,13 @@ export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
 
       const libPanelBehavior = getLibraryPanelBehavior(panel);
       if (libPanelBehavior && !libPanelBehavior?.state.isLoaded) {
-        this.waitForLibPanelToLoadBeforeEnteringPanelEdit(values.editPanel, panel, libPanelBehavior);
-      } else {
-        update.editPanel = buildPanelEditScene(panel, panel.state.pluginId === UNCONFIGURED_PANEL_PLUGIN_ID);
+        this._waitForLibPanelToLoadBeforeEnteringPanelEdit(panel, libPanelBehavior);
+        return;
       }
-    } else if (values.editPanel === null) {
-      this.cancelPendingLibraryPanelEdit();
-      if (editPanel) {
-        update.editPanel = undefined;
-      }
+
+      update.editPanel = buildPanelEditScene(panel, panel.state.pluginId === UNCONFIGURED_PANEL_PLUGIN_ID);
+    } else if (editPanel && values.editPanel === null) {
+      update.editPanel = undefined;
     }
 
     if (typeof values.shareView === 'string') {
@@ -131,33 +124,14 @@ export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
   /**
    * Temporary solution, with some refactoring of PanelEditor we can remove this
    */
-  private waitForLibPanelToLoadBeforeEnteringPanelEdit(
-    editPanelKey: string,
-    panel: VizPanel,
-    libPanel: LibraryPanelBehavior
-  ) {
-    let subscription: Unsubscribable;
-    subscription = libPanel.subscribeToState((state) => {
+  private _waitForLibPanelToLoadBeforeEnteringPanelEdit(panel: VizPanel, libPanel: LibraryPanelBehavior) {
+    const sub = libPanel.subscribeToState((state) => {
       if (state.isLoaded) {
-        const pendingEdit = this.pendingLibraryPanelEdit;
-        if (!pendingEdit || pendingEdit.editPanelKey !== editPanelKey || pendingEdit.subscription !== subscription) {
-          subscription.unsubscribe();
-          return;
-        }
-
-        this.pendingLibraryPanelEdit = undefined;
-        subscription.unsubscribe();
         this._scene.setState({
-          viewPanel: undefined,
           editPanel: buildPanelEditScene(panel, panel.state.pluginId === UNCONFIGURED_PANEL_PLUGIN_ID),
         });
+        sub.unsubscribe();
       }
     });
-    this.pendingLibraryPanelEdit = { editPanelKey, subscription };
-  }
-
-  private cancelPendingLibraryPanelEdit() {
-    this.pendingLibraryPanelEdit?.subscription.unsubscribe();
-    this.pendingLibraryPanelEdit = undefined;
   }
 }

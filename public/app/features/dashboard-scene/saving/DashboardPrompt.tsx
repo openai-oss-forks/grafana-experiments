@@ -1,8 +1,7 @@
 import { css } from '@emotion/css';
 import * as H from 'history';
-import { memo, useContext, useEffect, useMemo, useRef } from 'react';
+import { memo, useContext, useEffect, useMemo } from 'react';
 
-import { locationUtil } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { locationService } from '@grafana/runtime';
 import { Dashboard } from '@grafana/schema';
@@ -28,27 +27,14 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
   const originalLocation = useMemo(() => locationService.getLocation(), [dashboard]);
   const originalPath = useMemo(() => originalLocation.pathname, [originalLocation]);
   const { showModal, hideModal } = useContext(ModalsContext);
-  const navigationIntent = useRef(0);
-  const deferredNavigationPending = useRef(false);
-  const dashboardSaveRedirect = useRef<{ intent: number; pathname: string }>();
 
   useEffect(() => {
     const handleUnload = (event: BeforeUnloadEvent) => {
-      if (
-        dashboard.hasPendingPanelEditCompletion() ||
-        dashboard.state.editPanel?.getPendingPanelChange() ||
-        dashboard.state.editPanel?.getPendingLibraryPanelSave()
-      ) {
-        event.preventDefault();
-        event.returnValue = '';
-        return;
-      }
-
       if (ignoreChanges(dashboard)) {
         return;
       }
 
-      if (dashboard.state.isDirty || dashboard.state.editPanel?.hasChanges()) {
+      if (dashboard.state.isDirty) {
         event.preventDefault();
         // No browser actually displays this message anymore.
         // But Chrome requires it to be defined else the popup won't show.
@@ -57,117 +43,31 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
     };
 
     window.addEventListener('beforeunload', handleUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleUnload);
-      deferredNavigationPending.current = false;
-      navigationIntent.current += 1;
-      dashboardSaveRedirect.current = undefined;
-    };
+    return () => window.removeEventListener('beforeunload', handleUnload);
   }, [dashboard]);
 
   const onHistoryBlock = (location: H.Location) => {
     const panelEditor = dashboard.state.editPanel;
     const vizPanel = panelEditor?.getPanel();
     const search = new URLSearchParams(location.search);
-    const pendingPanelChange = panelEditor?.getPendingPanelChange();
-    const pendingLibraryPanelSave = panelEditor?.getPendingLibraryPanelSave();
-    const pendingPanelEditCompletion = dashboard.hasPendingPanelEditCompletion()
-      ? dashboard.waitForPendingPanelEditCompletion()
-      : undefined;
-    const pendingNavigation: Array<Promise<unknown>> = [];
-    if (pendingPanelChange) {
-      pendingNavigation.push(pendingPanelChange);
-    }
-    if (pendingLibraryPanelSave) {
-      pendingNavigation.push(pendingLibraryPanelSave);
-    }
-    if (pendingPanelEditCompletion) {
-      pendingNavigation.push(pendingPanelEditCompletion);
-    }
-    const isExternalNavigation = originalPath !== location.pathname;
-    const isLeavingLibraryPanel = Boolean(vizPanel && isLibraryPanel(vizPanel) && !search.has('editPanel'));
-    const isLeavingChangedLibraryPanel = Boolean(
-      isLeavingLibraryPanel && panelEditor && (panelEditor.state.isDirty || panelEditor.hasChanges())
-    );
-    const expectedSaveRedirect = dashboardSaveRedirect.current;
-    if (
-      expectedSaveRedirect?.intent === navigationIntent.current &&
-      expectedSaveRedirect.pathname === location.pathname
-    ) {
-      dashboardSaveRedirect.current = undefined;
-      return true;
-    }
-
-    const currentSearch = new URLSearchParams(locationService.getLocation().search);
-    const isCompletingLibraryPanelSave = Boolean(
-      deferredNavigationPending.current &&
-        pendingLibraryPanelSave &&
-        !isExternalNavigation &&
-        currentSearch.has('editPanel') &&
-        !search.has('editPanel')
-    );
-    if (isCompletingLibraryPanelSave) {
-      return true;
-    }
-
-    if (deferredNavigationPending.current) {
-      deferredNavigationPending.current = false;
-      navigationIntent.current += 1;
-    }
-
-    if (pendingNavigation.length > 0 && (isExternalNavigation || isLeavingLibraryPanel)) {
-      const nextNavigationIntent = ++navigationIntent.current;
-      deferredNavigationPending.current = true;
-      void Promise.all(pendingNavigation).then(
-        () => {
-          if (navigationIntent.current !== nextNavigationIntent) {
-            return;
-          }
-          moveToBlockedLocationAfterReactStateUpdate(location, false, () => {
-            if (navigationIntent.current !== nextNavigationIntent) {
-              return false;
-            }
-            deferredNavigationPending.current = false;
-            return true;
-          });
-        },
-        () => {
-          if (navigationIntent.current === nextNavigationIntent) {
-            deferredNavigationPending.current = false;
-          }
-        }
-      );
-      return false;
-    }
-
-    const nextNavigationIntent =
-      isExternalNavigation || isLeavingChangedLibraryPanel ? ++navigationIntent.current : undefined;
-    const isCurrentNavigation = () =>
-      nextNavigationIntent === undefined || navigationIntent.current === nextNavigationIntent;
 
     // Are we leaving panel edit & library panel?
-    if (panelEditor && vizPanel && isLibraryPanel(vizPanel) && isLeavingChangedLibraryPanel) {
+    if (panelEditor && vizPanel && isLibraryPanel(vizPanel) && panelEditor.state.isDirty && !search.has('editPanel')) {
       const libPanelBehavior = getLibraryPanelBehavior(vizPanel);
 
       showModal(SaveLibraryVizPanelModal, {
         dashboard,
         isUnsavedPrompt: true,
-        isSaving: panelEditor.state.isLibraryPanelSaving,
         libraryPanel: libPanelBehavior!,
-        onConfirm: async () => {
-          const saved = await panelEditor.onConfirmSaveLibraryPanel(false);
-          if (!saved) {
-            return;
-          }
+        onConfirm: () => {
+          panelEditor.onConfirmSaveLibraryPanel();
           hideModal();
-          moveToBlockedLocationAfterReactStateUpdate(location, false, isCurrentNavigation);
+          moveToBlockedLocationAfterReactStateUpdate(location);
         },
         onDiscard: () => {
-          if (!panelEditor.onDiscard()) {
-            return;
-          }
+          panelEditor.onDiscard();
           hideModal();
-          moveToBlockedLocationAfterReactStateUpdate(location, false, isCurrentNavigation);
+          moveToBlockedLocationAfterReactStateUpdate(location);
         },
         onDismiss: hideModal,
       });
@@ -183,7 +83,7 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
       return true;
     }
 
-    if (!dashboard.state.isDirty && !panelEditor?.hasChanges()) {
+    if (!dashboard.state.isDirty) {
       return true;
     }
 
@@ -193,14 +93,7 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
         hideModal();
         dashboard.openSaveDrawer({
           onSaveSuccess: () => {
-            const savedDashboardUrl = dashboard.state.meta.url;
-            if (nextNavigationIntent !== undefined && savedDashboardUrl) {
-              const savedDashboardPath = locationUtil.stripBaseFromUrl(savedDashboardUrl).split('?')[0];
-              if (savedDashboardPath !== locationService.getLocation().pathname) {
-                dashboardSaveRedirect.current = { intent: nextNavigationIntent, pathname: savedDashboardPath };
-              }
-            }
-            moveToBlockedLocationAfterReactStateUpdate(location, false, isCurrentNavigation);
+            moveToBlockedLocationAfterReactStateUpdate(location);
           },
         });
       },
@@ -209,9 +102,9 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
         dashboard.exitEditMode({ skipConfirm: true });
         hideModal();
         if (originalPath === DASHBOARD_LIBRARY_ROUTES.Template) {
-          moveToBlockedLocationAfterReactStateUpdate(location, true, isCurrentNavigation);
+          moveToBlockedLocationAfterReactStateUpdate(location, true);
         } else {
-          moveToBlockedLocationAfterReactStateUpdate(location, false, isCurrentNavigation);
+          moveToBlockedLocationAfterReactStateUpdate(location);
         }
       },
       onDismiss: hideModal,
@@ -225,17 +118,9 @@ export const DashboardPrompt = memo(({ dashboard }: DashboardPromptProps) => {
 
 DashboardPrompt.displayName = 'DashboardPrompt';
 
-function moveToBlockedLocationAfterReactStateUpdate(
-  location?: H.Location | null,
-  replace = false,
-  shouldNavigate: () => boolean = () => true
-) {
+function moveToBlockedLocationAfterReactStateUpdate(location?: H.Location | null, replace = false) {
   if (location) {
-    setTimeout(() => {
-      if (shouldNavigate()) {
-        replace ? locationService.replace(location) : locationService.push(location);
-      }
-    }, 10);
+    setTimeout(() => (replace ? locationService.replace(location) : locationService.push(location)), 10);
   }
 }
 

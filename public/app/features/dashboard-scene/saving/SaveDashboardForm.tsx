@@ -38,15 +38,7 @@ export function SaveDashboardForm({ dashboard, drawer, changeInfo }: Props) {
   });
 
   const onSave = async (overwrite: boolean) => {
-    const { saveTimeRange, saveVariables, saveRefresh } = drawer.state;
-    drawer.onSaveStarted();
-    const result = await onSaveDashboard(dashboard, {
-      ...options,
-      rawDashboardJSON: changedSaveModel,
-      getRawDashboardJSON: () =>
-        dashboard.getDashboardChanges(saveTimeRange, saveVariables, saveRefresh).changedSaveModel,
-      overwrite,
-    }).finally(drawer.onSaveFinished);
+    const result = await onSaveDashboard(dashboard, { ...options, rawDashboardJSON: changedSaveModel, overwrite });
     if (result.status === 'success') {
       dashboard.closeModal();
       drawer.state.onSaveSuccess?.();
@@ -54,23 +46,13 @@ export function SaveDashboardForm({ dashboard, drawer, changeInfo }: Props) {
   };
 
   const cancelButton = (
-    <Button
-      variant="secondary"
-      onClick={() => dashboard.closeModal()}
-      fill="outline"
-      disabled={state.loading || drawer.state.isSaving}
-    >
+    <Button variant="secondary" onClick={() => dashboard.closeModal()} fill="outline">
       <Trans i18nKey="dashboard-scene.save-dashboard-form.cancel-button.cancel">Cancel</Trans>
     </Button>
   );
 
   const saveButton = (overwrite: boolean) => (
-    <SaveButton
-      isValid={hasChanges}
-      isLoading={state.loading || Boolean(drawer.state.isSaving)}
-      onSave={onSave}
-      overwrite={overwrite}
-    />
+    <SaveButton isValid={hasChanges} isLoading={state.loading} onSave={onSave} overwrite={overwrite} />
   );
 
   const isMessageTooLongError = (message?: string) => {
@@ -192,7 +174,7 @@ export function SaveDashboardForm({ dashboard, drawer, changeInfo }: Props) {
           </p>
         </Alert>
       )}
-      <Field label={t('dashboard-scene.save-dashboard-form.label-message', 'Message')} noMargin>
+      <Field label={t('dashboard-scene.save-dashboard-form.label-message', 'Message')}>
         <TextArea
           aria-label={t('dashboard-scene.save-dashboard-form.aria-label-message', 'message')}
           value={options.message ?? ''}

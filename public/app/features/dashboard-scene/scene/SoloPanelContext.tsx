@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 
 import { Trans } from '@grafana/i18n';
 import { LazyLoader, VizPanel } from '@grafana/scenes';
@@ -8,62 +8,31 @@ import { DashboardScene } from './DashboardScene';
 
 export interface SoloPanelContextValue {
   matches: (VizPanel: VizPanel) => boolean;
-  readonly matchFound: boolean;
-  recordMatch: (scope: object, matchFound: boolean) => void;
-  clearMatch: (scope: object) => void;
-  subscribeToMatch: (listener: () => void) => () => void;
+  matchFound: boolean;
 }
 
-export abstract class SoloPanelContextValueBase implements SoloPanelContextValue {
-  private matchingScopes = new Set<object>();
-  private matchListeners = new Set<() => void>();
+export class SoloPanelContextWithPathIdFilter implements SoloPanelContextValue {
+  public matchFound = false;
 
-  public get matchFound() {
-    return this.matchingScopes.size > 0;
-  }
-
-  public recordMatch(scope: object, matchFound: boolean) {
-    const previousMatchFound = this.matchFound;
-    if (matchFound) {
-      this.matchingScopes.add(scope);
-    } else {
-      this.matchingScopes.delete(scope);
-    }
-    this.notifyMatchChanged(previousMatchFound);
-  }
-
-  public clearMatch(scope: object) {
-    const previousMatchFound = this.matchFound;
-    this.matchingScopes.delete(scope);
-    this.notifyMatchChanged(previousMatchFound);
-  }
-
-  public subscribeToMatch = (listener: () => void) => {
-    this.matchListeners.add(listener);
-    return () => this.matchListeners.delete(listener);
-  };
-
-  public abstract matches(panel: VizPanel): boolean;
-
-  private notifyMatchChanged(previousMatchFound: boolean) {
-    if (previousMatchFound !== this.matchFound) {
-      this.matchListeners.forEach((listener) => listener());
-    }
-  }
-}
-
-export class SoloPanelContextWithPathIdFilter extends SoloPanelContextValueBase {
-  public constructor(public keyPath: string) {
-    super();
-  }
+  public constructor(public keyPath: string) {}
 
   public matches(panel: VizPanel): boolean {
     // Check if keyPath is just an old legacy panel id
     if (/^\d+$/.test(this.keyPath)) {
-      return `panel-${this.keyPath}` === panel.state.key!;
+      if (`panel-${this.keyPath}` === panel.state.key!) {
+        this.matchFound = true;
+        return true;
+      }
+
+      return false;
     }
 
-    return this.keyPath === panel.getPathId();
+    if (this.keyPath === panel.getPathId()) {
+      this.matchFound = true;
+      return true;
+    }
+
+    return false;
   }
 }
 
@@ -86,7 +55,7 @@ export function renderMatchingSoloPanels(
   soloPanelContext: SoloPanelContextValue,
   panels: VizPanel[],
   isLazy?: boolean
-): { content: React.ReactNode; matchFound: boolean } {
+) {
   const matches: React.ReactNode[] = [];
   for (const panel of panels) {
     if (soloPanelContext.matches(panel)) {
@@ -102,22 +71,7 @@ export function renderMatchingSoloPanels(
     }
   }
 
-  return { content: <>{matches}</>, matchFound: matches.length > 0 };
-}
-
-export function useRegisterSoloPanelMatch(
-  soloPanelContext: SoloPanelContextValue | null,
-  scope: object,
-  matchFound: boolean
-) {
-  useLayoutEffect(() => {
-    if (!soloPanelContext) {
-      return;
-    }
-
-    soloPanelContext.recordMatch(scope, matchFound);
-    return () => soloPanelContext.clearMatch(scope);
-  }, [matchFound, scope, soloPanelContext]);
+  return <>{matches}</>;
 }
 
 export function SoloPanelContextProvider({
@@ -152,28 +106,23 @@ export interface SoloPanelNotFoundProps {
 
 export function SoloPanelNotFound({ singleMatch, dashboard }: SoloPanelNotFoundProps) {
   const context = useSoloPanelContext()!;
-  const matchFound = useSyncExternalStore(
-    context.subscribeToMatch,
-    () => context.matchFound,
-    () => false
-  );
-  const [isLoading, setIsLoading] = useState(true);
+  const [state, setState] = useState({ matchFound: false, isLoading: true });
 
   useEffect(() => {
-    // Repeated panels can appear after variable loading completes, so keep the not-found state pending until then.
-    setIsLoading(true);
+    // This effect fires before any child layout starts rendering and checking if their panels match the solo panel filter
+    // We need this polling here to check if any solo panel has matched or if any layout has marked the context as loading (for repeated panels)
     const cancelTimeout = setInterval(() => {
-      setIsLoading(isAnyVariableLoading(dashboard));
+      setState({ matchFound: context.matchFound, isLoading: isAnyVariableLoading(dashboard) });
     }, 500);
 
     return () => clearInterval(cancelTimeout);
   }, [context, dashboard]);
 
-  if (matchFound) {
+  if (state.matchFound || context.matchFound) {
     return null;
   }
 
-  if (isLoading) {
+  if (state.isLoading) {
     return <Spinner />;
   }
 

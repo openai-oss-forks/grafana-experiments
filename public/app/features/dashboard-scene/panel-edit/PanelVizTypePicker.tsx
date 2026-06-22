@@ -181,7 +181,6 @@ export function PanelVizTypePicker({
                 data={data}
                 searchQuery={searchQuery}
                 isNewPanel={isNewPanel}
-                hasPickedViz={hasPickedViz}
               />
             )}
             {listMode === VisualizationSelectPaneTab.Visualizations && (

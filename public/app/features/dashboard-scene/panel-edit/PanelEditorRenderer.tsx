@@ -81,14 +81,7 @@ export function PanelEditorRenderer({ model }: SceneComponentProps<PanelEditor>)
 
 function VizAndDataPane({ model }: SceneComponentProps<PanelEditor>) {
   const dashboard = getDashboardSceneFor(model);
-  const {
-    dataPane,
-    showLibraryPanelSaveModal,
-    isLibraryPanelSaving,
-    showLibraryPanelUnlinkModal,
-    tableView,
-    editPreview,
-  } = model.useState();
+  const { dataPane, showLibraryPanelSaveModal, showLibraryPanelUnlinkModal, tableView, editPreview } = model.useState();
   const panel = model.getPanel();
   const libraryPanel = getLibraryPanelBehavior(panel);
   const { controls } = dashboard.useState();
@@ -125,7 +118,6 @@ function VizAndDataPane({ model }: SceneComponentProps<PanelEditor>) {
         {showLibraryPanelSaveModal && libraryPanel && (
           <SaveLibraryVizPanelModal
             libraryPanel={libraryPanel}
-            isSaving={isLibraryPanelSaving}
             onDismiss={model.onDismissLibraryPanelSaveModal}
             onConfirm={model.onConfirmSaveLibraryPanel}
             onDiscard={model.onDiscard}

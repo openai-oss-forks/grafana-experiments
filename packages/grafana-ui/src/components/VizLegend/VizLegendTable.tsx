@@ -99,7 +99,6 @@ export const VizLegendTable = <T extends unknown>({
     }
   }
 
-  const hasCustomItemRenderer = Boolean(itemRenderer);
   if (!itemRenderer) {
     /* eslint-disable-next-line react/display-name */
     itemRenderer = (item, index) => (
@@ -114,23 +113,13 @@ export const VizLegendTable = <T extends unknown>({
     );
   }
 
-  const valueColumnCount = Math.max(0, Object.keys(header).length - 1);
-
   return (
-    <table
-      className={cx(styles.table, !hasCustomItemRenderer && styles.fixedTable, className)}
-      style={
-        hasCustomItemRenderer
-          ? undefined
-          : { minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }
-      }
-    >
-      {!hasCustomItemRenderer && <LegendTableColGroup valueColumnCount={valueColumnCount} />}
+    <table className={cx(styles.table, className)}>
       <thead>
         <tr>
           {Object.keys(header).map((columnTitle) => (
             <th
-              title={header[columnTitle] ? `${columnTitle}: ${header[columnTitle]}` : columnTitle}
+              title={header[columnTitle]}
               key={columnTitle}
               className={cx(styles.header, {
                 [styles.headerSortable]: Boolean(onToggleSort),
@@ -144,7 +133,8 @@ export const VizLegendTable = <T extends unknown>({
                 }
               }}
             >
-              <LegendTableHeaderContent columnTitle={columnTitle} sortDesc={sortDesc} sortKey={sortKey} />
+              {columnTitle}
+              {sortKey === columnTitle && <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />}
             </th>
           ))}
         </tr>
@@ -258,18 +248,8 @@ function IndexedVizLegendTable<T>({
     );
   }
 
-  const valueColumnCount = Math.max(0, Object.keys(header).length - 1);
-
   return (
-    <table
-      className={cx(styles.table, !itemRenderer && styles.fixedTable, className)}
-      style={
-        itemRenderer
-          ? undefined
-          : { minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }
-      }
-    >
-      {!itemRenderer && <LegendTableColGroup valueColumnCount={valueColumnCount} />}
+    <table className={cx(styles.table, className)}>
       <LegendTableHeader
         header={header}
         isSortable={isSortable}
@@ -322,32 +302,6 @@ function renderIndexedTableRows<T>(
   return rows;
 }
 
-function LegendTableHeaderContent({
-  columnTitle,
-  sortDesc,
-  sortKey,
-}: {
-  columnTitle: string;
-  sortDesc?: boolean;
-  sortKey?: string;
-}) {
-  const styles = useStyles2(getStyles);
-  return (
-    <span
-      className={cx(styles.headerContent, {
-        [styles.valueHeaderContent]: columnTitle !== nameSortKey,
-      })}
-    >
-      <span className={styles.headerLabel}>{columnTitle}</span>
-      {sortKey === columnTitle && (
-        <span className={styles.headerSortIcon}>
-          <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />
-        </span>
-      )}
-    </span>
-  );
-}
-
 function LegendTableHeader({
   header,
   isSortable,
@@ -369,7 +323,7 @@ function LegendTableHeader({
       <tr>
         {Object.keys(header).map((columnTitle) => (
           <th
-            title={header[columnTitle] ? `${columnTitle}: ${header[columnTitle]}` : columnTitle}
+            title={header[columnTitle]}
             key={columnTitle}
             className={cx(styles.header, {
               [styles.headerSortable]: Boolean(onToggleSort),
@@ -379,7 +333,8 @@ function LegendTableHeader({
             })}
             onClick={() => onToggleSort && isSortable && onToggleSort(columnTitle)}
           >
-            <LegendTableHeaderContent columnTitle={columnTitle} sortDesc={sortDesc} sortKey={sortKey} />
+            {columnTitle}
+            {sortKey === columnTitle && <Icon size="xs" name={sortDesc ? 'angle-down' : 'angle-up'} />}
           </th>
         ))}
       </tr>
@@ -567,22 +522,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
   headerSortable: css({
     cursor: 'pointer',
   }),
-  headerContent: css({
-    alignItems: 'center',
-    display: 'flex',
-    minWidth: 0,
-  }),
-  valueHeaderContent: css({
-    justifyContent: 'flex-end',
-  }),
-  headerLabel: css({
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  }),
-  headerSortIcon: css({
-    display: 'inline-flex',
-    flexShrink: 0,
-  }),
   virtualScroll: css({
     height: '100%',
     minHeight: VIRTUAL_ROW_HEIGHT * 3,
@@ -592,6 +531,9 @@ const getStyles = (theme: GrafanaTheme2) => ({
   fixedTable: css({
     borderSpacing: 0,
     tableLayout: 'fixed',
+    'th:first-child': {
+      width: 'auto',
+    },
     'td:first-child': {
       overflow: 'hidden',
     },

@@ -22,6 +22,7 @@ type PreparedRequestSnapshot = Pick<DataQueryRequest, 'requestId' | 'preferredQu
  */
 export class DashboardSceneQueryRunner extends SceneQueryRunner {
   private lastPreparedRequest?: PreparedRequestSnapshot;
+  private runQueriesRevision = 0;
 
   public constructor(initialState: DashboardSceneQueryRunnerState) {
     super(initialState);
@@ -32,6 +33,7 @@ export class DashboardSceneQueryRunner extends SceneQueryRunner {
   }
 
   public override runQueries(): void {
+    this.runQueriesRevision++;
     if (this.state._hasFetchedData) {
       super.runQueries();
       return;
@@ -42,6 +44,10 @@ export class DashboardSceneQueryRunner extends SceneQueryRunner {
 
   public getLastPreparedRequest(): Readonly<PreparedRequestSnapshot> | undefined {
     return this.lastPreparedRequest;
+  }
+
+  public getRunQueriesRevision(): number {
+    return this.runQueriesRevision;
   }
 
   public override cancelQuery(): void {

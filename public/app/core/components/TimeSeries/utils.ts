@@ -201,39 +201,38 @@ export function prepareCompactPlotConfigBuilder(options: {
 
   installCompactRenderer(builder, plan.source);
   const configuredScales = new Uint8Array(plan.source.scales.length);
-  const configuredThresholds = new Uint8Array(plan.source.scales.length);
   for (let seriesIndex = 0; seriesIndex < plan.seriesCount; seriesIndex++) {
     const scaleId = plan.source.columns.scaleIds[seriesIndex];
+    if (configuredScales[scaleId] !== 0) {
+      continue;
+    }
+    configuredScales[scaleId] = 1;
     const config = plan.getScale(seriesIndex).config;
     const custom = config.custom ?? {};
     const scale = plan.source.scales[scaleId];
-    if (configuredScales[scaleId] === 0) {
-      configuredScales[scaleId] = 1;
-      const display = getDisplayProcessor({
-        field: { name: 'Value', type: FieldType.number, config },
-        theme,
-        timeZone: timeZones[0],
-      });
-      builder.addAxis({
-        scaleKey: scale.key,
-        label: custom.axisLabel,
-        size: custom.axisWidth,
-        placement: custom.axisPlacement ?? AxisPlacement.Auto,
-        formatValue: (value, decimals) => formattedValueToString(display(value, decimals)),
-        theme,
-        grid: { show: custom.axisGridShow },
-        decimals: config.decimals,
-        distr: custom.scaleDistribution?.type,
-        color: scale.axisColor,
-        ticks: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
-        border: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
-      });
-    }
+    const display = getDisplayProcessor({
+      field: { name: 'Value', type: FieldType.number, config },
+      theme,
+      timeZone: timeZones[0],
+    });
+    builder.addAxis({
+      scaleKey: scale.key,
+      label: custom.axisLabel,
+      size: custom.axisWidth,
+      placement: custom.axisPlacement ?? AxisPlacement.Auto,
+      formatValue: (value, decimals) => formattedValueToString(display(value, decimals)),
+      theme,
+      grid: { show: custom.axisGridShow },
+      decimals: config.decimals,
+      distr: custom.scaleDistribution?.type,
+      color: scale.axisColor,
+      ticks: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
+      border: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
+    });
 
-    if (configuredThresholds[scaleId] === 0 && custom.thresholdsStyle && config.thresholds) {
+    if (custom.thresholdsStyle && config.thresholds) {
       const thresholdDisplay = custom.thresholdsStyle.mode ?? GraphThresholdsStyleMode.Off;
       if (thresholdDisplay !== GraphThresholdsStyleMode.Off) {
-        configuredThresholds[scaleId] = 1;
         builder.addThresholds({
           config: custom.thresholdsStyle,
           thresholds: config.thresholds,

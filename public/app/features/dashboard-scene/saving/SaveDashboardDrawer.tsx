@@ -18,17 +18,12 @@ interface SaveDashboardDrawerState extends SceneObjectState {
   saveVariables?: boolean;
   saveRefresh?: boolean;
   saveAsCopy?: boolean;
-  isSaving?: boolean;
   showVariablesWarning?: boolean;
   onSaveSuccess?: () => void;
 }
 
 export class SaveDashboardDrawer extends SceneObjectBase<SaveDashboardDrawerState> {
   public onClose = () => {
-    if (this.state.isSaving) {
-      return;
-    }
-
     const dashboard = this.state.dashboardRef.resolve();
     const changeInfo = dashboard.getDashboardChanges();
     dashboard.setState({
@@ -50,19 +45,11 @@ export class SaveDashboardDrawer extends SceneObjectBase<SaveDashboardDrawerStat
     this.setState({ saveRefresh: !this.state.saveRefresh });
   };
 
-  public onSaveStarted = () => {
-    this.setState({ isSaving: true });
-  };
-
-  public onSaveFinished = () => {
-    this.setState({ isSaving: false });
-  };
-
   static Component = SaveDashboardDrawerComponent;
 }
 
 function SaveDashboardDrawerComponent({ model }: SceneComponentProps<SaveDashboardDrawer>) {
-  const { showDiff, saveAsCopy, saveTimeRange, saveVariables, saveRefresh, isSaving } = model.useState();
+  const { showDiff, saveAsCopy, saveTimeRange, saveVariables, saveRefresh } = model.useState();
 
   const changeInfo = model.state.dashboardRef.resolve().getDashboardChanges(saveTimeRange, saveVariables, saveRefresh);
 
@@ -80,7 +67,6 @@ function SaveDashboardDrawerComponent({ model }: SceneComponentProps<SaveDashboa
         label={t('dashboard-scene.save-dashboard-drawer.tabs.label-details', 'Details')}
         active={!showDiff}
         onChangeTab={() => model.setState({ showDiff: false })}
-        disabled={isSaving}
       />
       {changesCount > 0 && !managedResourceCannotBeEdited && (
         <Tab
@@ -88,7 +74,6 @@ function SaveDashboardDrawerComponent({ model }: SceneComponentProps<SaveDashboa
           active={showDiff}
           onChangeTab={() => model.setState({ showDiff: true })}
           counter={changesCount}
-          disabled={isSaving}
         />
       )}
     </TabsBar>
@@ -128,7 +113,7 @@ function SaveDashboardDrawerComponent({ model }: SceneComponentProps<SaveDashboa
     }
 
     if (saveAsCopy || changeInfo.isNew) {
-      return <SaveDashboardAsForm dashboard={dashboard} changeInfo={changeInfo} drawer={model} />;
+      return <SaveDashboardAsForm dashboard={dashboard} changeInfo={changeInfo} />;
     }
 
     if (isProvisioned || managedResourceCannotBeEdited) {

@@ -1,10 +1,8 @@
-import { LoadingState } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import {
   SceneComponentProps,
   SceneObjectBase,
   SceneObjectState,
-  SceneQueryRunner,
   sceneGraph,
   VizPanel,
   SceneObjectRef,
@@ -14,7 +12,6 @@ import { getDataSourceWithInspector } from 'app/features/dashboard/components/In
 import { supportsDataQuery } from 'app/features/dashboard/components/PanelEditor/utils';
 import { InspectTab } from 'app/features/inspector/types';
 
-import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 import { getDashboardSceneFor, getQueryRunnerFor } from '../utils/utils';
 
 import { HelpWizard } from './HelpWizard/HelpWizard';
@@ -44,8 +41,13 @@ export class PanelInspectDrawer extends SceneObjectBase<PanelInspectDrawerState>
   private _activationHandler() {
     const panel = this.state.panelRef.resolve();
     const queryRunner = getQueryRunnerFor(panel);
-    if (queryRunner) {
-      ensureInspectorQueryFormat(queryRunner);
+    if (
+      queryRunner &&
+      (queryRunner.state.data?.compactSeries ||
+        queryRunner.state.data?.request?.preferredQueryResultFormat === 'compact-v1')
+    ) {
+      queryRunner.cancelQuery();
+      queryRunner.runQueries();
     }
     this.buildTabs(0);
   }
@@ -98,33 +100,6 @@ export class PanelInspectDrawer extends SceneObjectBase<PanelInspectDrawerState>
   onClose = () => {
     getDashboardSceneFor(this).closeModal();
   };
-}
-
-export function ensureInspectorQueryFormat(queryRunner: SceneQueryRunner | DashboardSceneQueryRunner): void {
-  const currentData = queryRunner.state.data;
-  const preparedRequest =
-    queryRunner instanceof DashboardSceneQueryRunner ? queryRunner.getLastPreparedRequest() : undefined;
-  if (
-    queryRunner instanceof DashboardSceneQueryRunner &&
-    queryRunner.isActive &&
-    currentData === undefined &&
-    preparedRequest === undefined
-  ) {
-    return;
-  }
-  const activeRequest = preparedRequest ?? currentData?.request;
-  const hasCompactRequest = activeRequest
-    ? activeRequest.preferredQueryResultFormat === 'compact-v1'
-    : currentData?.compactSeries !== undefined;
-  const hasUnknownInFlightRequest =
-    activeRequest == null &&
-    (currentData == null || (currentData.state === LoadingState.Loading && currentData.request == null));
-
-  if (hasCompactRequest || hasUnknownInFlightRequest) {
-    // runQueries cancels the active stream before preparing the inspector's full-format request.
-    // Calling cancelQuery first emits an intermediate state that can make PanelEditor start a duplicate request.
-    queryRunner.runQueries();
-  }
 }
 
 function PanelInspectRenderer({ model }: SceneComponentProps<PanelInspectDrawer>) {

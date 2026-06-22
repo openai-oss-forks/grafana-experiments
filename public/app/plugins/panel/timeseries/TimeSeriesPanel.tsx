@@ -50,7 +50,7 @@ export function getRenderableCompactSeries(
     !hasFullFormatRequest &&
     isCompactTimeSeriesPanelConfigurationSupported({
       fieldConfig,
-      legendCalcs: options.legend?.calcs,
+      legendCalcs: Array.isArray(options.legend?.calcs) ? options.legend.calcs : undefined,
       panelOptions: options,
     })
     ? compactSeries

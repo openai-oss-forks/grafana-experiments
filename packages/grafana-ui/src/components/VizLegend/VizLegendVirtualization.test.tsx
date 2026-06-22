@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { LegendDisplayMode } from '@grafana/schema';
@@ -54,60 +54,24 @@ describe('high-cardinality visualization UI', () => {
     expect(source.getItem).toHaveBeenNthCalledWith(1, 999);
   });
 
-  test('keeps value columns visible in materialized tables with long names', () => {
-    const longColumnTitle = 'Maximum statistical difference';
+  test('aligns materialized Name and value headers', () => {
     const items: VizLegendItem[] = [
       {
         label: `series-${'long-name-'.repeat(20)}`,
         yAxis: 1,
         getDisplayValues: () => [
           { title: 'Min', description: 'Minimum value', text: '1', numeric: 1 },
-          { title: longColumnTitle, description: 'Maximum value', text: '2', numeric: 2 },
+          { title: 'Max', description: 'Maximum value', text: '2', numeric: 2 },
         ],
       },
     ];
 
-    render(<VizLegendTable items={items} placement="right" isSortable sortBy={longColumnTitle} />);
+    render(<VizLegendTable items={items} placement="right" isSortable />);
 
-    const table = screen.getByRole('table');
-    expect(table).toHaveStyle({ minWidth: '336px' });
-    expect(getComputedStyle(table).tableLayout).toBe('fixed');
-    expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
-    const nameHeader = table.querySelector('th')!;
-    const minHeader = screen.getByTitle('Min: Minimum value');
-    expect(nameHeader).toHaveStyle({ paddingLeft: '30px', textAlign: 'left' });
-    expect(minHeader).toHaveTextContent('Min');
+    const [nameHeader, minHeader, maxHeader] = screen.getAllByRole('columnheader');
+    expect(nameHeader).toHaveStyle({ textAlign: 'left' });
     expect(minHeader).toHaveStyle({ textAlign: 'right' });
-    expect(minHeader.firstElementChild).toHaveStyle({ justifyContent: 'flex-end' });
-    const sortedHeader = screen.getByTitle(`${longColumnTitle}: Maximum value`);
-    const headerContent = sortedHeader.firstElementChild!;
-    const headerLabel = headerContent.firstElementChild!;
-    const sortIcon = headerContent.lastElementChild!;
-    expect(sortedHeader).toHaveTextContent(longColumnTitle);
-    expect(headerContent).toHaveStyle({ display: 'flex' });
-    expect(headerLabel).toHaveStyle({ overflow: 'hidden' });
-    expect(sortIcon).toHaveStyle({ flexShrink: 0 });
-  });
-
-  test('preserves auto table layout for custom materialized rows', () => {
-    const items: VizLegendItem[] = [{ label: 'series-0', yAxis: 1 }];
-
-    render(
-      <VizLegendTable
-        items={items}
-        placement="right"
-        itemRenderer={(_, index) => (
-          <tr key={index}>
-            <td>Name</td>
-            <td>Custom value</td>
-          </tr>
-        )}
-      />
-    );
-
-    const table = screen.getByRole('table');
-    expect(getComputedStyle(table).tableLayout).not.toBe('fixed');
-    expect(table.querySelector('colgroup')).not.toBeInTheDocument();
+    expect(maxHeader).toHaveStyle({ textAlign: 'right' });
   });
 
   test('does not build a sort order for unsorted indexed tables', () => {
@@ -126,25 +90,15 @@ describe('high-cardinality visualization UI', () => {
     expect(source.getItem).toHaveBeenCalled();
     expect(source.getItem.mock.calls.length).toBeLessThan(40);
     expect(source.getItem).toHaveBeenNthCalledWith(1, 0);
-    const table = screen.getByRole('table');
-    const hiddenHeader = table.querySelector('th')!;
-    expect(table).toHaveAttribute('aria-rowcount', '1001');
-    expect(hiddenHeader).toHaveClass('sr-only');
-    expect(getComputedStyle(hiddenHeader).position).not.toBe('sticky');
+    expect(screen.getByRole('table')).toHaveAttribute('aria-rowcount', '1001');
     expect(screen.getAllByRole('row')[1]).toHaveAttribute('aria-rowindex', '2');
   });
 
-  test('keeps virtualized table rows in one opaque table layout while scrolling', () => {
-    const longColumnTitle = 'Maximum statistical difference';
+  test('keeps virtualized names and Min/Max values aligned while scrolling', async () => {
     const source = createItemSource(1_000);
     source.getDisplayValues = (index) => [
-      { title: 'Last', text: String(index), numeric: index },
-      { title: 'Mean', text: `${index}.123`, numeric: index + 0.123 },
-      {
-        title: longColumnTitle,
-        text: `maximum-value-${index}-with-extra-precision`,
-        numeric: index * 1_000_000,
-      },
+      { title: 'Min', text: `min-${index}`, numeric: index },
+      { title: 'Max', text: `max-${index}`, numeric: index },
     ];
 
     render(
@@ -153,46 +107,36 @@ describe('high-cardinality visualization UI', () => {
         itemSource={source}
         placement="right"
         isSortable
-        sortBy={longColumnTitle}
         displayValueColumns={[
-          { title: 'Last', description: 'Last value' },
-          { title: 'Mean', description: 'Mean value' },
-          { title: longColumnTitle, description: 'Maximum value' },
+          { title: 'Min', description: 'Minimum value' },
+          { title: 'Max', description: 'Maximum value' },
         ]}
       />
     );
 
     const table = screen.getByRole('table');
     const scrollContainer = table.parentElement!;
-    const firstHeaderCell = table.querySelector('th')!;
-    const valueColumns = table.querySelector('col[span="3"]');
-    expect(table).toHaveStyle({ minWidth: '424px' });
     expect(getComputedStyle(table).tableLayout).toBe('fixed');
-    expect(valueColumns).toHaveStyle({ width: '88px' });
-    expect(getComputedStyle(firstHeaderCell).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-    expect(getComputedStyle(firstHeaderCell).position).toBe('sticky');
-    expect(firstHeaderCell).toHaveStyle({ paddingLeft: '30px', textAlign: 'left' });
-    const sortedHeader = screen.getByTitle(`${longColumnTitle}: Maximum value`);
-    const headerContent = sortedHeader.firstElementChild!;
-    const headerLabel = headerContent.firstElementChild!;
-    const sortIcon = headerContent.lastElementChild!;
-    expect(headerContent).toHaveStyle({ display: 'flex' });
-    expect(headerContent).toHaveStyle({ justifyContent: 'flex-end' });
-    expect(headerLabel).toHaveStyle({ overflow: 'hidden' });
-    expect(sortIcon).toHaveStyle({ flexShrink: 0 });
-    expect(screen.getByText('maximum-value-0-with-extra-precision')).toHaveAttribute(
-      'title',
-      'maximum-value-0-with-extra-precision'
-    );
-    expect(getComputedStyle(screen.getAllByRole('row')[1]).display).toBe('table-row');
+    expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
+    const [nameHeader, minHeader, maxHeader] = screen.getAllByRole('columnheader');
+    expect(getComputedStyle(nameHeader).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(nameHeader).position).toBe('sticky');
+    expect(nameHeader).toHaveStyle({ textAlign: 'left', width: 'auto' });
+    expect(minHeader).toHaveStyle({ textAlign: 'right' });
+    expect(maxHeader).toHaveStyle({ textAlign: 'right' });
 
     scrollContainer.scrollTop = 560;
     fireEvent.scroll(scrollContainer);
 
-    const spacer = table.querySelector<HTMLTableRowElement>('tbody > tr[aria-hidden="true"]');
-    expect(spacer).toHaveStyle({ height: '224px' });
-    expect(spacer?.firstElementChild).toHaveAttribute('colspan', '4');
-    expect(screen.getAllByRole('row')[1]).not.toHaveAttribute('style');
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'series-0' })).not.toBeInTheDocument());
+    const label = screen.getAllByRole('button')[0];
+    const index = label.textContent?.replace('series-', '').trim();
+    const cells = within(label.closest('tr')!).getAllByRole('cell');
+    expect(cells[0]).toHaveTextContent(`series-${index}`);
+    expect(cells[1]).toHaveTextContent(`min-${index}`);
+    expect(cells[1]).toHaveAttribute('title', `min-${index}`);
+    expect(cells[2]).toHaveTextContent(`max-${index}`);
+    expect(getComputedStyle(label.closest('tr')!).display).toBe('table-row');
   });
 
   test('recovers the visible window when an indexed source shrinks', () => {

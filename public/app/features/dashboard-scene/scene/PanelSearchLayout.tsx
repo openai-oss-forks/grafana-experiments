@@ -1,13 +1,13 @@
 import { css } from '@emotion/css';
 import classNames from 'classnames';
-import { type CSSProperties, useMemo } from 'react';
+import { useMemo } from 'react';
 
 import { GrafanaTheme2 } from '@grafana/data';
 import { VizPanel, sceneGraph } from '@grafana/scenes';
 import { useStyles2 } from '@grafana/ui';
 
 import { DashboardScene } from './DashboardScene';
-import { SoloPanelContextProvider, SoloPanelContextValueBase } from './SoloPanelContext';
+import { SoloPanelContextProvider } from './SoloPanelContext';
 
 export interface Props {
   dashboard: DashboardScene;
@@ -17,18 +17,16 @@ export interface Props {
 
 const panelsPerRowCSSVar = '--panels-per-row';
 
-interface PanelSearchGridStyle extends CSSProperties {
-  '--panels-per-row'?: number;
-}
-
 export function PanelSearchLayout({ dashboard, panelSearch = '', panelsPerRow }: Props) {
   const { body } = dashboard.state;
   const styles = useStyles2(getStyles);
   const soloPanelContext = useMemo(() => new SoloPanelContextValueWithSearchStringFilter(panelSearch), [panelSearch]);
-  const gridStyle: PanelSearchGridStyle = { [panelsPerRowCSSVar]: panelsPerRow };
 
   return (
-    <div className={classNames(styles.grid, { [styles.perRow]: panelsPerRow !== undefined })} style={gridStyle}>
+    <div
+      className={classNames(styles.grid, { [styles.perRow]: panelsPerRow !== undefined })}
+      style={{ [panelsPerRowCSSVar]: panelsPerRow } as Record<string, number>}
+    >
       <SoloPanelContextProvider value={soloPanelContext} singleMatch={false} dashboard={dashboard}>
         <body.Component model={body} />
       </SoloPanelContextProvider>
@@ -54,15 +52,20 @@ function getStyles(theme: GrafanaTheme2) {
   };
 }
 
-export class SoloPanelContextValueWithSearchStringFilter extends SoloPanelContextValueBase {
-  public constructor(private searchQuery: string) {
-    super();
-  }
+export class SoloPanelContextValueWithSearchStringFilter {
+  public matchFound = false;
+
+  public constructor(private searchQuery: string) {}
 
   public matches(panel: VizPanel): boolean {
     const interpolatedSearchString = sceneGraph.interpolate(panel, this.searchQuery).toLowerCase();
     const interpolatedTitle = panel.interpolate(panel.state.title, undefined, 'text').toLowerCase();
 
-    return interpolatedTitle.includes(interpolatedSearchString);
+    const match = interpolatedTitle.includes(interpolatedSearchString);
+    if (match) {
+      this.matchFound = true;
+    }
+
+    return match;
   }
 }

@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import { Controller, useForm, FormProvider } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom-v5-compat';
 
@@ -63,11 +63,11 @@ export function SaveProvisionedDashboardForm({
     control,
     reset,
     register,
-    formState: { dirtyFields, isSubmitting },
+    formState: { dirtyFields },
   } = methods;
   // button enabled if form comment is dirty or dashboard state is dirty or raw JSON was provided from editor
-  const hasRawDashboardJSON = Boolean(dashboard.getRawJsonFromEditor());
-  const isDirtyState = Boolean(dirtyFields.comment) || isDirty || hasRawDashboardJSON;
+  const rawDashboardJSON = dashboard.getRawJsonFromEditor();
+  const isDirtyState = Boolean(dirtyFields.comment) || isDirty || Boolean(rawDashboardJSON);
   const [workflow, ref, path] = watch(['workflow', 'ref', 'path']);
 
   // Update the form if default values change
@@ -189,8 +189,6 @@ export function SaveProvisionedDashboardForm({
     // }
 
     const message = comment || `Save dashboard: ${dashboard.state.title}`;
-    await dashboard.waitForPendingPanelEdits();
-    const rawDashboardJSON = dashboard.getRawJsonFromEditor();
 
     const body = rawDashboardJSON
       ? dashboard.getSaveResourceFromSpec(rawDashboardJSON)
@@ -211,7 +209,7 @@ export function SaveProvisionedDashboardForm({
     // ignore incoming save events
     dashboardWatcher.ignoreNextSave();
 
-    await createOrUpdateFile({
+    createOrUpdateFile({
       // Skip adding ref to the default branch request
       ref: ref === repository?.branch ? undefined : ref,
       name: repo,
@@ -221,18 +219,9 @@ export function SaveProvisionedDashboardForm({
     });
   };
 
-  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    drawer.onSaveStarted();
-    try {
-      await handleSubmit(handleFormSubmit)(event);
-    } finally {
-      drawer.onSaveFinished();
-    }
-  };
-
   return (
     <FormProvider {...methods}>
-      <form onSubmit={onSubmit} name="save-provisioned-form">
+      <form onSubmit={handleSubmit(handleFormSubmit)} name="save-provisioned-form">
         <Stack direction="column" gap={2}>
           {readOnly && (
             <RepoInvalidStateBanner
@@ -319,22 +308,11 @@ export function SaveProvisionedDashboardForm({
           )}
 
           <Stack gap={2}>
-            <Button
-              variant="secondary"
-              onClick={drawer.onClose}
-              fill="outline"
-              disabled={isSubmitting || request.isLoading || Boolean(drawer.state.isSaving)}
-            >
+            <Button variant="secondary" onClick={drawer.onClose} fill="outline">
               <Trans i18nKey="dashboard-scene.save-provisioned-dashboard-form.cancel">Cancel</Trans>
             </Button>
-            <Button
-              variant="primary"
-              type="submit"
-              disabled={
-                isSubmitting || request.isLoading || Boolean(drawer.state.isSaving) || readOnly || !isDirtyState
-              }
-            >
-              {isSubmitting || request.isLoading || drawer.state.isSaving
+            <Button variant="primary" type="submit" disabled={request.isLoading || readOnly || !isDirtyState}>
+              {request.isLoading
                 ? t('dashboard-scene.save-provisioned-dashboard-form.saving', 'Saving...')
                 : t('dashboard-scene.save-provisioned-dashboard-form.save', 'Save')}
             </Button>

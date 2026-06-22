@@ -1,5 +1,5 @@
 import * as H from 'history';
-import { cloneDeep, debounce } from 'lodash';
+import { debounce } from 'lodash';
 import { Unsubscribable } from 'rxjs';
 
 import { LoadingState, NavIndex, PanelPlugin } from '@grafana/data';
@@ -9,7 +9,6 @@ import {
   NewSceneObjectAddedEvent,
   PanelBuilders,
   SceneComponentProps,
-  SceneDataProvider,
   SceneDataTransformer,
   SceneObjectBase,
   SceneObjectRef,
@@ -55,7 +54,6 @@ export interface PanelEditorState extends SceneObjectState {
   dataPane?: PanelDataPane | PanelDataPaneNext;
   panelRef: SceneObjectRef<VizPanel>;
   showLibraryPanelSaveModal?: boolean;
-  isLibraryPanelSaving?: boolean;
   showLibraryPanelUnlinkModal?: boolean;
   editPreview?: VizPanel;
   tableView?: VizPanel;
@@ -82,10 +80,6 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private _changesHaveBeenMade = false;
   private _editorDataTransformer?: SceneDataTransformer;
   private _editorQueryRunner?: SceneQueryRunner;
-  private _dataProviderBeforeSkip?: SceneDataProvider;
-  private _skipCommitChanges = false;
-  private _libraryPanelSave?: Promise<boolean>;
-  private _queryRestartPreparedForActivation = false;
 
   public constructor(state: PanelEditorState) {
     super(state);
@@ -99,23 +93,6 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this._layoutItem = layoutItem;
 
     this.setOriginalState(this.state.panelRef);
-    const queryRunner = getQueryRunnerFor(panel);
-    const data = queryRunner?.state.data;
-    const queryNeedsRestart = Boolean(
-      data?.compactSeries !== undefined ||
-        data?.request?.preferredQueryResultFormat === 'compact-v1' ||
-        data?.state === LoadingState.Loading ||
-        data?.state === LoadingState.Streaming
-    );
-    if (
-      queryNeedsRestart &&
-      queryRunner?.state.runQueriesMode !== 'manual' &&
-      !panel.state.$data?.isActive &&
-      !queryRunner?.isActive
-    ) {
-      queryRunner?.setState({ data: undefined });
-      this._queryRestartPreparedForActivation = true;
-    }
     this.addActivationHandler(this._activationHandler.bind(this));
   }
 
@@ -145,207 +122,176 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       })
     );
 
-    let compatibilityRunner: SceneQueryRunner | undefined;
-    let compatibilityRunnerSubscription: Unsubscribable | undefined;
-    let compatibilityTransformer: SceneDataTransformer | undefined;
-    let compatibilityTransformerSubscription: Unsubscribable | undefined;
-    let compactFallbackPending = false;
-    let compactRefreshPending = false;
+    let activeRunner: SceneQueryRunner | undefined;
+    let runnerSubscription: Unsubscribable | undefined;
+    let activeTransformer: SceneDataTransformer | undefined;
+    let transformerSubscription: Unsubscribable | undefined;
+    let pendingFormat: 'compact-v1' | 'full' | undefined;
+    let suppressQueryFormatReconciliation = false;
 
-    const ensureCompatibleQueryFormat = (currentRunner: SceneQueryRunner) => {
-      if (currentRunner !== getQueryRunnerFor(panel)) {
+    // Invariant: after the panel configuration settles, the latest prepared request and the
+    // network request it starts use compact-v1 whenever that final configuration supports it.
+    const reconcileQueryFormat = (currentRunner: SceneQueryRunner) => {
+      if (suppressQueryFormatReconciliation || currentRunner !== getQueryRunnerFor(panel)) {
         return;
       }
 
       if (panel.getPlugin()?.meta.skipDataQuery) {
-        compactFallbackPending = false;
-        compactRefreshPending = false;
+        pendingFormat = undefined;
         return;
       }
 
-      const prefersCompact = dashboard.enrichDataRequest(currentRunner).preferredQueryResultFormat === 'compact-v1';
+      const requiredFormat =
+        dashboard.enrichDataRequest(currentRunner).preferredQueryResultFormat === 'compact-v1' ? 'compact-v1' : 'full';
       const currentData = currentRunner.state.data;
       const preparedRequest =
         currentRunner instanceof DashboardSceneQueryRunner ? currentRunner.getLastPreparedRequest() : undefined;
-      if (
-        currentRunner instanceof DashboardSceneQueryRunner &&
-        currentData === undefined &&
-        preparedRequest === undefined
-      ) {
-        return;
+      const latestRequest = preparedRequest ?? currentData?.request;
+      const requestIsInFlight =
+        currentData?.state === LoadingState.Loading || currentData?.state === LoadingState.Streaming;
+      let currentFormat: 'compact-v1' | 'full' | undefined;
+      if (latestRequest) {
+        currentFormat = latestRequest.preferredQueryResultFormat === 'compact-v1' ? 'compact-v1' : 'full';
+      } else if (currentData?.compactSeries !== undefined) {
+        currentFormat = 'compact-v1';
+      } else if (currentData && !requestIsInFlight) {
+        currentFormat = 'full';
       }
-      const activeRequest = preparedRequest ?? currentData?.request;
-      const hasCompactRequest = activeRequest
-        ? activeRequest.preferredQueryResultFormat === 'compact-v1'
-        : currentData?.compactSeries !== undefined;
+      const hasUnknownInFlightRequest = latestRequest === undefined && requestIsInFlight;
 
-      if (prefersCompact) {
-        compactFallbackPending = false;
-        if (hasCompactRequest) {
-          compactRefreshPending = false;
-        } else if (activeRequest && !compactRefreshPending) {
-          compactRefreshPending = true;
-          currentRunner.cancelQuery();
-          currentRunner.runQueries();
-        }
+      if (hasUnknownInFlightRequest) {
         return;
       }
 
-      compactRefreshPending = false;
-      if (activeRequest && activeRequest.preferredQueryResultFormat !== 'compact-v1') {
-        compactFallbackPending = false;
+      if (currentFormat === requiredFormat) {
+        pendingFormat = undefined;
         return;
       }
 
-      const hasUnknownInFlightRequest =
-        currentData == null || (currentData.state === LoadingState.Loading && currentData.request == null);
-
-      if ((hasCompactRequest || hasUnknownInFlightRequest) && !compactFallbackPending) {
-        compactFallbackPending = true;
-        if (currentData?.compactSeries !== undefined) {
-          currentRunner.setState({ data: { ...currentData, compactSeries: undefined } });
-        }
-        currentRunner.cancelQuery();
-        currentRunner.runQueries();
+      if (!currentFormat || pendingFormat === requiredFormat) {
+        return;
       }
+
+      pendingFormat = requiredFormat;
+      if (requiredFormat === 'full' && currentData?.compactSeries !== undefined) {
+        currentRunner.setState({ data: { ...currentData, compactSeries: undefined } });
+      }
+      currentRunner.cancelQuery();
+      currentRunner.runQueries();
     };
 
-    const updateCompatibilityRunner = () => {
+    const reconcileTransformationChange = (currentRunner: SceneQueryRunner) => {
+      if (!(currentRunner instanceof DashboardSceneQueryRunner)) {
+        reconcileQueryFormat(currentRunner);
+        return;
+      }
+
+      const runQueriesRevision = currentRunner.getRunQueriesRevision();
+      queueMicrotask(() => {
+        const latestRunner = getQueryRunnerFor(panel);
+        if (
+          !this.isActive ||
+          !latestRunner ||
+          !Object.is(currentRunner, latestRunner) ||
+          currentRunner.getRunQueriesRevision() !== runQueriesRevision
+        ) {
+          return;
+        }
+        reconcileQueryFormat(latestRunner);
+      });
+    };
+
+    const updateRunner = () => {
       const currentRunner = getQueryRunnerFor(panel);
-      if (currentRunner === compatibilityRunner) {
+      if (currentRunner === activeRunner) {
         return currentRunner;
       }
 
-      compatibilityRunnerSubscription?.unsubscribe();
-      compatibilityRunner = currentRunner;
-      compactFallbackPending = false;
-      compactRefreshPending = false;
+      runnerSubscription?.unsubscribe();
+      activeRunner = currentRunner;
+      pendingFormat = undefined;
       if (currentRunner) {
-        compatibilityRunnerSubscription = currentRunner.subscribeToState((newState, prevState) => {
-          if (newState.data !== prevState.data) {
-            ensureCompatibleQueryFormat(currentRunner);
+        runnerSubscription = currentRunner.subscribeToState((newState, previousState) => {
+          if (newState.data !== previousState.data) {
+            reconcileQueryFormat(currentRunner);
           }
         });
-        this._subs.add(compatibilityRunnerSubscription);
+        this._subs.add(runnerSubscription);
       }
-
       return currentRunner;
     };
 
-    const updateCompatibilityTransformer = () => {
+    const updateTransformer = () => {
       const dataProvider = panel.state.$data;
       const currentTransformer = dataProvider instanceof SceneDataTransformer ? dataProvider : undefined;
-      if (currentTransformer === compatibilityTransformer) {
+      if (currentTransformer === activeTransformer) {
         return;
       }
 
-      compatibilityTransformerSubscription?.unsubscribe();
-      compatibilityTransformer = currentTransformer;
+      transformerSubscription?.unsubscribe();
+      activeTransformer = currentTransformer;
       if (currentTransformer) {
-        compatibilityTransformerSubscription = currentTransformer.subscribeToState((newState, prevState) => {
-          if (newState.transformations === prevState.transformations) {
-            return;
-          }
-
-          const currentRunner = updateCompatibilityRunner();
-          if (currentRunner) {
-            ensureCompatibleQueryFormat(currentRunner);
+        transformerSubscription = currentTransformer.subscribeToState((newState, previousState) => {
+          if (newState.transformations !== previousState.transformations || newState.$data !== previousState.$data) {
+            const currentRunner = updateRunner();
+            if (currentRunner) {
+              reconcileTransformationChange(currentRunner);
+            }
           }
         });
-        this._subs.add(compatibilityTransformerSubscription);
+        this._subs.add(transformerSubscription);
       }
     };
 
-    updateCompatibilityRunner();
-    updateCompatibilityTransformer();
-    if (this._queryRestartPreparedForActivation) {
-      compactFallbackPending = Boolean(
-        queryRunner && dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat !== 'compact-v1'
-      );
-      this._queryRestartPreparedForActivation = false;
-    }
+    updateRunner();
+    updateTransformer();
     this._subs.add(
-      panel.subscribeToState((newState, prevState) => {
-        // Existing compact data cannot be reused after the panel moves outside compact capabilities.
-        const queryCompatibilityMayHaveChanged =
-          newState.pluginId !== prevState.pluginId ||
-          newState.options !== prevState.options ||
-          newState.fieldConfig !== prevState.fieldConfig ||
-          newState.$data !== prevState.$data;
-        if (!queryCompatibilityMayHaveChanged) {
+      panel.subscribeToState((newState, previousState) => {
+        const compatibilityChanged =
+          newState.pluginId !== previousState.pluginId ||
+          newState.options !== previousState.options ||
+          newState.fieldConfig !== previousState.fieldConfig ||
+          newState.$data !== previousState.$data;
+        if (!compatibilityChanged) {
           return;
         }
 
-        if (newState.$data !== prevState.$data) {
-          updateCompatibilityTransformer();
+        if (newState.$data !== previousState.$data) {
+          updateTransformer();
         }
-
-        const currentRunner = updateCompatibilityRunner();
-        if (!currentRunner) {
-          return;
-        }
-
-        ensureCompatibleQueryFormat(currentRunner);
-      })
-    );
-    this._subs.add(
-      this.subscribeToState((newState, prevState) => {
-        if (newState.tableView === prevState.tableView) {
-          return;
-        }
-
-        const currentRunner = updateCompatibilityRunner();
+        const currentRunner = updateRunner();
         if (currentRunner) {
-          ensureCompatibleQueryFormat(currentRunner);
+          reconcileQueryFormat(currentRunner);
         }
       })
     );
 
     const deactivateParents = activateSceneObjectAndParentTree(panel);
-    if (
-      queryRunner &&
-      (hasCompactData ||
-        queryRunner.state.data?.state === LoadingState.Loading ||
-        queryRunner.state.data?.state === LoadingState.Streaming)
-    ) {
-      compactFallbackPending = true;
-      if (
-        hasCompactData &&
-        dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat !== 'compact-v1' &&
-        queryRunner.state.data
-      ) {
-        queryRunner.setState({ data: { ...queryRunner.state.data, compactSeries: undefined } });
+    if (queryRunner && (hasCompactData || queryRunner.state.data?.state === LoadingState.Loading)) {
+      suppressQueryFormatReconciliation = true;
+      try {
+        queryRunner.cancelQuery();
+        queryRunner.runQueries();
+      } finally {
+        suppressQueryFormatReconciliation = false;
       }
-      queryRunner.cancelQuery();
-      queryRunner.runQueries();
+    } else {
+      const currentRunner = updateRunner();
+      if (currentRunner) {
+        reconcileQueryFormat(currentRunner);
+      }
     }
 
     this.waitForPlugin();
 
     return () => {
-      const pendingPanelChange = this.state.optionsPane?.cancelPendingPanelChanges();
-
-      if (!pendingPanelChange) {
-        this.commitChanges(dashboard);
-      }
+      this.commitChanges();
 
       if (deactivateParents) {
         deactivateParents();
       }
 
-      if (pendingPanelChange) {
-        const completion = pendingPanelChange.then(() => {
-          const plugin = panel.getPlugin();
-          if (plugin) {
-            this.updatePanelDataProvider(plugin, panel, dashboard);
-          }
-          this.restoreEditorDataSource(panel);
-          return this.commitChanges(dashboard, true);
-        });
-        dashboard.setPendingPanelEditCompletion(completion);
-      } else {
-        this.restoreEditorDataSource(panel);
-      }
+      this.restoreEditorDataSource(panel);
     };
   }
 
@@ -368,7 +314,6 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   private restoreEditorDataSource(panel: VizPanel) {
     const transformer = this._editorDataTransformer;
     const queryRunner = this._editorQueryRunner;
-    this._dataProviderBeforeSkip = undefined;
     if (!transformer || !queryRunner) {
       return;
     }
@@ -385,12 +330,8 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this._editorQueryRunner = undefined;
   }
 
-  private commitChanges(dashboard = getDashboardSceneFor(this), publishImmediately = false): Promise<void> | undefined {
-    if (this._skipCommitChanges) {
-      return;
-    }
-
-    if (!this.hasChanges() && !this._changesHaveBeenMade) {
+  private commitChanges() {
+    if (!this.state.isDirty && !this._changesHaveBeenMade) {
       // Nothing to commit
       return;
     }
@@ -423,12 +364,8 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     // sadly we cannot publish this event directly here as the main dashboard edit / undo system
     // is not active while panel edit is active so we have to let the edit pane (which owns undo/redo)
     // publish this event when it activates
-    if (publishImmediately) {
-      return dashboard.state.editPane.performPanelEditAction(editAction);
-    } else {
-      dashboard.state.editPane.setPanelEditAction(editAction);
-    }
-    return undefined;
+    const dashboard = getDashboardSceneFor(this);
+    dashboard.state.editPane.setPanelEditAction(editAction);
   }
 
   private waitForPlugin(retry = 0) {
@@ -508,17 +445,6 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     return this.state.panelRef?.resolve();
   }
 
-  public getPendingPanelChange() {
-    return this.state.optionsPane?.getPendingLivePanelChange();
-  }
-
-  public hasChanges() {
-    if (this._skipCommitChanges) {
-      return false;
-    }
-    return getPanelChanges(this._originalSaveModel, vizPanelToPanel(this.state.panelRef.resolve())).hasChanges;
-  }
-
   private gotPanelPlugin(plugin: PanelPlugin) {
     const panel = this.getPanel();
 
@@ -589,6 +515,11 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         locationService.partial({ tab: null }, true);
         this.setState({ dataPane: undefined });
       }
+
+      // clean up data provider when switching from data to non data panel
+      if (panel.state.$data) {
+        panel.setState({ $data: undefined });
+      }
     }
 
     if (!skipDataQuery) {
@@ -598,66 +529,27 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         // This is to notify UrlSyncManager that a new object has been added to scene that requires url sync
         this.publishEvent(new NewSceneObjectAddedEvent(dataPane), true);
       }
-    }
 
-    this.updatePanelDataProvider(plugin, panel);
-  }
+      // add data provider when switching from non data to data panel
+      if (!panel.state.$data) {
+        let ds = getLastUsedDatasourceFromStorage(getDashboardSceneFor(this).state.uid!)?.datasourceUid;
+        if (!ds) {
+          ds = config.defaultDatasource;
+        }
 
-  private updatePanelDataProvider(plugin: PanelPlugin, panel: VizPanel, dashboard = getDashboardSceneFor(this)) {
-    if (plugin.meta.skipDataQuery) {
-      if (panel.state.$data) {
-        this._dataProviderBeforeSkip = panel.state.$data;
-        this._dataProviderBeforeSkip.clearParent();
-        panel.setState({ $data: undefined });
+        panel.setState({
+          $data: new SceneDataTransformer({
+            $data: new DashboardSceneQueryRunner({
+              datasource: {
+                uid: ds,
+              },
+              queries: [{ refId: 'A' }],
+            }),
+            transformations: [],
+          }),
+        });
       }
-      return;
     }
-
-    if (panel.state.$data) {
-      return;
-    }
-
-    if (this._dataProviderBeforeSkip) {
-      const dataProvider = this._dataProviderBeforeSkip;
-      this._dataProviderBeforeSkip = undefined;
-      const restoredQueryRunner =
-        dataProvider instanceof SceneQueryRunner ? dataProvider : getQueryRunnerFor(dataProvider);
-      const shouldRestartRestoredQuery = Boolean(
-        restoredQueryRunner?.state.data?.state === LoadingState.Loading ||
-          restoredQueryRunner?.state.data?.state === LoadingState.Streaming
-      );
-      const restoredQueryWillRestartOnActivation = Boolean(
-        shouldRestartRestoredQuery &&
-          restoredQueryRunner?.state.runQueriesMode !== 'manual' &&
-          !dataProvider.isActive &&
-          !restoredQueryRunner?.isActive
-      );
-      if (restoredQueryWillRestartOnActivation) {
-        restoredQueryRunner?.setState({ data: undefined });
-      }
-      panel.setState({ $data: dataProvider });
-      if (shouldRestartRestoredQuery && !restoredQueryWillRestartOnActivation) {
-        restoredQueryRunner?.runQueries();
-      }
-      return;
-    }
-
-    let ds = getLastUsedDatasourceFromStorage(dashboard.state.uid!)?.datasourceUid;
-    if (!ds) {
-      ds = config.defaultDatasource;
-    }
-
-    panel.setState({
-      $data: new SceneDataTransformer({
-        $data: new DashboardSceneQueryRunner({
-          datasource: {
-            uid: ds,
-          },
-          queries: [{ refId: 'A' }],
-        }),
-        transformations: [],
-      }),
-    });
   }
 
   public getUrlKey() {
@@ -677,12 +569,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     };
   }
 
-  public onDiscard = (): boolean => {
-    if (this._libraryPanelSave) {
-      return false;
-    }
-
-    this._skipCommitChanges = true;
+  public onDiscard = () => {
     this.setState({ isDirty: false });
 
     const panel = this.state.panelRef.resolve();
@@ -695,7 +582,6 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     }
 
     locationService.partial({ editPanel: null });
-    return true;
   };
 
   public dashboardSaved() {
@@ -710,55 +596,13 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
     this.setState({ showLibraryPanelSaveModal: true });
   };
 
-  public onConfirmSaveLibraryPanel = (closeEditor = true): Promise<boolean> => {
-    if (this._libraryPanelSave) {
-      return this._libraryPanelSave;
-    }
-
-    const save = this.saveLibraryPanel(closeEditor);
-    this._libraryPanelSave = save;
-    this.setState({ isLibraryPanelSaving: true });
-    const clearSave = () => {
-      if (this._libraryPanelSave === save) {
-        this._libraryPanelSave = undefined;
-        this.setState({ isLibraryPanelSaving: false });
-      }
-    };
-    void save.then(clearSave, clearSave);
-    return save;
+  public onConfirmSaveLibraryPanel = () => {
+    saveLibPanel(this.state.panelRef.resolve());
+    this.setState({ isDirty: false });
+    locationService.partial({ editPanel: null });
   };
 
-  public getPendingLibraryPanelSave(): Promise<boolean> | undefined {
-    return this._libraryPanelSave;
-  }
-
-  private async saveLibraryPanel(closeEditor: boolean): Promise<boolean> {
-    const pendingPanelChange = this.getPendingPanelChange();
-    if (pendingPanelChange) {
-      await pendingPanelChange;
-    }
-    if (this._skipCommitChanges) {
-      return false;
-    }
-
-    try {
-      await saveLibPanel(this.state.panelRef.resolve());
-    } catch {
-      return false;
-    }
-
-    this._skipCommitChanges = true;
-    this.setState({ isDirty: false });
-    if (closeEditor) {
-      locationService.partial({ editPanel: null });
-    }
-    return true;
-  }
-
   public onDismissLibraryPanelSaveModal = () => {
-    if (this._libraryPanelSave) {
-      return;
-    }
     this.setState({ showLibraryPanelSaveModal: false });
   };
 
@@ -822,15 +666,8 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
   public static buildEditPreview(panel: VizPanel): VizPanel {
     const editPreview = getDefaultVizPanel();
     editPreview.setState({
-      pluginId: panel.state.pluginId,
-      pluginVersion: panel.state.pluginVersion,
       title: panel.state.title,
       description: panel.state.description,
-      options: cloneDeep(panel.state.options),
-      fieldConfig: cloneDeep(panel.state.fieldConfig),
-      displayMode: panel.state.displayMode,
-      seriesLimit: panel.state.seriesLimit,
-      seriesLimitShowAll: panel.state.seriesLimitShowAll,
       $data: panel.state.$data ? new DataProviderSharer({ source: panel.state.$data.getRef() }) : undefined,
     });
     return editPreview;

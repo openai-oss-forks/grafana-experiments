@@ -1,18 +1,15 @@
-import { act, screen, render, waitFor } from '@testing-library/react';
+import { screen, render, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TestProvider } from 'test/helpers/TestProvider';
 import { byTestId, byText } from 'testing-library-selector';
 
 import { selectors } from '@grafana/e2e-selectors';
 import { config } from '@grafana/runtime';
-import { ConstantVariable, sceneGraph, SceneGridLayout, SceneRefreshPicker, VizPanel } from '@grafana/scenes';
+import { ConstantVariable, sceneGraph, SceneRefreshPicker } from '@grafana/scenes';
 import { AnnoKeyManagerKind, ManagerKind } from 'app/features/apiserver/types';
 import { SaveDashboardResponseDTO } from 'app/types/dashboard';
 
-import { buildPanelEditScene } from '../panel-edit/PanelEditor';
 import { DashboardSceneState } from '../scene/DashboardScene';
-import { DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
-import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
 import { transformSaveModelToScene } from '../serialization/transformSaveModelToScene';
 import { transformSceneToSaveModel } from '../serialization/transformSceneToSaveModel';
 
@@ -190,33 +187,6 @@ describe('SaveDashboardDrawer', () => {
       expect(dashboard.state.isDirty).toEqual(false);
     });
 
-    it('waits for an active panel change and snapshots its final state', async () => {
-      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries' });
-      const gridItem = new DashboardGridItem({ body: panel });
-      const { dashboard, openAndRender } = setup({
-        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
-      });
-      const panelEditor = buildPanelEditScene(panel);
-      let finishPanelChange!: () => void;
-      const pendingPanelChange = new Promise<void>((resolve) => {
-        finishPanelChange = resolve;
-      });
-      jest.spyOn(panelEditor, 'getPendingPanelChange').mockReturnValue(pendingPanelChange);
-      dashboard.setState({ editPanel: panelEditor, title: 'Before pending panel change' });
-      openAndRender();
-      mockSaveDashboard();
-      saveDashboardMutationMock.mockImplementation(() => new Promise(() => {}));
-
-      await userEvent.click(await screen.findByTestId(selectors.components.Drawer.DashboardSaveDrawer.saveButton));
-      expect(saveDashboardMutationMock).not.toHaveBeenCalled();
-
-      act(() => dashboard.setState({ title: 'After pending panel change' }));
-      finishPanelChange();
-      await waitFor(() => expect(saveDashboardMutationMock).toHaveBeenCalledTimes(1));
-
-      expect(saveDashboardMutationMock.mock.calls[0][0].dashboard.title).toBe('After pending panel change');
-    });
-
     it('Can handle save errors and overwrite', async () => {
       const { dashboard, openAndRender } = setup();
 
@@ -306,9 +276,7 @@ describe('SaveDashboardDrawer', () => {
   describe('Save as copy', () => {
     it('Should show save as form', async () => {
       const { openAndRender } = setup();
-      const drawer = openAndRender(true);
-      const onSaveSuccess = jest.fn();
-      act(() => drawer.setState({ onSaveSuccess }));
+      openAndRender(true);
 
       expect(await screen.findByText('Save dashboard copy')).toBeInTheDocument();
 
@@ -318,29 +286,6 @@ describe('SaveDashboardDrawer', () => {
 
       const dataSent = saveDashboardMutationMock.mock.calls[0][0];
       expect(dataSent.dashboard.uid).toEqual('');
-      expect(onSaveSuccess).toHaveBeenCalledTimes(1);
-    });
-
-    it('locks the drawer while pending panel edits settle', async () => {
-      const { dashboard, openAndRender } = setup();
-      let finishPanelEdits!: () => void;
-      const pendingPanelEdits = new Promise<void>((resolve) => {
-        finishPanelEdits = resolve;
-      });
-      jest.spyOn(dashboard, 'waitForPendingPanelEdits').mockReturnValue(pendingPanelEdits);
-      const drawer = openAndRender(true);
-      mockSaveDashboard();
-
-      await userEvent.click(await screen.findByTestId(selectors.components.Drawer.DashboardSaveDrawer.saveButton));
-
-      await waitFor(() => expect(drawer.state.isSaving).toBe(true));
-      expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
-      drawer.onClose();
-      expect(dashboard.state.overlay).toBe(drawer);
-      expect(saveDashboardMutationMock).not.toHaveBeenCalled();
-
-      finishPanelEdits();
-      await waitFor(() => expect(saveDashboardMutationMock).toHaveBeenCalledTimes(1));
     });
   });
 });

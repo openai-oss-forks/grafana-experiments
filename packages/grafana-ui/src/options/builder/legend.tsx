@@ -52,7 +52,6 @@ export function addLegendOptions<T extends OptionsWithLegend>(
       name: t('grafana-ui.builder.legend.name-width', 'Width'),
       category,
       settings: {
-        min: 0,
         placeholder: 'Auto',
       },
       showIf: (c) => c.legend.showLegend && c.legend.placement === 'right',

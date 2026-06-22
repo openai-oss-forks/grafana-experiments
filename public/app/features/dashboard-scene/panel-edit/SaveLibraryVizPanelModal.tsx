@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useAsync, useDebounce } from 'react-use';
 
 import { Trans, t } from '@grafana/i18n';
@@ -11,23 +11,13 @@ import { LibraryPanelBehavior } from '../scene/LibraryPanelBehavior';
 interface Props {
   libraryPanel: LibraryPanelBehavior;
   isUnsavedPrompt?: boolean;
-  isSaving?: boolean;
-  onConfirm: () => void | Promise<unknown>;
+  onConfirm: () => void;
   onDismiss: () => void;
   onDiscard: () => void;
 }
 
-export const SaveLibraryVizPanelModal = ({
-  libraryPanel,
-  isUnsavedPrompt,
-  isSaving = false,
-  onDismiss,
-  onConfirm,
-  onDiscard,
-}: Props) => {
+export const SaveLibraryVizPanelModal = ({ libraryPanel, isUnsavedPrompt, onDismiss, onConfirm, onDiscard }: Props) => {
   const [searchString, setSearchString] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const savingRef = useRef(false);
   const dashState = useAsync(async () => {
     const searchHits = await getConnectedDashboards(libraryPanel.state.uid);
     if (searchHits && searchHits.length > 0) {
@@ -53,36 +43,14 @@ export const SaveLibraryVizPanelModal = ({
   );
 
   const styles = useStyles2(getModalStyles);
-  const saving = isSaving || isSubmitting;
-  const handleDiscard = useCallback(() => {
-    if (!savingRef.current && !isSaving) {
-      onDiscard();
-    }
-  }, [isSaving, onDiscard]);
-  const handleConfirm = useCallback(async () => {
-    if (savingRef.current || isSaving) {
-      return;
-    }
-
-    savingRef.current = true;
-    setIsSubmitting(true);
-    try {
-      await onConfirm();
-    } finally {
-      savingRef.current = false;
-      setIsSubmitting(false);
-    }
-  }, [isSaving, onConfirm]);
-  const handleDismiss = useCallback(() => {
-    if (!savingRef.current && !isSaving) {
-      onDismiss();
-    }
-  }, [isSaving, onDismiss]);
+  const discardAndClose = useCallback(() => {
+    onDiscard();
+  }, [onDiscard]);
 
   const title = isUnsavedPrompt ? 'Unsaved library panel changes' : 'Save library panel';
 
   return (
-    <Modal title={title} onDismiss={handleDismiss} isOpen={true}>
+    <Modal title={title} onDismiss={onDismiss} isOpen={true}>
       <div>
         <p className={styles.textInfo}>
           <Trans
@@ -128,15 +96,19 @@ export const SaveLibraryVizPanelModal = ({
           </table>
         )}
         <Modal.ButtonRow>
-          <Button variant="secondary" onClick={handleDismiss} fill="outline" disabled={saving}>
+          <Button variant="secondary" onClick={onDismiss} fill="outline">
             <Trans i18nKey="dashboard-scene.save-library-viz-panel-modal.cancel">Cancel</Trans>
           </Button>
           {isUnsavedPrompt && (
-            <Button variant="destructive" onClick={handleDiscard} disabled={saving}>
+            <Button variant="destructive" onClick={discardAndClose}>
               <Trans i18nKey="dashboard-scene.save-library-viz-panel-modal.discard">Discard</Trans>
             </Button>
           )}
-          <Button onClick={handleConfirm} disabled={saving}>
+          <Button
+            onClick={() => {
+              onConfirm();
+            }}
+          >
             <Trans i18nKey="dashboard-scene.save-library-viz-panel-modal.update-all">Update all</Trans>
           </Button>
         </Modal.ButtonRow>

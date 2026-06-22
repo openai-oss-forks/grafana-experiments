@@ -1,5 +1,5 @@
 import { css, cx } from '@emotion/css';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMeasure } from 'react-use';
 
 import { getDragStyles, useStyles2, useTheme2 } from '@grafana/ui';
@@ -28,19 +28,10 @@ type UseVerticalResizeOptions = {
 
 export function useHorizontalResize({ initialWidth, minWidth = 0, maxWidth = Infinity }: UseHorizontalResizeOptions) {
   const [width, setWidth] = useState<number>(initialWidth);
-  const widthRef = useRef(width);
-  const cleanupHandleRef = useRef<() => void>();
   const styles = useStyles2(getDragStyles, 'middle');
-  widthRef.current = width;
 
   const handleRef = useCallback(
     (handle: HTMLElement | null) => {
-      cleanupHandleRef.current?.();
-      cleanupHandleRef.current = undefined;
-      if (!handle || handle.nodeType !== Node.ELEMENT_NODE) {
-        return;
-      }
-
       let startX = 0;
       let startWidth = 0;
 
@@ -56,22 +47,17 @@ export function useHorizontalResize({ initialWidth, minWidth = 0, maxWidth = Inf
       const onMouseDown = (e: MouseEvent) => {
         e.preventDefault();
         startX = e.clientX;
-        startWidth = widthRef.current;
+        startWidth = width;
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
       };
 
-      handle.addEventListener('mousedown', onMouseDown);
-      cleanupHandleRef.current = () => {
-        handle.removeEventListener('mousedown', onMouseDown);
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-      };
+      if (handle?.nodeType === Node.ELEMENT_NODE) {
+        handle.addEventListener('mousedown', onMouseDown);
+      }
     },
-    [maxWidth, minWidth]
+    [maxWidth, minWidth, width]
   );
-
-  useEffect(() => () => cleanupHandleRef.current?.(), []);
 
   return { handleRef, width, setWidth, className: styles.dragHandleVertical };
 }
@@ -83,19 +69,10 @@ export function useVerticalResize({
   className,
 }: UseVerticalResizeOptions) {
   const [height, setHeight] = useState<number>(initialHeight);
-  const heightRef = useRef(height);
-  const cleanupHandleRef = useRef<() => void>();
   const styles = useStyles2(getDragStyles, 'middle');
-  heightRef.current = height;
 
   const handleRef = useCallback(
     (handle: HTMLElement | null) => {
-      cleanupHandleRef.current?.();
-      cleanupHandleRef.current = undefined;
-      if (!handle || handle.nodeType !== Node.ELEMENT_NODE) {
-        return;
-      }
-
       let startY = 0;
       let startHeight = 0;
 
@@ -111,22 +88,17 @@ export function useVerticalResize({
       const onMouseDown = (e: MouseEvent) => {
         e.preventDefault();
         startY = e.clientY;
-        startHeight = heightRef.current;
+        startHeight = height;
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
       };
 
-      handle.addEventListener('mousedown', onMouseDown);
-      cleanupHandleRef.current = () => {
-        handle.removeEventListener('mousedown', onMouseDown);
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-      };
+      if (handle?.nodeType === Node.ELEMENT_NODE) {
+        handle.addEventListener('mousedown', onMouseDown);
+      }
     },
-    [maxHeight, minHeight]
+    [maxHeight, minHeight, height]
   );
-
-  useEffect(() => () => cleanupHandleRef.current?.(), []);
 
   return { handleRef, height, setHeight, className: cx(styles.dragHandleHorizontal, className) };
 }

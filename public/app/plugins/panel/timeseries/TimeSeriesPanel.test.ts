@@ -1,5 +1,5 @@
-import { CompactTimeSeriesData, ReducerID } from '@grafana/data';
-import { GraphDrawStyle, VizOrientation } from '@grafana/schema';
+import { CompactTimeSeriesData } from '@grafana/data';
+import { GraphDrawStyle } from '@grafana/schema';
 
 import { getRenderableCompactSeries } from './TimeSeriesPanel';
 import { Options } from './panelcfg.gen';
@@ -8,40 +8,29 @@ describe('getRenderableCompactSeries', () => {
   const compactSeries = {} as CompactTimeSeriesData;
   const options = { legend: { calcs: [] } } as unknown as Options;
 
-  it('keeps compact data for supported field configuration', () => {
-    expect(
-      getRenderableCompactSeries(
-        compactSeries,
-        {
-          defaults: { custom: { drawStyle: GraphDrawStyle.Points } },
-          overrides: [],
-        },
-        options
-      )
-    ).toBe(compactSeries);
+  it('keeps compact data for supported time series configuration', () => {
+    expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options)).toBe(compactSeries);
+  });
+
+  it('treats malformed legend reducers like the request policy does', () => {
+    const malformedOptions = { legend: { calcs: 'last' } } as unknown as Options;
+    expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, malformedOptions)).toBe(
+      compactSeries
+    );
   });
 
   it.each([
     {
       name: 'bar draw style',
       fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
-      panelOptions: options,
+      hasFullFormatRequest: false,
     },
     {
-      name: 'vertical orientation',
+      name: 'full-format request',
       fieldConfig: { defaults: {}, overrides: [] },
-      panelOptions: { ...options, orientation: VizOrientation.Vertical },
+      hasFullFormatRequest: true,
     },
-    {
-      name: 'unsupported legend reducer',
-      fieldConfig: { defaults: {}, overrides: [] },
-      panelOptions: { ...options, legend: { ...options.legend, calcs: [ReducerID.p95] } },
-    },
-  ])('withholds compact data for $name', ({ fieldConfig, panelOptions }) => {
-    expect(getRenderableCompactSeries(compactSeries, fieldConfig, panelOptions)).toBeUndefined();
-  });
-
-  it('withholds stale compact data for a full-format request', () => {
-    expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options, true)).toBeUndefined();
+  ])('withholds stale compact data for $name', ({ fieldConfig, hasFullFormatRequest }) => {
+    expect(getRenderableCompactSeries(compactSeries, fieldConfig, options, hasFullFormatRequest)).toBeUndefined();
   });
 });

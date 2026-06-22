@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 
 import { LoadingState, PanelData, toDataFrame, FieldType, getDefaultTimeRange } from '@grafana/data';
 
@@ -153,57 +153,5 @@ describe('VisualizationSuggestions', () => {
     await waitFor(() => {
       expect(mockGetAllSuggestions.mock.calls.length).toBeGreaterThan(callCountBeforeChange);
     });
-  });
-
-  it('does not replace an existing configured visualization with the first suggestion', async () => {
-    const onChange = jest.fn();
-    const data: PanelData = {
-      series: [
-        toDataFrame({
-          fields: [
-            { name: 'time', type: FieldType.time, values: [1, 2, 3] },
-            { name: 'value', type: FieldType.number, values: [10, 20, 30] },
-          ],
-        }),
-      ],
-      state: LoadingState.Done,
-      timeRange: getDefaultTimeRange(),
-      structureRev: 1,
-    };
-
-    render(
-      <VisualizationSuggestions
-        onChange={onChange}
-        data={data}
-        panel={{ type: 'barchart' } as never}
-        searchQuery=""
-        isNewPanel={false}
-      />
-    );
-
-    await screen.findByTestId('suggestion-card');
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it('does not replace a selected visualization when a new-panel picker is reopened', async () => {
-    const onChange = jest.fn();
-    const data: PanelData = {
-      series: [toDataFrame({ fields: [{ name: 'value', type: FieldType.number, values: [10, 20, 30] }] })],
-      state: LoadingState.Done,
-      timeRange: getDefaultTimeRange(),
-    };
-
-    render(
-      <VisualizationSuggestions
-        onChange={onChange}
-        data={data}
-        panel={{ type: 'barchart' } as never}
-        isNewPanel
-        hasPickedViz
-      />
-    );
-
-    await screen.findAllByTestId('suggestion-card');
-    expect(onChange).not.toHaveBeenCalled();
   });
 });

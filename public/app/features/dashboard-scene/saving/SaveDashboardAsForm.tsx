@@ -10,7 +10,6 @@ import { getProvisionedMeta } from 'app/features/provisioning/components/utils/g
 
 import { DashboardScene } from '../scene/DashboardScene';
 
-import type { SaveDashboardDrawer } from './SaveDashboardDrawer';
 import { DashboardChangeInfo, NameAlreadyExistsError, SaveButton, isNameExistsError } from './shared';
 import { useSaveDashboard } from './useSaveDashboard';
 
@@ -25,13 +24,12 @@ interface SaveDashboardAsFormDTO {
 export interface Props {
   dashboard: DashboardScene;
   changeInfo: DashboardChangeInfo;
-  drawer: SaveDashboardDrawer;
 }
 
-export function SaveDashboardAsForm({ dashboard, changeInfo, drawer }: Props) {
+export function SaveDashboardAsForm({ dashboard, changeInfo }: Props) {
   const { changedSaveModel } = changeInfo;
 
-  const { register, setValue, formState, getValues, watch, trigger } = useForm<SaveDashboardAsFormDTO>({
+  const { register, handleSubmit, setValue, formState, getValues, watch, trigger } = useForm<SaveDashboardAsFormDTO>({
     mode: 'onBlur',
     defaultValues: {
       title: changeInfo.isNew ? changedSaveModel.title! : `${changedSaveModel.title} Copy`,
@@ -81,68 +79,50 @@ export function SaveDashboardAsForm({ dashboard, changeInfo, drawer }: Props) {
   );
 
   const onSave = async (overwrite: boolean) => {
-    drawer.onSaveStarted();
-    try {
-      if (validationTimeoutRef.current) {
-        clearTimeout(validationTimeoutRef.current);
-      }
+    if (validationTimeoutRef.current) {
+      clearTimeout(validationTimeoutRef.current);
+    }
 
-      const isTitleValid = await trigger('title');
+    const isTitleValid = await trigger('title');
 
-      // This prevents the race between the new input and old validation state
-      if (!isTitleValid) {
-        return;
-      }
+    // This prevents the race between the new input and old validation state
+    if (!isTitleValid) {
+      return;
+    }
 
-      const data = getValues();
+    const data = getValues();
 
-      const result = await onSaveDashboard(dashboard, {
-        overwrite,
-        folderUid: data.folder.uid,
-        rawDashboardJSON: changedSaveModel,
+    const result = await onSaveDashboard(dashboard, {
+      overwrite,
+      folderUid: data.folder.uid,
+      rawDashboardJSON: changedSaveModel,
 
-        // save as config
-        saveAsCopy: true,
-        isNew: changeInfo.isNew,
-        copyTags: data.copyTags,
+      // save as config
+      saveAsCopy: true,
+      isNew: changeInfo.isNew,
+      copyTags: data.copyTags,
+      title: data.title,
+      description: data.description,
+    });
+
+    if (result.status === 'success') {
+      dashboard.closeModal();
+    } else {
+      setContentSent({
         title: data.title,
-        description: data.description,
+        folderUid: data.folder.uid,
       });
-
-      if (result.status === 'success') {
-        dashboard.closeModal();
-        drawer.state.onSaveSuccess?.();
-      } else {
-        setContentSent({
-          title: data.title,
-          folderUid: data.folder.uid,
-        });
-      }
-    } finally {
-      drawer.onSaveFinished();
     }
   };
 
   const cancelButton = (
-    <Button
-      variant="secondary"
-      onClick={() => dashboard.closeModal()}
-      fill="outline"
-      disabled={state.loading || drawer.state.isSaving}
-    >
+    <Button variant="secondary" onClick={() => dashboard.closeModal()} fill="outline">
       <Trans i18nKey="dashboard-scene.save-dashboard-as-form.cancel-button.cancel">Cancel</Trans>
     </Button>
   );
 
   const saveButton = (overwrite: boolean) => {
-    return (
-      <SaveButton
-        isValid={isValid}
-        isLoading={state.loading || Boolean(drawer.state.isSaving)}
-        onSave={onSave}
-        overwrite={overwrite}
-      />
-    );
+    return <SaveButton isValid={isValid} isLoading={state.loading} onSave={onSave} overwrite={overwrite} />;
   };
   function renderFooter(error?: Error) {
     const formValuesMatchContentSent =
@@ -172,12 +152,7 @@ export function SaveDashboardAsForm({ dashboard, changeInfo, drawer }: Props) {
   }
 
   return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        void onSave(false);
-      }}
-    >
+    <form onSubmit={handleSubmit(() => onSave(false))}>
       <Stack direction="column" gap={2}>
         <Field
           noMargin

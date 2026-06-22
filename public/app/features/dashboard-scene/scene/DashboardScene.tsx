@@ -189,9 +189,6 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
    * Url state before editing started
    */
   private _initialUrlState?: H.Location;
-  private _pendingPanelEditCompletions = new Set<Promise<void>>();
-  private _pendingPanelEditAction?: Promise<void>;
-  private _pendingPanelEditActionCallback?: () => void;
   /**
    * Dashboard changes tracker
    */
@@ -329,63 +326,6 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
     this._changeTracker.startTrackingChanges();
   }
 
-  public setPendingPanelEditCompletion(completion: Promise<void>) {
-    const trackedCompletion = completion.finally(() => {
-      this._pendingPanelEditCompletions.delete(trackedCompletion);
-    });
-    this._pendingPanelEditCompletions.add(trackedCompletion);
-  }
-
-  public async waitForPendingPanelEditCompletion() {
-    while (this._pendingPanelEditCompletions.size > 0) {
-      await Promise.all(this._pendingPanelEditCompletions);
-    }
-  }
-
-  public async waitForPendingPanelEdits() {
-    const panelEditor = this.state.editPanel;
-    const activePanelChange = panelEditor?.getPendingPanelChange();
-    if (activePanelChange) {
-      await activePanelChange;
-    }
-    const libraryPanelSave = panelEditor?.getPendingLibraryPanelSave();
-    if (libraryPanelSave) {
-      await libraryPanelSave;
-    }
-    await this.waitForPendingPanelEditCompletion();
-  }
-
-  public hasPendingPanelEditCompletion() {
-    return this._pendingPanelEditCompletions.size > 0;
-  }
-
-  private runAfterPendingPanelEdits(action: () => void): boolean {
-    const panelEditor = this.state.editPanel;
-    const hasPendingPanelEdits = Boolean(
-      panelEditor?.getPendingPanelChange() ||
-        panelEditor?.getPendingLibraryPanelSave() ||
-        this.hasPendingPanelEditCompletion()
-    );
-    if (!hasPendingPanelEdits) {
-      return false;
-    }
-
-    this._pendingPanelEditActionCallback = action;
-    if (!this._pendingPanelEditAction) {
-      const clearPendingAction = () => {
-        this._pendingPanelEditAction = undefined;
-        this._pendingPanelEditActionCallback = undefined;
-      };
-      const runPendingAction = () => {
-        const pendingAction = this._pendingPanelEditActionCallback;
-        clearPendingAction();
-        pendingAction?.();
-      };
-      this._pendingPanelEditAction = this.waitForPendingPanelEdits().then(runPendingAction, clearPendingAction);
-    }
-    return true;
-  }
-
   public exitEditMode({ skipConfirm, restoreInitialState }: { skipConfirm: boolean; restoreInitialState?: boolean }) {
     if (!this.canDiscard()) {
       console.error('Trying to discard back to a state that does not exist, initialState undefined');
@@ -444,10 +384,6 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
   }
 
   private exitEditModeConfirmed(restoreInitialState = true) {
-    if (this.runAfterPendingPanelEdits(() => this.exitEditModeConfirmed(true))) {
-      return;
-    }
-
     // No need to listen to changes anymore
     this._changeTracker.stopTrackingChanges();
 
@@ -495,10 +431,6 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
   public discardChangesAndKeepEditing() {
     if (!this.canDiscard()) {
       console.error('Trying to discard back to a state that does not exist, initialState undefined');
-      return;
-    }
-
-    if (this.runAfterPendingPanelEdits(() => this.discardChangesAndKeepEditing())) {
       return;
     }
 
@@ -998,24 +930,18 @@ export class DashboardScene extends SceneObjectBase<DashboardSceneState> impleme
     const transformations = dataProvider instanceof SceneDataTransformer ? dataProvider.state.transformations : [];
     const hasTimeComparison =
       panel?.state.$timeRange instanceof PanelTimeRange && Boolean(panel.state.$timeRange.state.compareWith);
-    const panelOptions = panel?.state.options;
-    const legend =
-      typeof panelOptions === 'object' && panelOptions !== null ? Reflect.get(panelOptions, 'legend') : undefined;
+    const legend = panel?.state.options ? Reflect.get(panel.state.options, 'legend') : undefined;
     const legendCalcs = typeof legend === 'object' && legend !== null ? Reflect.get(legend, 'calcs') : undefined;
-    const isTableView = Boolean(dashboard.state.editPanel?.state.tableView);
-    const inspector = dashboard.state.overlay;
-    const isInspecting = inspector instanceof PanelInspectDrawer && inspector.state.panelRef.resolve() === panel;
     const preferredQueryResultFormat = getPreferredDashboardQueryFormat({
       app: CoreApp.Dashboard,
       panelPluginId: panel?.state.pluginId,
       transformations,
-      isInspecting,
-      isTableView,
+      isInspecting: dashboard.state.overlay instanceof PanelInspectDrawer,
       isPublicDashboard: Boolean(config.publicDashboardAccessToken),
       hasTimeComparison,
       fieldConfig: panel?.state.fieldConfig,
-      legendCalcs,
-      panelOptions,
+      legendCalcs: Array.isArray(legendCalcs) ? legendCalcs : undefined,
+      panelOptions: panel?.state.options,
     });
 
     return {
