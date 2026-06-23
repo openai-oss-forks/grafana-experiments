@@ -543,7 +543,7 @@ func TestCompactMultiBatchJSONLDecoderKeepsSchemaAcrossBatches(t *testing.T) {
 	require.Equal(t, []float64{1, 20, 3}, fieldValues[float64](merged.Frames[0].Fields[1]))
 	require.Equal(t, "api", merged.Frames[0].Fields[1].Config.DisplayNameFromDS)
 
-	frame, err := buildCompactDataResponseFrame(context.Background(), query, merged, true)
+	frame, err := buildCompactDataResponseFrame(context.Background(), log.NewNullLogger(), query, merged, true)
 	require.NoError(t, err)
 	body := multiBatchFrameBytes(frame)
 	require.Equal(t, "MBBF", string(body[:4]))
@@ -604,7 +604,7 @@ func TestBuildCompactDataResponseFrameFallsBackToJSONForCompactUnsupported(t *te
 		},
 		Status: backend.StatusOK,
 	}
-	frame, err := buildCompactDataResponseFrame(context.Background(), query, response, true)
+	frame, err := buildCompactDataResponseFrame(context.Background(), log.NewNullLogger(), query, response, true)
 	require.NoError(t, err)
 	body := multiBatchFrameBytes(frame)
 	require.Equal(t, "MBBF", string(body[:4]))
@@ -623,7 +623,7 @@ func TestCompactMultiBatchPayloadDecoderTreatsPlainNonOKPayloadAsError(t *testin
 	require.Equal(t, backend.Status(http.StatusTooManyRequests), response.Status)
 	require.ErrorContains(t, response.Error, "local_rate_limited")
 
-	frame, err := buildCompactDataResponseFrame(context.Background(), query, response, true)
+	frame, err := buildCompactDataResponseFrame(context.Background(), log.NewNullLogger(), query, response, true)
 	require.NoError(t, err)
 	body := multiBatchFrameBytes(frame)
 	require.Equal(t, "MBBF", string(body[:4]))
@@ -661,7 +661,7 @@ func TestBuildCompactDataResponseFrameKeepsNoDataWithNoticesAsNoData(t *testing.
 		Frames: data.Frames{noDataFrame},
 		Status: backend.StatusOK,
 	}
-	frame, err := buildCompactDataResponseFrame(context.Background(), query, response, true)
+	frame, err := buildCompactDataResponseFrame(context.Background(), log.NewNullLogger(), query, response, true)
 	require.NoError(t, err)
 	body := multiBatchFrameBytes(frame)
 	require.Equal(t, "MBBF", string(body[:4]))
@@ -685,6 +685,86 @@ func TestMergeDataResponsesUsesFinalBatchPrecedence(t *testing.T) {
 	require.Equal(t, []time.Time{time.Unix(0, 0).UTC(), time.Unix(60, 0).UTC(), time.Unix(120, 0).UTC()}, fieldValues[time.Time](merged.Frames[0].Fields[0]))
 	require.Equal(t, []float64{1, 20, 3}, fieldValues[float64](merged.Frames[0].Fields[1]))
 	require.Equal(t, "api", merged.Frames[0].Fields[1].Config.DisplayNameFromDS)
+}
+
+func TestBuildCompactDataResponseFrameKeepsDistinctStreamingSeriesCompact(t *testing.T) {
+	query := compactMultiBatchQuery{
+		RefID:        "A",
+		Expr:         "up",
+		LegendFormat: "{{job}}",
+		Start:        time.Unix(0, 0).UTC(),
+		End:          time.Unix(120, 0).UTC(),
+		Step:         time.Minute,
+	}
+	first, err := decodePrometheusPayload([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"api"},"values":[[0,"1"]]}]}}`), query, backend.StatusOK)
+	require.NoError(t, err)
+	final, err := decodePrometheusPayload([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"worker"},"values":[[60,"2"]]}]}}`), query, backend.StatusOK)
+	require.NoError(t, err)
+
+	accumulated := mergeDataResponses(backend.DataResponse{}, first)
+	accumulated = mergeDataResponses(accumulated, final)
+	require.Len(t, accumulated.Frames, 2)
+
+	frame, err := buildCompactDataResponseFrame(context.Background(), log.NewNullLogger(), query, accumulated, true)
+	require.NoError(t, err)
+	body := multiBatchFrameBytes(frame)
+	require.Equal(t, "MBBF", string(body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), body[6]&multiBatchFinalFlag)
+}
+
+func TestBuildCompactDataResponseFrameLogsConflictingStreamingMetadata(t *testing.T) {
+	testCases := []struct {
+		name   string
+		reason string
+		mutate func(*data.Frame)
+	}{
+		{
+			name:   "executed query",
+			reason: "inconsistent_executed_query",
+			mutate: func(frame *data.Frame) {
+				frame.Meta.ExecutedQueryString = "Expr: different_query\nStep: 1m0s"
+			},
+		},
+		{
+			name:   "calculated min step",
+			reason: "inconsistent_calculated_min_step",
+			mutate: func(frame *data.Frame) {
+				frame.Meta.Custom.(map[string]any)["calculatedMinStep"] = int64(30_000)
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			query := compactMultiBatchQuery{
+				RefID:        "A",
+				Expr:         "up",
+				LegendFormat: "{{job}}",
+				Start:        time.Unix(0, 0).UTC(),
+				End:          time.Unix(120, 0).UTC(),
+				Step:         time.Minute,
+			}
+			first, err := decodePrometheusPayload([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"api"},"values":[[0,"1"]]}]}}`), query, backend.StatusOK)
+			require.NoError(t, err)
+			final, err := decodePrometheusPayload([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"worker"},"values":[[60,"2"]]}]}}`), query, backend.StatusOK)
+			require.NoError(t, err)
+
+			accumulated := mergeDataResponses(backend.DataResponse{}, first)
+			accumulated = mergeDataResponses(accumulated, final)
+			testCase.mutate(accumulated.Frames[1])
+
+			logger := &recordingLogger{}
+			frame, err := buildCompactDataResponseFrame(context.Background(), logger, query, accumulated, true)
+			require.NoError(t, err)
+
+			body := multiBatchFrameBytes(frame)
+			require.Equal(t, byte(multiBatchPayloadTypeJSONL), body[5])
+			require.Len(t, logger.errorMessages, 1)
+			require.Equal(t, "Compact multibatch response metadata disagreed across frames", logger.errorMessages[0])
+			require.Contains(t, logger.errorArgs[0], testCase.reason)
+		})
+	}
 }
 
 func receiveResponse(t *testing.T, responses <-chan *backend.CallResourceResponse) *backend.CallResourceResponse {
