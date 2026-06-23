@@ -366,9 +366,6 @@ func populateCompactResultMetadata(response *compactDataResponse, frames data.Fr
 		if frame.Meta.Custom != nil && !ok {
 			return compactQueryDataUnsupported("invalid_custom_metadata")
 		}
-		if !compactCustomMetaSupported(custom) {
-			return compactQueryDataUnsupported("unsupported_custom_metadata")
-		}
 
 		if frame.Meta.ExecutedQueryString != "" {
 			if frameIndex != 0 || response.ExecutedQueryStringID != 0 {
@@ -472,15 +469,6 @@ func compactFrameMetaUnsupportedReason(meta *data.FrameMeta) string {
 	default:
 		return ""
 	}
-}
-
-func compactCustomMetaSupported(custom map[string]any) bool {
-	for key := range custom {
-		if key != "resultType" && key != "calculatedMinStep" {
-			return false
-		}
-	}
-	return true
 }
 
 func getExecutedTimeAxis(frames data.Frames, request compactQueryRequest) (compactRegularTimeAxis, bool) {
