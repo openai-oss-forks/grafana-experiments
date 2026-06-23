@@ -56,6 +56,19 @@ type multiBatchErrorFrameBuilder func() multiBatchFrame
 // multibatch response has been selected. It accepts typed frames rather than
 // arbitrary response bytes, so neither callers nor the generic resource error
 // path can append ordinary JSON after MBRH.
+//
+// Streaming write contract:
+//   - MBRH is written before the first batch, but is not a flush boundary by
+//     itself.
+//   - A batch is written as its MBBF header followed by its complete payload,
+//     then flushed exactly once; never flush between the frame header and its
+//     payload.
+//   - Forwarding only needs fixed-size header and copy buffers. It must not
+//     accumulate a whole batch payload merely to preserve these boundaries.
+//   - If an error occurs after any MBBF bytes are written, stop the stream;
+//     never append another frame or ordinary JSON to a possibly partial batch.
+//   - Once multibatch bytes have been written, only multibatch frames may
+//     follow; ordinary JSON is never a valid fallback body.
 type multiBatchResponseEncoder struct {
 	ctx             context.Context
 	logger          log.Logger
