@@ -1,5 +1,5 @@
 import { isNumber } from 'lodash';
-import uPlot from 'uplot';
+import uPlot, { Padding } from 'uplot';
 
 import {
   DataFrame,
@@ -73,6 +73,7 @@ import {
   AxisProps,
   ScaleProps,
   StackingGroup,
+  CompactSeriesFlag,
   installCompactRenderer,
 } from '@grafana/ui/internal';
 
@@ -152,7 +153,8 @@ export function prepareCompactPlotConfigBuilder(options: {
   getTimeRange: Parameters<UPlotConfigPrepFn>[0]['getTimeRange'];
   hoverProximity?: number;
   orientation?: VizOrientation;
-  xAxisConfig?: Pick<AxisProps, 'size' | 'gap' | 'ticks'>;
+  xAxisConfig?: Partial<AxisProps>;
+  padding?: Padding;
 }) {
   const {
     plan,
@@ -162,16 +164,18 @@ export function prepareCompactPlotConfigBuilder(options: {
     hoverProximity,
     orientation = VizOrientation.Horizontal,
     xAxisConfig,
+    padding,
   } = options;
-  if (orientation === VizOrientation.Vertical) {
-    throw new Error('Compact rendering supports horizontal time-series orientation only');
-  }
+  const isHorizontal = orientation !== VizOrientation.Vertical;
 
   const builder = new UPlotConfigBuilder(timeZones[0]);
+  if (padding) {
+    builder.setPadding(padding);
+  }
   builder.addScale({
     scaleKey: 'x',
-    orientation: ScaleOrientation.Horizontal,
-    direction: ScaleDirection.Right,
+    orientation: isHorizontal ? ScaleOrientation.Horizontal : ScaleOrientation.Vertical,
+    direction: isHorizontal ? ScaleDirection.Right : ScaleDirection.Down,
     isTime: true,
     range: () => {
       const state = builder.getState();
@@ -179,7 +183,16 @@ export function prepareCompactPlotConfigBuilder(options: {
         return [state.min, state.max];
       }
       const range = getTimeRange();
-      return [range.from.valueOf(), range.to.valueOf()];
+      let minimum = range.from.valueOf();
+      let maximum = range.to.valueOf();
+      if (plan.source.barOptions?.mode === 'grouped' && plan.source.pointCount > 1) {
+        const lastIndex = plan.source.pointCount - 1;
+        const first = plan.source.xAt(0);
+        const last = plan.source.xAt(lastIndex);
+        minimum = Math.min(minimum, first - (plan.source.xAt(1) - first) / 2);
+        maximum = Math.max(maximum, last + (last - plan.source.xAt(lastIndex - 1)) / 2);
+      }
+      return [minimum, maximum];
     },
   });
 
@@ -189,7 +202,7 @@ export function prepareCompactPlotConfigBuilder(options: {
     builder.addAxis({
       scaleKey: 'x',
       isTime: true,
-      placement: AxisPlacement.Bottom,
+      placement: isHorizontal ? AxisPlacement.Bottom : AxisPlacement.Left,
       show: true,
       timeZone,
       theme,
@@ -199,7 +212,7 @@ export function prepareCompactPlotConfigBuilder(options: {
     });
   }
 
-  installCompactRenderer(builder, plan.source);
+  installCompactRenderer(builder, plan.source, isHorizontal ? ScaleOrientation.Vertical : ScaleOrientation.Horizontal);
   const configuredScales = new Uint8Array(plan.source.scales.length);
   for (let seriesIndex = 0; seriesIndex < plan.seriesCount; seriesIndex++) {
     const scaleId = plan.source.columns.scaleIds[seriesIndex];
@@ -210,16 +223,38 @@ export function prepareCompactPlotConfigBuilder(options: {
     const config = plan.getScale(seriesIndex).config;
     const custom = config.custom ?? {};
     const scale = plan.source.scales[scaleId];
+    let isPercentScale = false;
+    for (let candidate = 0; candidate < plan.seriesCount; candidate++) {
+      if (
+        plan.source.columns.scaleIds[candidate] === scaleId &&
+        (plan.source.columns.flags[candidate] & CompactSeriesFlag.PercentStack) !== 0
+      ) {
+        isPercentScale = true;
+        break;
+      }
+    }
     const display = getDisplayProcessor({
-      field: { name: 'Value', type: FieldType.number, config },
+      field: {
+        name: 'Value',
+        type: FieldType.number,
+        config: isPercentScale ? { ...config, unit: 'percentunit' } : config,
+      },
       theme,
       timeZone: timeZones[0],
     });
+    let placement = custom.axisPlacement ?? AxisPlacement.Auto;
+    if (!isHorizontal) {
+      if (placement === AxisPlacement.Left || placement === AxisPlacement.Auto) {
+        placement = AxisPlacement.Bottom;
+      } else if (placement === AxisPlacement.Right) {
+        placement = AxisPlacement.Top;
+      }
+    }
     builder.addAxis({
       scaleKey: scale.key,
       label: custom.axisLabel,
       size: custom.axisWidth,
-      placement: custom.axisPlacement ?? AxisPlacement.Auto,
+      placement,
       formatValue: (value, decimals) => formattedValueToString(display(value, decimals)),
       theme,
       grid: { show: custom.axisGridShow },

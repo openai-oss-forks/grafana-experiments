@@ -45,6 +45,10 @@ interface HoverState {
   viaSync: boolean;
 }
 
+function getCompactGroupCursorPosition(plot: import('uplot')): number | null | undefined {
+  return plot.scales.x.ori === 1 ? plot.cursor.top : plot.cursor.left;
+}
+
 const ROW_HEIGHT = 24;
 const VIRTUALIZE_THRESHOLD = 40;
 const DEFAULT_VIRTUAL_HEIGHT = 400;
@@ -250,8 +254,9 @@ export function CompactTooltipPlugin({
           return;
         }
         if (event.ctrlKey || event.metaKey) {
-          if (annotationRangeRef.current != null && plot.cursor.left != null) {
-            const value = plot.posToVal(plot.cursor.left, 'x');
+          const cursorPosition = getCompactGroupCursorPosition(plot);
+          if (annotationRangeRef.current != null && cursorPosition != null) {
+            const value = plot.posToVal(cursorPosition, 'x');
             annotationRangeRef.current({ from: value, to: value });
           }
           return;
@@ -274,12 +279,16 @@ export function CompactTooltipPlugin({
         if (event.button !== 0 || !event.shiftKey || event.ctrlKey || event.metaKey) {
           return;
         }
-        plot.cursor.drag!.x = false;
-        plot.cursor.drag!.y = true;
         shiftMouseUp?.();
+        const drag = plot.cursor.drag!;
+        const previousX = drag.x;
+        const previousY = drag.y;
+        const groupAxisVertical = plot.scales.x.ori === 1;
+        drag.x = groupAxisVertical;
+        drag.y = !groupAxisVertical;
         shiftMouseUp = () => {
-          plot.cursor.drag!.x = true;
-          plot.cursor.drag!.y = false;
+          drag.x = previousX;
+          drag.y = previousY;
           document.removeEventListener('mouseup', shiftMouseUp!, true);
           shiftMouseUp = undefined;
         };
@@ -310,21 +319,28 @@ export function CompactTooltipPlugin({
     });
     config.addHook('setSelect', (plot) => {
       const event = plot.cursor.event;
-      const from = plot.posToVal(plot.select.left, 'x');
-      const to = plot.posToVal(plot.select.left + plot.select.width, 'x');
+      const xVertical = plot.scales.x.ori === 1;
+      const groupStart = xVertical ? plot.select.top : plot.select.left;
+      const groupSize = xVertical ? plot.select.height : plot.select.width;
+      const valueStart = xVertical ? plot.select.left : plot.select.top;
+      const valueSize = xVertical ? plot.select.width : plot.select.height;
+      const from = plot.posToVal(groupStart, 'x');
+      const to = plot.posToVal(groupStart + groupSize, 'x');
       if ((event?.ctrlKey || event?.metaKey) && annotationRangeRef.current != null) {
         annotationRangeRef.current({ from, to });
-      } else if (event?.shiftKey && plot.select.height >= MIN_ZOOM_DISTANCE) {
+      } else if (event?.shiftKey && valueSize >= MIN_ZOOM_DISTANCE) {
+        const valueMinPosition = xVertical ? valueStart : valueStart + valueSize;
+        const valueMaxPosition = xVertical ? valueStart + valueSize : valueStart;
         for (const scaleKey of Object.keys(plot.scales)) {
           if (scaleKey !== 'x') {
             plot.setScale(scaleKey, {
-              min: plot.posToVal(plot.select.top + plot.select.height, scaleKey),
-              max: plot.posToVal(plot.select.top, scaleKey),
+              min: plot.posToVal(valueMinPosition, scaleKey),
+              max: plot.posToVal(valueMaxPosition, scaleKey),
             });
           }
         }
         yZoomedRef.current = true;
-      } else if (queryZoomRef.current != null && plot.select.width >= MIN_ZOOM_DISTANCE) {
+      } else if (queryZoomRef.current != null && groupSize >= MIN_ZOOM_DISTANCE) {
         queryZoomRef.current({ from, to });
       }
       plot.setSelect({ left: 0, width: 0, top: 0, height: 0 }, false);
@@ -336,12 +352,13 @@ export function CompactTooltipPlugin({
       const point = plot.compactCursor;
       const index = plot.cursor.idx;
       const viaSync = plot.compactCursorOrigin === 'native-sync';
+      const groupCursorPosition = getCompactGroupCursorPosition(plot);
       const requiresPoint = !viaSync && modeRef.current === TooltipDisplayMode.Single;
       const hasFocusedPoint = !viaSync && point?.hasPoint === true;
       if (
         index == null ||
-        plot.cursor.left == null ||
-        plot.cursor.left < 0 ||
+        groupCursorPosition == null ||
+        groupCursorPosition < 0 ||
         (requiresPoint && !point?.hasPoint) ||
         (viaSync && syncModeRef.current !== DashboardCursorSync.Tooltip)
       ) {
@@ -368,7 +385,7 @@ export function CompactTooltipPlugin({
         return;
       }
 
-      positionRef.current.left = plot.rect.left + plot.cursor.left;
+      positionRef.current.left = plot.rect.left + (plot.cursor.left ?? 0);
       positionRef.current.top = plot.rect.top + (plot.cursor.top ?? 0);
       if (tooltipRef.current) {
         tooltipRef.current.style.transform = getTooltipTransform(positionRef.current, sizeRef.current);

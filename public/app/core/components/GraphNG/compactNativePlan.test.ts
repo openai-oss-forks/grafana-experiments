@@ -571,6 +571,73 @@ describe('CompactNativeRenderPlan', () => {
     expect(getSeries).not.toHaveBeenCalled();
   });
 
+  test('compiles TimeSeries bar geometry and percent stacks without materializing samples', () => {
+    const { source, getSeries } = columnarSource([
+      series('A', 'requests', [1, 2, 3]),
+      series('B', 'errors', [4, 5, 6]),
+    ]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.barAlignment', 'barAlignment', true),
+        compactProperty('custom.barWidthFactor', 'barWidthFactor', true),
+        compactProperty('custom.barMaxWidth', 'barMaxWidth', true),
+        compactProperty('custom.stacking', 'stacking', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            barAlignment: -1,
+            barWidthFactor: 0.75,
+            barMaxWidth: 48,
+            stacking: { mode: StackingMode.Percent, group: 'primary' },
+          },
+        },
+        overrides: [],
+      },
+    });
+
+    expect(plan.source.columns.flags).toBeInstanceOf(Uint16Array);
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Bars).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Stack).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.PercentStack).toBeTruthy();
+    expect(plan.source.styles[0]).toMatchObject({
+      barAlignment: -1,
+      barWidthFactor: 0.75,
+      barMaxWidth: 48,
+    });
+    expect(plan.source.stackGroupCount).toBe(1);
+    expect(plan.source.buffer).toBe(source.buffer);
+    expect(getSeries).not.toHaveBeenCalled();
+  });
+
+  test('retains percent normalization metadata for a singleton bar stack', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2, 3])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.stacking', 'stacking', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            stacking: { mode: StackingMode.Percent, group: 'primary' },
+          },
+        },
+        overrides: [],
+      },
+    });
+
+    expect(plan.source.stackGroupCount).toBe(1);
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.PercentStack).toBeTruthy();
+  });
+
   test('uses the original value direction for negative and constant transforms', () => {
     const { source } = columnarSource([
       series('A', 'positive', [1, 2, 3]),

@@ -62,11 +62,11 @@ import {
 } from './language_provider';
 import { expandRecordingRules, getPrometheusTime, getRangeSnapInterval } from './language_utils';
 import { PrometheusMetricFindQuery } from './metric_find_query';
+import { getPrometheusMultiBatchIntervals, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { getQueryHints } from './query_hints';
 import { renderLabelsWithoutBrackets } from './querybuilder/shared/rendering/labels';
 import { QueryBuilderLabelFilter, QueryEditorMode } from './querybuilder/shared/types';
 import { CacheRequestInfo, defaultPrometheusQueryOverlapWindow, QueryCache } from './querycache/QueryCache';
-import { getPrometheusMultiBatchIntervals, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { transformV2 } from './result_transformer';
 import { trackQuery } from './tracking';
 import {
@@ -774,7 +774,7 @@ export class PrometheusDatasource
   protected shouldRequestCompactQueryResponse(request: DataQueryRequest<PromQuery>, queries: PromQuery[]): boolean {
     return (
       request.app === CoreApp.Dashboard &&
-      request.panelPluginId === 'timeseries' &&
+      (request.panelPluginId === 'timeseries' || request.panelPluginId === 'barchart') &&
       !config.publicDashboardAccessToken &&
       queries.every((query) => query.datasource?.type === this.type && isCompactTimeSeriesRangeQuery(query))
     );

@@ -2,6 +2,9 @@ diff --git a/dist/uPlot.cjs.js b/dist/uPlot.cjs.js
 index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072e593f68c 100644
 --- a/dist/uPlot.cjs.js
 +++ b/dist/uPlot.cjs.js
+@@ -154 +154 @@ function elSize(el, newWid, newHgt, centered) {
+-	let newSize = newWid + "" + newHgt;
++	let newSize = newWid + "" + newHgt + centered;
 @@ -2907,11 +2907,15 @@ function syncFontSize(axis) {
  	}
  }
@@ -362,7 +365,7 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  			}
  
  			// closest pt values
-@@ -5478,6 +5618,22 @@ function uPlot(opts, data, then) {
+@@ -5478,6 +5618,23 @@ function uPlot(opts, data, then) {
  				}
  			}
  
@@ -375,10 +378,11 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
 +					closestSeries = compactCursor.seriesIndex + 1;
 +					_ptLft = compactCursor.left;
 +					_ptTop = compactCursor.top;
-+					_ptWid = _ptHgt = compactCursor.size;
++					_ptWid = compactCursor.width ?? compactCursor.size;
++					_ptHgt = compactCursor.height ?? compactCursor.size;
 +					_ptFill = compactCursor.fill;
 +					_ptStroke = compactCursor.stroke;
-+					_centered = true;
++					_centered = compactCursor.centered ?? true;
 +				}
 +			}
 +
@@ -505,7 +509,7 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 @@ -105 +134 @@ declare class uPlot {
 -	setCursor(opts: {left: number, top: number}, fireHook?: boolean): void;
 +	setCursor(opts: {left: number, top: number}, fireHook?: boolean, publish?: boolean, compactOrigin?: uPlot.CompactCursorOrigin): void;
-@@ -167,6 +196,58 @@ declare class uPlot {
+@@ -167,6 +196,61 @@ declare class uPlot {
  export = uPlot;
  
  declare namespace uPlot {
@@ -548,6 +552,9 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 +		left: number;
 +		top: number;
 +		size: number;
++		width?: number;
++		height?: number;
++		centered?: boolean;
 +		fill: string;
 +		stroke: string;
 +	}
@@ -568,6 +575,9 @@ diff --git a/dist/uPlot.esm.js b/dist/uPlot.esm.js
 index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442dd37dde0 100644
 --- a/dist/uPlot.esm.js
 +++ b/dist/uPlot.esm.js
+@@ -154 +154 @@ function elSize(el, newWid, newHgt, centered) {
+-	let newSize = newWid + "" + newHgt;
++	let newSize = newWid + "" + newHgt + centered;
 @@ -2905,11 +2905,15 @@ function syncFontSize(axis) {
  	}
  }
@@ -928,7 +938,7 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  			}
  
  			// closest pt values
-@@ -5476,6 +5616,22 @@ function uPlot(opts, data, then) {
+@@ -5476,6 +5616,23 @@ function uPlot(opts, data, then) {
  				}
  			}
  
@@ -941,10 +951,11 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
 +					closestSeries = compactCursor.seriesIndex + 1;
 +					_ptLft = compactCursor.left;
 +					_ptTop = compactCursor.top;
-+					_ptWid = _ptHgt = compactCursor.size;
++					_ptWid = compactCursor.width ?? compactCursor.size;
++					_ptHgt = compactCursor.height ?? compactCursor.size;
 +					_ptFill = compactCursor.fill;
 +					_ptStroke = compactCursor.stroke;
-+					_centered = true;
++					_centered = compactCursor.centered ?? true;
 +				}
 +			}
 +

@@ -1,6 +1,6 @@
 import uPlot from 'uplot';
 
-import { ScaleDirection, ScaleDistribution, ScaleOrientation } from '@grafana/schema';
+import { ScaleDirection, ScaleDistribution, ScaleOrientation, StackingMode } from '@grafana/schema';
 
 import type { UPlotConfigBuilder } from './config/UPlotConfigBuilder';
 import type { CompactBufferScan, CompactPlotScaleMode, CompactPlotSource, CompactPlotValue } from './types';
@@ -18,6 +18,7 @@ export const enum CompactSeriesFlag {
   AutoPoints = 1 << 5,
   PercentStack = 1 << 6,
   DrawLine = 1 << 7,
+  Bars = 1 << 8,
 }
 
 export interface CompactRenderColumns {
@@ -46,6 +47,26 @@ export interface CompactStyleRecord {
   readonly disconnectThreshold?: number;
   readonly spanNullsThreshold?: number;
   readonly showValues?: boolean;
+  readonly barAlignment?: -1 | 0 | 1;
+  readonly barWidthFactor?: number;
+  readonly barMaxWidth?: number;
+}
+
+export interface CompactBarRenderOptions {
+  readonly mode: 'timeseries' | 'grouped';
+  readonly groupWidth?: number;
+  readonly barWidth?: number;
+  readonly barRadius?: number;
+  readonly showValue?: 'auto' | 'always' | 'never';
+  readonly valueSize?: number;
+  readonly fullHighlight?: boolean;
+}
+
+interface CompactRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 }
 
 export interface CompactScaleRecord {
@@ -77,6 +98,7 @@ export interface CompactRenderSource extends CompactPlotSource {
   formatValueAt?(seriesIndex: number, index: number, value: number): string;
   readonly valueColor?: string;
   readonly valueFontFamily?: string;
+  readonly barOptions?: CompactBarRenderOptions;
   visibilityState: CompactVisibilityState;
 }
 
@@ -161,11 +183,13 @@ const enum CursorValueState {
 const enum ScanOperation {
   None,
   Area,
+  Bars,
   GapClip,
   Line,
   Points,
   StackExtent,
   StackPresence,
+  StackTotal,
   StackCommit,
   ValueLabel,
   DecimatedLine,
@@ -216,15 +240,23 @@ export function isCompactRenderSource(
  */
 export function installCompactRenderer(
   builder: UPlotConfigBuilder,
-  source: CompactRenderSource
+  source: CompactRenderSource,
+  valueScaleOrientation: ScaleOrientation = ScaleOrientation.Vertical
 ): CompactRenderController {
   const controller = new CompactRenderController(source);
-  for (const scale of source.scales) {
+  const percentScaleIds = new Uint8Array(source.scales.length);
+  for (let series = 0; series < source.seriesCount; series++) {
+    if ((source.columns.flags[series] & CompactSeriesFlag.PercentStack) !== 0) {
+      percentScaleIds[source.columns.scaleIds[series]] = 1;
+    }
+  }
+  for (let scaleId = 0; scaleId < source.scales.length; scaleId++) {
+    const scale = source.scales[scaleId];
     builder.addScale({
       scaleKey: scale.key,
       isTime: false,
-      orientation: ScaleOrientation.Vertical,
-      direction: ScaleDirection.Up,
+      orientation: valueScaleOrientation,
+      direction: valueScaleOrientation === ScaleOrientation.Vertical ? ScaleDirection.Up : ScaleDirection.Right,
       min: scale.min,
       max: scale.max,
       softMin: scale.softMin,
@@ -234,6 +266,7 @@ export function installCompactRenderer(
       linearThreshold: scale.linearThreshold,
       centeredZero: scale.centeredZero,
       decimals: scale.decimals,
+      stackingMode: percentScaleIds[scaleId] === 1 ? StackingMode.Percent : undefined,
       padMinBy: scale.padMinBy,
       padMaxBy: scale.padMaxBy,
     });
@@ -271,9 +304,14 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private focusVisibleTo = 0;
   private stackScratch = new Float64Array(0);
   private stackPresence = new Uint8Array(0);
+  private stackTotals = new Float64Array(0);
   private stackAreaIndexes = new Int32Array(0);
   private stackAreaLength = 0;
+  private barSlots = new Int32Array(0);
+  private visibleBarSlotCount = 0;
+  private readonly barLabelBounds = new Map<number, CompactRect[]>();
   private cursorStacks = new Float64Array(0);
+  private cursorStackTotals = new Float64Array(0);
   private cursorStackIndexes = new Int32Array(0);
   private cursorStackNextSeries = new Int32Array(0);
   private cursorSnapshotValues = new Float64Array(0);
@@ -312,6 +350,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private extentMin: number | null = null;
   private extentMax: number | null = null;
   private extentMode: CompactPlotScaleMode = 'all';
+  private barSlot = 0;
+  private barSlotCount = 1;
+  private barRoundOuterEdge = true;
+  private currentCursorStackBase = 0;
   private decimatedX = 0;
   private decimatedMin: number | null = null;
   private decimatedMax: number | null = null;
@@ -342,6 +384,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     left: -10,
     top: -10,
     size: 0,
+    width: 0,
+    height: 0,
+    centered: true,
     fill: 'transparent',
     stroke: 'transparent',
   };
@@ -351,6 +396,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     switch (this.operation) {
       case ScanOperation.Area:
         this.visitArea(index, value, xValue);
+        break;
+      case ScanOperation.Bars:
+        this.visitBar(index, value, xValue);
         break;
       case ScanOperation.GapClip:
         this.visitGapClip(value, xValue);
@@ -366,6 +414,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         break;
       case ScanOperation.StackPresence:
         this.visitStackPresence(index, value);
+        break;
+      case ScanOperation.StackTotal:
+        this.visitStackTotal(index, value);
         break;
       case ScanOperation.StackCommit:
         this.visitStackCommit(index, value);
@@ -421,8 +472,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.removeFocusOverlay();
     this.stackScratch = new Float64Array(0);
     this.stackPresence = new Uint8Array(0);
+    this.stackTotals = new Float64Array(0);
     this.stackAreaIndexes = new Int32Array(0);
     this.stackAreaLength = 0;
+    this.barLabelBounds.clear();
     this.cursorSnapshotValues = new Float64Array(0);
     this.cursorSnapshotStates = new Uint8Array(0);
     this.cursorSnapshotDataIndexes = null;
@@ -444,7 +497,11 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.stackPresence = new Uint8Array(0);
     this.stackAreaIndexes = new Int32Array(0);
     this.stackAreaLength = 0;
+    this.barSlots = new Int32Array(0);
+    this.visibleBarSlotCount = 0;
+    this.barLabelBounds.clear();
     this.cursorStacks = new Float64Array(0);
+    this.cursorStackTotals = new Float64Array(0);
     this.cursorStackIndexes = new Int32Array(0);
     this.cursorStackNextSeries = new Int32Array(0);
     this.cursorSnapshotValues = new Float64Array(0);
@@ -533,6 +590,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.focusScanTo = scanTo;
     this.focusVisibleFrom = from;
     this.focusVisibleTo = to;
+    this.barLabelBounds.clear();
     this.prepareStackScratch(scanFrom, scanTo);
 
     if (this.shouldDrawProgressively(scanFrom, scanTo)) {
@@ -542,12 +600,15 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         if (completed) {
           this.drawFocusOverlay();
         }
+        this.barLabelBounds.clear();
         return completed;
       });
     }
 
     this.drawSeriesRange(plot, 0, this.source.seriesCount, scanFrom, scanTo, from, to);
+    this.barLabelBounds.clear();
     this.drawFocusOverlay();
+    this.barLabelBounds.clear();
   }
 
   private drawSeriesRange(
@@ -599,7 +660,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       if (
         (flags & CompactSeriesFlag.PathMask) !== CompactSeriesFlag.Linear ||
         (flags & CompactSeriesFlag.DrawLine) === 0 ||
-        (flags & (CompactSeriesFlag.Points | CompactSeriesFlag.Stack)) !== 0 ||
+        (flags & (CompactSeriesFlag.Points | CompactSeriesFlag.Stack | CompactSeriesFlag.Bars)) !== 0 ||
         ((flags & CompactSeriesFlag.AutoPoints) !== 0 && this.shouldShowAutoPoints(style, from, to)) ||
         style.areaFill != null ||
         style.areaGradient != null ||
@@ -684,6 +745,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       if (this.visibleSeriesCount < 2 || (this.focusedSeries >= 0 && !this.isVisible(this.focusedSeries))) {
         this.focusedSeries = -1;
         this.removeFocusOverlay();
+      }
+      if (redraw) {
+        this.refreshBarSlots();
       }
       if (
         this.visibleSeriesCount > 1 &&
@@ -776,6 +840,21 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       visibleSeriesCount += source.columns.visibility[seriesIndex] === 1 ? 1 : 0;
     }
     this.visibleSeriesCount = visibleSeriesCount;
+    this.refreshBarSlots();
+  }
+
+  private refreshBarSlots(): void {
+    if (this.barSlots.length !== this.source.seriesCount) {
+      this.barSlots = new Int32Array(this.source.seriesCount);
+    }
+    this.barSlots.fill(-1);
+    let slot = 0;
+    for (let series = 0; series < this.source.seriesCount; series++) {
+      if (this.isVisible(series) && (this.source.columns.flags[series] & CompactSeriesFlag.Bars) !== 0) {
+        this.barSlots[series] = slot++;
+      }
+    }
+    this.visibleBarSlotCount = slot;
   }
 
   updateCursor(
@@ -792,6 +871,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     state.left = -10;
     state.top = -10;
     state.size = 0;
+    state.width = 0;
+    state.height = 0;
+    state.centered = true;
     state.fill = '';
     state.stroke = '';
 
@@ -830,6 +912,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       state.left = -10;
       state.top = -10;
       state.size = 0;
+      state.width = 0;
+      state.height = 0;
+      state.centered = true;
       state.fill = '';
       state.stroke = '';
     }
@@ -875,15 +960,31 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     rawValue: CompactPlotValue,
     mouseY: number
   ): void {
-    if (rawValue == null || !this.isWithinCursorProximity(plot, seriesIndex, cursorIndex, dataIndex)) {
+    if (rawValue == null) {
       return;
     }
 
+    const flags = this.source.columns.flags[seriesIndex];
+    const groupedBar = this.source.barOptions?.mode === 'grouped' && (flags & CompactSeriesFlag.Bars) !== 0;
+    if (!groupedBar && !this.isWithinCursorProximity(plot, seriesIndex, cursorIndex, dataIndex)) {
+      return;
+    }
+    this.currentCursorStackBase = 0;
     const value = this.stackCursorValue(seriesIndex, dataIndex, rawValue);
     const scaleKey = this.getScaleKey(seriesIndex);
     const top = plot.valToPos(value, scaleKey);
+    const style = this.getStyle(seriesIndex);
+    const barRect = groupedBar ? this.getCursorBarRect(plot, seriesIndex, dataIndex, value, scaleKey, style) : null;
+    if (
+      groupedBar &&
+      (!barRect || !rectContains(barRect, this.requireCursorGroupPosition(plot), mouseY, plot.scales.x.ori === 1))
+    ) {
+      return;
+    }
     const focus = plot.focus;
-    const distance = Math.abs(focus.dist?.(plot, seriesIndex + 1, dataIndex, top, mouseY) ?? top - mouseY);
+    const distance = barRect
+      ? 0
+      : Math.abs(focus.dist?.(plot, seriesIndex + 1, dataIndex, top, mouseY) ?? top - mouseY);
     const bias = focus.bias ?? 0;
     if (bias !== 0) {
       const mouseValue = plot.posToVal(mouseY, scaleKey);
@@ -906,20 +1007,88 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       return;
     }
 
-    const style = this.getStyle(seriesIndex);
     this.cursorState.seriesIndex = seriesIndex;
     this.cursorState.dataIndex = dataIndex;
     this.cursorState.distance = distance;
-    this.cursorState.left = plot.valToPos(this.source.xAt(dataIndex), 'x');
-    this.cursorState.top = top;
+    const groupPosition = plot.valToPos(this.source.xAt(dataIndex), 'x');
+    if (plot.scales.x.ori === 1) {
+      this.cursorState.left = top;
+      this.cursorState.top = groupPosition;
+    } else {
+      this.cursorState.left = groupPosition;
+      this.cursorState.top = top;
+    }
     this.cursorState.size = (style.pointSize ?? Math.max(5, (style.lineWidth ?? 1) * 3)) * 2;
+    this.cursorState.width = this.cursorState.size;
+    this.cursorState.height = this.cursorState.size;
+    this.cursorState.centered = true;
     this.cursorState.fill = style.stroke;
     this.cursorState.stroke = style.cursorStroke;
+
+    if (barRect) {
+      this.cursorState.left = barRect.left;
+      this.cursorState.top = barRect.top;
+      this.cursorState.width = barRect.width;
+      this.cursorState.height = barRect.height;
+      this.cursorState.centered = false;
+      this.cursorState.fill = 'rgba(255, 255, 255, 0.4)';
+      this.cursorState.stroke = 'transparent';
+    }
+  }
+
+  private getCursorBarRect(
+    plot: uPlot,
+    seriesIndex: number,
+    dataIndex: number,
+    value: number,
+    scaleKey: string,
+    style: CompactStyleRecord
+  ): CompactRect | null {
+    const previousFlags = this.flags;
+    const previousSlot = this.barSlot;
+    const previousSlotCount = this.barSlotCount;
+    const flags = this.source.columns.flags[seriesIndex];
+    const slot = this.getVisibleBarSlot(seriesIndex);
+    this.flags = flags;
+    this.barSlot = slot.index;
+    this.barSlotCount = slot.count;
+    const band = this.getBarBandForPlot(plot, dataIndex, this.source.xAt(dataIndex), false);
+    const placement = this.getBarPlacement(band.center, band.size, style, 1);
+    this.flags = previousFlags;
+    this.barSlot = previousSlot;
+    this.barSlotCount = previousSlotCount;
+
+    const valuePosition = plot.valToPos(value, scaleKey);
+    const basePosition = plot.valToPos(this.currentCursorStackBase, scaleKey);
+    const valueStart = Math.min(valuePosition, basePosition);
+    const valueSize = Math.abs(valuePosition - basePosition);
+    if (placement.size <= 0 || valueSize <= 0) {
+      return null;
+    }
+
+    const groupsAreHorizontal = plot.scales.x.ori !== 1;
+    const fullHighlight = this.source.barOptions?.fullHighlight && (flags & CompactSeriesFlag.Stack) === 0;
+    if (groupsAreHorizontal) {
+      return {
+        left: placement.start,
+        top: fullHighlight ? 0 : valueStart,
+        width: placement.size,
+        height: fullHighlight ? plot.bbox.height / uPlot.pxRatio : valueSize,
+      };
+    }
+    return {
+      left: fullHighlight ? 0 : valueStart,
+      top: placement.start,
+      width: fullHighlight ? plot.bbox.width / uPlot.pxRatio : valueSize,
+      height: placement.size,
+    };
   }
 
   private isCursorSnapshotCurrent(index: number, plot?: uPlot): boolean {
-    const mouseX = plot?.cursor.left;
-    return this.cursorSnapshotIndex === index && (mouseX == null || mouseX === this.cursorSnapshotMouseX);
+    const cursorPosition = plot ? this.getCursorGroupPosition(plot) : undefined;
+    return (
+      this.cursorSnapshotIndex === index && (cursorPosition == null || cursorPosition === this.cursorSnapshotMouseX)
+    );
   }
 
   getCursorSnapshot(index: number, plot?: uPlot): CompactCursorSnapshot {
@@ -1029,6 +1198,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const styleId = this.source.columns.styleIds[series];
     const style = this.source.styles[styleId];
     const flags = this.source.columns.flags[series];
+    const hasBars = (flags & CompactSeriesFlag.Bars) !== 0;
     const hasLineGeometry = (flags & CompactSeriesFlag.DrawLine) !== 0;
     const hasFill = hasLineGeometry && (style.areaFill != null || style.areaGradient != null);
     const hasStroke = hasLineGeometry && (style.lineWidth ?? 1) > 0;
@@ -1064,6 +1234,19 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.hasPath = false;
     this.hasPrevious = false;
     this.previousTimestamp = Number.NaN;
+
+    if (hasBars) {
+      this.drawBars(series, from, to, style);
+      if (hasPoints) {
+        this.drawPointMarkers(series, from, to, style);
+      }
+      if ((flags & CompactSeriesFlag.Stack) !== 0) {
+        this.operation = ScanOperation.StackCommit;
+        this.source.scan(series, from, to, this.visitPoint);
+      }
+      ctx.restore();
+      return;
+    }
 
     const stacked = (flags & CompactSeriesFlag.Stack) !== 0;
     const needsGapClip =
@@ -1115,21 +1298,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       this.clipLineGaps = false;
     }
     if (hasPoints) {
-      this.operation = ScanOperation.Points;
-      this.pathStarted = false;
-      this.hasPath = false;
-      ctx.fillStyle = style.fill ?? style.stroke;
-      ctx.lineWidth = getPointStrokeWidth(style) * uPlot.pxRatio;
-      ctx.lineCap = 'butt';
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      this.source.scan(series, from, to, this.visitPoint);
-      if (this.hasPath) {
-        if (style.fill != null) {
-          ctx.fill();
-        }
-        ctx.stroke();
-      }
+      this.drawPointMarkers(series, from, to, style);
     }
     if (style.showValues && hasPoints && this.source.formatValueAt) {
       this.drawValueLabels(series, from, to, style);
@@ -1137,6 +1306,269 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if ((flags & CompactSeriesFlag.Stack) !== 0) {
       this.operation = ScanOperation.StackCommit;
       this.source.scan(series, from, to, this.visitPoint);
+    }
+    ctx.restore();
+  }
+
+  private drawPointMarkers(series: number, from: number, to: number, style: CompactStyleRecord): void {
+    const ctx = this.context!;
+    this.operation = ScanOperation.Points;
+    this.pathStarted = false;
+    this.hasPath = false;
+    ctx.fillStyle = style.fill ?? style.stroke;
+    ctx.lineWidth = getPointStrokeWidth(style) * uPlot.pxRatio;
+    ctx.lineCap = 'butt';
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    this.source.scan(series, from, to, this.visitPoint);
+    if (this.hasPath) {
+      if (style.fill != null) {
+        ctx.fill();
+      }
+      ctx.stroke();
+    }
+  }
+
+  private drawBars(series: number, from: number, to: number, style: CompactStyleRecord): void {
+    const grouped = this.source.barOptions?.mode === 'grouped' && (this.flags & CompactSeriesFlag.Stack) === 0;
+    this.barSlot = 0;
+    this.barSlotCount = 1;
+    if (grouped) {
+      const slot = this.getVisibleBarSlot(series);
+      this.barSlot = slot.index;
+      this.barSlotCount = slot.count;
+    }
+    this.barRoundOuterEdge =
+      (this.flags & CompactSeriesFlag.PercentStack) === 0 &&
+      ((this.flags & CompactSeriesFlag.Stack) === 0 || this.isLastVisibleStackBar(series));
+
+    const ctx = this.context!;
+    ctx.setLineDash([]);
+    ctx.lineCap = 'butt';
+    ctx.lineWidth = Math.max(0, style.lineWidth ?? 1) * uPlot.pxRatio;
+    this.operation = ScanOperation.Bars;
+    this.source.scan(series, from, to, this.visitPoint);
+  }
+
+  private getVisibleBarSlot(series: number): { index: number; count: number } {
+    return {
+      index: Math.max(0, this.barSlots[series] ?? -1),
+      count: Math.max(1, this.visibleBarSlotCount),
+    };
+  }
+
+  private isLastVisibleStackBar(series: number): boolean {
+    const group = this.getStackGroup(series);
+    for (let candidate = series + 1; candidate < this.source.seriesCount; candidate++) {
+      if (
+        this.isVisible(candidate) &&
+        (this.source.columns.flags[candidate] & CompactSeriesFlag.Bars) !== 0 &&
+        this.getStackGroup(candidate) === group
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private visitBar(index: number, rawValue: CompactPlotValue, timestamp: number): void {
+    if (rawValue == null) {
+      return;
+    }
+
+    const style = this.getStyle(this.seriesIndex);
+    const value = this.renderValue(index, rawValue, false);
+    const base = this.currentStackBase;
+    const scaleKey = this.scaleKey;
+    const valuePosition = this.plot!.valToPos(value, scaleKey, true);
+    const basePosition = this.plot!.valToPos(base, scaleKey, true);
+    const { center, size: bandSize } = this.getBarBandForPlot(this.plot!, index, timestamp, true);
+    const { start: bandStart, size: barSize } = this.getBarPlacement(center, bandSize, style);
+    const valueStart = Math.min(valuePosition, basePosition);
+    const valueSize = Math.abs(valuePosition - basePosition);
+    const xScale = this.plot!.scales.x;
+    const horizontalGroups = xScale?.ori !== 1;
+    const x = horizontalGroups ? bandStart : valueStart;
+    const y = horizontalGroups ? valueStart : bandStart;
+    const width = horizontalGroups ? barSize : valueSize;
+    const height = horizontalGroups ? valueSize : barSize;
+
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    const ctx = this.context!;
+    const radius = this.barRoundOuterEdge
+      ? Math.min((this.source.barOptions?.barRadius ?? 0) * Math.min(width, height), Math.min(width, height) / 2)
+      : 0;
+    ctx.beginPath();
+    addRoundedRect(ctx, x, y, width, height, radius, horizontalGroups, rawValue < 0);
+    const fill = this.getBarFill(style, valuePosition, basePosition, horizontalGroups);
+    if (fill != null) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if ((style.lineWidth ?? 1) > 0) {
+      ctx.strokeStyle = style.stroke;
+      ctx.stroke();
+    }
+
+    let labelValue = rawValue;
+    if ((this.flags & CompactSeriesFlag.PercentStack) !== 0) {
+      const total = this.stackTotals[this.getStackScratchIndex(index)];
+      labelValue = total === 0 ? 0 : rawValue / total;
+    }
+    this.drawBarValueLabel(index, labelValue, rawValue, x, y, width, height, horizontalGroups);
+  }
+
+  private getBarBandForPlot(
+    plot: uPlot,
+    index: number,
+    timestamp: number,
+    canvasPixels: boolean
+  ): { center: number; size: number } {
+    const center = plot.valToPos(timestamp, 'x', canvasPixels);
+    const pointCount = this.source.pointCount;
+    const scale = plot.scales.x;
+    const rawDimension = scale?.ori === 1 ? plot.bbox.height : plot.bbox.width;
+    const dimension = canvasPixels ? rawDimension : rawDimension / uPlot.pxRatio;
+    if (pointCount <= 1) {
+      return { center, size: dimension };
+    }
+
+    const previous =
+      index > 0
+        ? plot.valToPos(this.source.xAt(index - 1), 'x', canvasPixels)
+        : center - (plot.valToPos(this.source.xAt(Math.min(pointCount - 1, index + 1)), 'x', canvasPixels) - center);
+    const next =
+      index < pointCount - 1
+        ? plot.valToPos(this.source.xAt(index + 1), 'x', canvasPixels)
+        : center + (center - plot.valToPos(this.source.xAt(Math.max(0, index - 1)), 'x', canvasPixels));
+    return { center, size: Math.max(1, Math.min(Math.abs(center - previous), Math.abs(next - center))) };
+  }
+
+  private getBarPlacement(
+    center: number,
+    bandSize: number,
+    style: CompactStyleRecord,
+    pixelRatio = uPlot.pxRatio
+  ): { start: number; size: number } {
+    const options = this.source.barOptions;
+    if (options?.mode === 'grouped') {
+      const barWidth = Math.max(0, Math.min(1, options.barWidth ?? 0.97));
+      if ((this.flags & CompactSeriesFlag.Stack) !== 0) {
+        const size = this.clampBarSize(bandSize * barWidth, Number.POSITIVE_INFINITY, pixelRatio);
+        return { start: center - size / 2, size };
+      }
+      const groupWidth = bandSize * Math.max(0, Math.min(1, options.groupWidth ?? 0.7));
+      const slotSize = groupWidth / Math.max(1, this.barSlotCount);
+      const size = this.clampBarSize(slotSize * barWidth, Number.POSITIVE_INFINITY, pixelRatio);
+      const slotCenter = center - groupWidth / 2 + slotSize * (this.barSlot + 0.5);
+      return { start: slotCenter - size / 2, size };
+    }
+
+    const size = this.clampBarSize(
+      bandSize * Math.max(0, Math.min(1, style.barWidthFactor ?? 0.6)),
+      style.barMaxWidth ?? 200,
+      pixelRatio
+    );
+    const alignment = style.barAlignment ?? 0;
+    return { start: center - size / 2 + (alignment * size) / 2, size };
+  }
+
+  private clampBarSize(size: number, maxWidth: number, pixelRatio: number): number {
+    return Math.min(Math.max(pixelRatio, size), maxWidth * pixelRatio);
+  }
+
+  private getBarFill(
+    style: CompactStyleRecord,
+    valuePosition: number,
+    basePosition: number,
+    horizontalGroups: boolean
+  ): string | CanvasGradient | null | undefined {
+    if (style.areaGradient == null) {
+      return style.areaFill;
+    }
+    const gradient = horizontalGroups
+      ? this.context!.createLinearGradient(0, valuePosition, 0, basePosition)
+      : this.context!.createLinearGradient(valuePosition, 0, basePosition, 0);
+    gradient.addColorStop(0, style.areaGradient[0]);
+    gradient.addColorStop(1, style.areaGradient[1]);
+    return gradient;
+  }
+
+  private drawBarValueLabel(
+    index: number,
+    value: number,
+    rawValue: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    horizontalGroups: boolean
+  ): void {
+    const options = this.source.barOptions;
+    const showValue = options?.showValue ?? (this.getStyle(this.seriesIndex).showValues ? 'always' : 'never');
+    if (showValue === 'never' || !this.source.formatValueAt) {
+      return;
+    }
+
+    const text = this.source.formatValueAt(this.seriesIndex, index, value);
+    const ctx = this.context!;
+    ctx.save();
+    const fontSize = Math.max(1, options?.valueSize ?? 12) * uPlot.pxRatio;
+    ctx.font = `${fontSize}px ${this.source.valueFontFamily ?? 'sans-serif'}`;
+    const metrics = ctx.measureText(text);
+    const textHeight = fontSize;
+    const plotBounds = this.plot!.bbox;
+    const labelFitsGroup = horizontalGroups ? metrics.width <= width : textHeight <= height;
+    const labelFitsPlot = horizontalGroups
+      ? rawValue < 0
+        ? y + height + 5 + textHeight <= plotBounds.top + plotBounds.height
+        : y - 5 - textHeight >= plotBounds.top
+      : rawValue < 0
+        ? x - 5 - metrics.width >= plotBounds.left
+        : x + width + 5 + metrics.width <= plotBounds.left + plotBounds.width;
+    if (!labelFitsGroup || !labelFitsPlot) {
+      ctx.restore();
+      return;
+    }
+
+    const bounds: CompactRect = horizontalGroups
+      ? {
+          left: x + (width - metrics.width) / 2,
+          top: rawValue < 0 ? y + height + 5 : y - 5 - textHeight,
+          width: metrics.width,
+          height: textHeight,
+        }
+      : {
+          left: rawValue < 0 ? x - 5 - metrics.width : x + width + 5,
+          top: y + (height - textHeight) / 2,
+          width: metrics.width,
+          height: textHeight,
+        };
+    if (showValue === 'auto') {
+      const existing = this.barLabelBounds.get(index);
+      if (existing?.some((candidate) => rectsIntersect(candidate, bounds))) {
+        ctx.restore();
+        return;
+      }
+      if (existing) {
+        existing.push(bounds);
+      } else {
+        this.barLabelBounds.set(index, [bounds]);
+      }
+    }
+
+    ctx.fillStyle = this.source.valueColor ?? this.getStyle(this.seriesIndex).stroke;
+    if (horizontalGroups) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = rawValue < 0 ? 'top' : 'bottom';
+      ctx.fillText(text, x + width / 2, rawValue < 0 ? y + height + 5 : y - 5);
+    } else {
+      ctx.textAlign = rawValue < 0 ? 'right' : 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, rawValue < 0 ? x - 5 : x + width + 5, y + height / 2);
     }
     ctx.restore();
   }
@@ -1683,6 +2115,15 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.stackPresence[this.getStackScratchIndex(index)] = 1;
   }
 
+  private visitStackTotal(index: number, rawValue: CompactPlotValue): void {
+    if (rawValue == null) {
+      return;
+    }
+    const scratchIndex = this.getStackScratchIndex(index);
+    this.stackPresence[scratchIndex] = 1;
+    this.stackTotals[scratchIndex] += rawValue;
+  }
+
   private visitStackCommit(index: number, rawValue: CompactPlotValue): void {
     if (rawValue != null) {
       this.commitStackValue(index, rawValue);
@@ -1709,11 +2150,19 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
     const scratchIndex = this.getStackScratchIndex(index);
     const base = this.stackScratch[scratchIndex];
-    this.currentStackBase = base;
+    this.currentStackBase = this.normalizeStackValue(scratchIndex, base);
     if (updateStack) {
       this.stackScratch[scratchIndex] = base + value;
     }
-    return base + value;
+    return this.normalizeStackValue(scratchIndex, base + value);
+  }
+
+  private normalizeStackValue(scratchIndex: number, value: number): number {
+    if ((this.flags & CompactSeriesFlag.PercentStack) === 0) {
+      return value;
+    }
+    const total = Math.abs(this.stackTotals[scratchIndex]);
+    return total === 0 ? 0 : value / total;
   }
 
   private commitStackValue(index: number, value: number): void {
@@ -1721,7 +2170,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   }
 
   private getStackBase(index: number): number {
-    return this.stackScratch[this.getStackScratchIndex(index)];
+    const scratchIndex = this.getStackScratchIndex(index);
+    return this.normalizeStackValue(scratchIndex, this.stackScratch[scratchIndex]);
   }
 
   private hasStackValue(index: number): boolean {
@@ -1738,6 +2188,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
 
   private stackCursorValue(series: number, dataIndex: number, value: number): number {
     if ((this.source.columns.flags[series] & CompactSeriesFlag.Stack) === 0) {
+      this.currentCursorStackBase = 0;
       return value;
     }
     const group = this.getStackGroup(series);
@@ -1761,6 +2212,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       this.cursorStackIndexes[slot] = dataIndex;
       this.cursorStackNextSeries[slot] = 0;
       this.cursorStacks[slot] = 0;
+      this.cursorStackTotals[slot] = this.calculateCursorStackTotal(group, dataIndex);
     }
 
     let stackedValue = slot < 0 ? 0 : this.cursorStacks[slot];
@@ -1778,12 +2230,34 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         stackedValue += candidateValue;
       }
     }
+    const stackBase = stackedValue;
     stackedValue += value;
     if (slot >= 0) {
       this.cursorStacks[slot] = stackedValue;
       this.cursorStackNextSeries[slot] = series + 1;
     }
-    return stackedValue;
+    if ((this.source.columns.flags[series] & CompactSeriesFlag.PercentStack) === 0) {
+      this.currentCursorStackBase = stackBase;
+      return stackedValue;
+    }
+    const total = slot < 0 ? this.calculateCursorStackTotal(group, dataIndex) : this.cursorStackTotals[slot];
+    const absoluteTotal = Math.abs(total);
+    this.currentCursorStackBase = absoluteTotal === 0 ? 0 : stackBase / absoluteTotal;
+    return absoluteTotal === 0 ? 0 : stackedValue / absoluteTotal;
+  }
+
+  private calculateCursorStackTotal(group: number, dataIndex: number): number {
+    let total = 0;
+    for (let series = 0; series < this.source.seriesCount; series++) {
+      if (!this.isVisible(series) || this.getStackGroup(series) !== group) {
+        continue;
+      }
+      const value = this.source.yAt(series, dataIndex);
+      if (value != null) {
+        total += value;
+      }
+    }
+    return total;
   }
 
   private prepareStackScratch(from: number, to: number): void {
@@ -1800,7 +2274,12 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     } else {
       this.stackPresence.fill(0, 0, required);
     }
-    this.operation = ScanOperation.StackPresence;
+    if (this.stackTotals.length < required) {
+      this.stackTotals = new Float64Array(required);
+    } else {
+      this.stackTotals.fill(0, 0, required);
+    }
+    this.operation = ScanOperation.StackTotal;
     for (let series = 0; series < this.source.seriesCount; series++) {
       if (this.isVisible(series) && (this.source.columns.flags[series] & CompactSeriesFlag.Stack) !== 0) {
         this.seriesIndex = series;
@@ -1815,6 +2294,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const required = this.source.stackGroupCount * CURSOR_STACK_CACHE_SIZE;
     if (this.cursorStacks.length !== required) {
       this.cursorStacks = new Float64Array(required);
+      this.cursorStackTotals = new Float64Array(required);
       this.cursorStackIndexes = new Int32Array(required);
       this.cursorStackNextSeries = new Int32Array(required);
     }
@@ -1890,7 +2370,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
 
     this.cursorSnapshotIndex = index;
-    this.cursorSnapshotMouseX = plot?.cursor.left ?? Number.NaN;
+    this.cursorSnapshotMouseX = plot ? (this.getCursorGroupPosition(plot) ?? Number.NaN) : Number.NaN;
     this.cursorSnapshot.cursorIndex = index;
     this.cursorSnapshot.timestamp = source.xAt(index);
     if (changed) {
@@ -1944,9 +2424,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (this.getCursorProximity(plot, seriesIndex, index) == null) {
       return index - left <= right - index ? left : right;
     }
-    const mouseX = this.requireCursorLeft(plot);
-    const leftDistance = mouseX - plot.valToPos(source.xAt(left), 'x');
-    const rightDistance = plot.valToPos(source.xAt(right), 'x') - mouseX;
+    const cursorPosition = this.requireCursorGroupPosition(plot);
+    const leftDistance = cursorPosition - plot.valToPos(source.xAt(left), 'x');
+    const rightDistance = plot.valToPos(source.xAt(right), 'x') - cursorPosition;
 
     if (leftDistance <= rightDistance) {
       return this.isWithinCursorProximity(plot, seriesIndex, index, left) ? left : null;
@@ -1958,7 +2438,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const maxDistance = this.getCursorProximity(plot, seriesIndex, hoveredIndex);
     return (
       maxDistance == null ||
-      Math.abs(this.requireCursorLeft(plot) - plot.valToPos(this.source.xAt(dataIndex), 'x')) <= maxDistance
+      Math.abs(this.requireCursorGroupPosition(plot) - plot.valToPos(this.source.xAt(dataIndex), 'x')) <= maxDistance
     );
   }
 
@@ -1966,17 +2446,21 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const proximity = plot.cursor.hover?.prox;
     const maxDistance =
       typeof proximity === 'function'
-        ? proximity(plot, seriesIndex + 1, hoveredIndex, plot.posToVal(this.requireCursorLeft(plot), 'x'))
+        ? proximity(plot, seriesIndex + 1, hoveredIndex, plot.posToVal(this.requireCursorGroupPosition(plot), 'x'))
         : proximity;
     return maxDistance == null || maxDistance < 0 || !Number.isFinite(maxDistance) ? null : maxDistance;
   }
 
-  private requireCursorLeft(plot: uPlot): number {
-    const left = plot.cursor.left;
-    if (left == null) {
-      throw new Error('Compact cursor resolution requires a horizontal cursor position');
+  private getCursorGroupPosition(plot: uPlot): number | null | undefined {
+    return plot.scales.x.ori === 1 ? plot.cursor.top : plot.cursor.left;
+  }
+
+  private requireCursorGroupPosition(plot: uPlot): number {
+    const position = this.getCursorGroupPosition(plot);
+    if (position == null) {
+      throw new Error('Compact cursor resolution requires a position on the group axis');
     }
-    return left;
+    return position;
   }
 
   private isVisible(series: number): boolean {
@@ -2054,6 +2538,71 @@ function copyVisibilityState(previous: CompactVisibilityState, next: CompactVisi
   }
 }
 
+function addRoundedRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+  groupsAreHorizontal: boolean,
+  negative: boolean
+): void {
+  if (radius <= 0) {
+    context.rect(x, y, width, height);
+    return;
+  }
+  const right = x + width;
+  const bottom = y + height;
+  const roundTop = groupsAreHorizontal && !negative;
+  const roundRight = !groupsAreHorizontal && !negative;
+  const roundBottom = groupsAreHorizontal && negative;
+  const roundLeft = !groupsAreHorizontal && negative;
+  const topLeft = roundTop || roundLeft ? radius : 0;
+  const topRight = roundTop || roundRight ? radius : 0;
+  const bottomRight = roundBottom || roundRight ? radius : 0;
+  const bottomLeft = roundBottom || roundLeft ? radius : 0;
+
+  context.moveTo(x + topLeft, y);
+  context.lineTo(right - topRight, y);
+  if (topRight > 0) {
+    context.quadraticCurveTo(right, y, right, y + topRight);
+  }
+  context.lineTo(right, bottom - bottomRight);
+  if (bottomRight > 0) {
+    context.quadraticCurveTo(right, bottom, right - bottomRight, bottom);
+  }
+  context.lineTo(x + bottomLeft, bottom);
+  if (bottomLeft > 0) {
+    context.quadraticCurveTo(x, bottom, x, bottom - bottomLeft);
+  }
+  context.lineTo(x, y + topLeft);
+  if (topLeft > 0) {
+    context.quadraticCurveTo(x, y, x + topLeft, y);
+  }
+  context.closePath();
+}
+
+function rectsIntersect(left: CompactRect, right: CompactRect): boolean {
+  return (
+    left.left < right.left + right.width &&
+    left.left + left.width > right.left &&
+    left.top < right.top + right.height &&
+    left.top + left.height > right.top
+  );
+}
+
+function rectContains(
+  rect: CompactRect,
+  groupPosition: number,
+  valuePosition: number,
+  groupAxisVertical: boolean
+): boolean {
+  const x = groupAxisVertical ? valuePosition : groupPosition;
+  const y = groupAxisVertical ? groupPosition : valuePosition;
+  return x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
+}
+
 function validateSource(source: CompactRenderSource): void {
   const { columns, seriesCount } = source;
   if (!(source.visibilityState?.overrides instanceof Map)) {
@@ -2096,8 +2645,8 @@ function validateSource(source: CompactRenderSource): void {
     }
     const stackGroup = columns.stackGroupIds?.[series] ?? 0;
     const stacked = (columns.flags[series] & CompactSeriesFlag.Stack) !== 0;
-    if ((columns.flags[series] & CompactSeriesFlag.PercentStack) !== 0) {
-      throw new Error('Compact renderer does not support percent stacking');
+    if ((columns.flags[series] & CompactSeriesFlag.PercentStack) !== 0 && !stacked) {
+      throw new Error('Compact renderer percent stacking requires stack metadata');
     }
     if ((stacked && (stackGroup === 0 || stackGroup > source.stackGroupCount)) || (!stacked && stackGroup !== 0)) {
       throw new Error(`Compact renderer series ${series} has invalid stack metadata`);

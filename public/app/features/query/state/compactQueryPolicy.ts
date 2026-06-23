@@ -1,6 +1,7 @@
 import { CoreApp, DataQueryRequest, FieldConfigSource } from '@grafana/data';
-import { VizOrientation } from '@grafana/schema';
+import { GraphDrawStyle, StackingMode, VisibilityMode, VizOrientation } from '@grafana/schema';
 import {
+  CompactPanelCapability,
   isCompactFieldConfigSupported,
   isCompactReducerSupported,
 } from 'app/core/components/GraphNG/compactCapabilities';
@@ -28,10 +29,92 @@ export function isCompactTimeSeriesPanelConfigurationSupported({
   legendCalcs = [],
   panelOptions,
 }: CompactTimeSeriesPanelConfiguration): boolean {
+  const capability = getCompactTimeSeriesCapability(fieldConfig);
   return (
     !hasUnsupportedLegendReducer(legendCalcs) &&
-    !hasUnsupportedPanelOptions(panelOptions) &&
-    isCompactFieldConfigSupported(fieldConfig)
+    !hasUnsupportedTimeSeriesPanelOptions(panelOptions) &&
+    !hasUnsupportedTimeSeriesStyleCombination(fieldConfig) &&
+    isCompactFieldConfigSupported(fieldConfig, capability)
+  );
+}
+
+export function getCompactTimeSeriesCapability(fieldConfig?: FieldConfigSource): CompactPanelCapability {
+  const hasBars = getPossibleTimeSeriesStyles(fieldConfig).some((style) => style.drawStyle === GraphDrawStyle.Bars);
+  return hasBars ? 'timeseries-bars' : 'timeseries-line';
+}
+
+interface TimeSeriesStyleState {
+  drawStyle: unknown;
+  stackingMode: unknown;
+}
+
+function getPossibleTimeSeriesStyles(fieldConfig: FieldConfigSource | undefined): TimeSeriesStyleState[] {
+  const defaults = getObjectProperty(fieldConfig, 'defaults');
+  const custom = getObjectProperty(defaults, 'custom');
+  let states: TimeSeriesStyleState[] = [
+    {
+      drawStyle: getObjectProperty(custom, 'drawStyle') ?? GraphDrawStyle.Line,
+      stackingMode: getObjectProperty(getObjectProperty(custom, 'stacking'), 'mode') ?? StackingMode.None,
+    },
+  ];
+  const overrides = getObjectProperty(fieldConfig, 'overrides');
+  if (!Array.isArray(overrides)) {
+    return states;
+  }
+
+  for (const override of overrides) {
+    const properties = getObjectProperty(override, 'properties');
+    if (!Array.isArray(properties)) {
+      continue;
+    }
+    let drawStyle: unknown;
+    let stackingMode: unknown;
+    let changesDrawStyle = false;
+    let changesStacking = false;
+    for (const property of properties) {
+      const id = getObjectProperty(property, 'id');
+      if (id === 'custom.drawStyle') {
+        drawStyle = getObjectProperty(property, 'value');
+        changesDrawStyle = true;
+      } else if (id === 'custom.stacking') {
+        stackingMode = getObjectProperty(getObjectProperty(property, 'value'), 'mode') ?? StackingMode.None;
+        changesStacking = true;
+      }
+    }
+    if (!changesDrawStyle && !changesStacking) {
+      continue;
+    }
+
+    const matchedStates = states.map((state) => ({
+      drawStyle: changesDrawStyle ? drawStyle : state.drawStyle,
+      stackingMode: changesStacking ? stackingMode : state.stackingMode,
+    }));
+    for (const matched of matchedStates) {
+      if (
+        !states.some((state) => state.drawStyle === matched.drawStyle && state.stackingMode === matched.stackingMode)
+      ) {
+        states.push(matched);
+      }
+    }
+  }
+  return states;
+}
+
+function hasUnsupportedTimeSeriesStyleCombination(fieldConfig: FieldConfigSource | undefined): boolean {
+  return getPossibleTimeSeriesStyles(fieldConfig).some(
+    (style) => style.stackingMode === StackingMode.Percent && style.drawStyle !== GraphDrawStyle.Bars
+  );
+}
+
+export function isCompactStandaloneBarChartConfigurationSupported({
+  fieldConfig,
+  legendCalcs = [],
+  panelOptions,
+}: CompactTimeSeriesPanelConfiguration): boolean {
+  return (
+    !hasUnsupportedLegendReducer(legendCalcs) &&
+    isSupportedStandaloneBarChartOptions(panelOptions) &&
+    isCompactFieldConfigSupported(fieldConfig, 'standalone-barchart')
   );
 }
 
@@ -48,21 +131,105 @@ export function getPreferredDashboardQueryFormat({
 }: CompactDashboardQueryContext): DataQueryRequest['preferredQueryResultFormat'] {
   if (
     app !== CoreApp.Dashboard ||
-    panelPluginId !== 'timeseries' ||
     isInspecting ||
     isPublicDashboard ||
     hasTimeComparison ||
-    transformations.some(isEnabledTransformation) ||
-    !isCompactTimeSeriesPanelConfigurationSupported({ fieldConfig, legendCalcs, panelOptions })
+    transformations.some(isEnabledTransformation)
   ) {
+    return undefined;
+  }
+
+  const configurationSupported =
+    panelPluginId === 'timeseries'
+      ? isCompactTimeSeriesPanelConfigurationSupported({ fieldConfig, legendCalcs, panelOptions })
+      : panelPluginId === 'barchart'
+        ? isCompactStandaloneBarChartConfigurationSupported({ fieldConfig, legendCalcs, panelOptions })
+        : false;
+
+  if (!configurationSupported) {
     return undefined;
   }
 
   return 'compact-v1';
 }
 
-function hasUnsupportedPanelOptions(options: unknown): boolean {
+function hasUnsupportedTimeSeriesPanelOptions(options: unknown): boolean {
   return getObjectProperty(options, 'orientation') === VizOrientation.Vertical;
+}
+
+function isSupportedStandaloneBarChartOptions(options: unknown): boolean {
+  if (typeof options !== 'object' || options === null) {
+    return false;
+  }
+
+  const supportedProperties = new Set([
+    'barRadius',
+    'barWidth',
+    'colorByField',
+    'fullHighlight',
+    'groupWidth',
+    'legend',
+    'orientation',
+    'showValue',
+    'stacking',
+    'text',
+    'tooltip',
+    'xField',
+    'xTickLabelMaxLength',
+    'xTickLabelRotation',
+    'xTickLabelSpacing',
+  ]);
+  if (Array.isArray(options) || Object.keys(options).some((property) => !supportedProperties.has(property))) {
+    return false;
+  }
+
+  const xField = getObjectProperty(options, 'xField');
+  const colorByField = getObjectProperty(options, 'colorByField');
+  const orientation = getObjectProperty(options, 'orientation');
+  const stacking = getObjectProperty(options, 'stacking');
+  const showValue = getObjectProperty(options, 'showValue');
+  const text = getObjectProperty(options, 'text');
+
+  return (
+    (xField == null || xField === '') &&
+    (colorByField == null || colorByField === '') &&
+    (orientation == null ||
+      orientation === VizOrientation.Auto ||
+      orientation === VizOrientation.Horizontal ||
+      orientation === VizOrientation.Vertical) &&
+    (stacking == null ||
+      stacking === StackingMode.None ||
+      stacking === StackingMode.Normal ||
+      stacking === StackingMode.Percent) &&
+    (showValue == null ||
+      showValue === VisibilityMode.Auto ||
+      showValue === VisibilityMode.Always ||
+      showValue === VisibilityMode.Never) &&
+    isOptionalFiniteRange(getObjectProperty(options, 'groupWidth'), 0, 1) &&
+    isOptionalFiniteRange(getObjectProperty(options, 'barWidth'), 0, 1) &&
+    isOptionalFiniteRange(getObjectProperty(options, 'barRadius'), 0, 0.5) &&
+    isOptionalFiniteRange(getObjectProperty(options, 'xTickLabelRotation'), -90, 90) &&
+    (getObjectProperty(options, 'xTickLabelMaxLength') == null ||
+      getObjectProperty(options, 'xTickLabelMaxLength') === 0) &&
+    isOptionalFiniteRange(
+      getObjectProperty(options, 'xTickLabelSpacing'),
+      Number.NEGATIVE_INFINITY,
+      Number.POSITIVE_INFINITY
+    ) &&
+    (text == null ||
+      (typeof text === 'object' &&
+        !Array.isArray(text) &&
+        isOptionalFiniteRange(getObjectProperty(text, 'valueSize'), 1, Number.POSITIVE_INFINITY))) &&
+    isOptionalBoolean(getObjectProperty(options, 'fullHighlight'))
+  );
+}
+
+function isOptionalFiniteRange(value: unknown, minimum: number, maximum: number): boolean {
+  return value == null || (typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum);
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value == null || typeof value === 'boolean';
 }
 
 function getObjectProperty(value: unknown, property: string): unknown {

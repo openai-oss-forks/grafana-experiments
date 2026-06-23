@@ -124,14 +124,18 @@ describe('PrometheusDatasource', () => {
   });
 
   describe('Query', () => {
-    it('requests compact responses only for time-series range queries', async () => {
-      const compactRequest = (targets: PromQuery[]) =>
+    it('requests compact responses only for supported dashboard range queries', async () => {
+      const compactRequest = (targets: PromQuery[], panelPluginId = 'timeseries') =>
         createDataRequest(targets, {
-          panelPluginId: 'timeseries',
+          panelPluginId,
           preferredQueryResultFormat: 'compact-v1',
         });
 
       await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true }])));
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
+
+      fetchMock.mockClear();
+      await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true }], 'barchart')));
       expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
 
       fetchMock.mockClear();

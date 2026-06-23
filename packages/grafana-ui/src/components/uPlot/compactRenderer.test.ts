@@ -1,6 +1,6 @@
 import uPlot from 'uplot';
 
-import { ScaleDistribution } from '@grafana/schema';
+import { ScaleDistribution, StackingMode } from '@grafana/schema';
 
 import {
   CompactRenderController,
@@ -8,7 +8,9 @@ import {
   CompactSeriesFlag,
   CompactStyleRecord,
   getCompactRenderController,
+  installCompactRenderer,
 } from './compactRenderer';
+import { UPlotConfigBuilder } from './config/UPlotConfigBuilder';
 
 describe('CompactRenderController', () => {
   test('draws source-native lines, steps, points, splines, and gaps without dense arrays', () => {
@@ -38,6 +40,183 @@ describe('CompactRenderController', () => {
     expect(context.stroke).toHaveBeenCalled();
     expect(source.scan).toHaveBeenCalled();
     expect(source.buffer).toBe(source.samples.buffer);
+  });
+
+  test('draws grouped bars directly from the compact source without aligned value arrays', () => {
+    const source = createSource(
+      [
+        [1, undefined, 3],
+        [3, 2, 1],
+      ],
+      [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'single',
+      { stroke: '#f00', areaFill: '#fcc', lineWidth: 1, barWidthFactor: 0.8 }
+    );
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1, barRadius: 0 });
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+
+    controller.draw(plot, 0, 2);
+
+    expect(context.fill).toHaveBeenCalledTimes(5);
+    expect(context.stroke).toHaveBeenCalledTimes(5);
+    expect(source.scan).toHaveBeenCalledWith(0, 0, 2, expect.any(Function));
+    expect(source.scan).toHaveBeenCalledWith(1, 0, 2, expect.any(Function));
+    expect(source.buffer).toBe(source.samples.buffer);
+  });
+
+  test('keeps configured point markers on TimeSeries bars', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Bars | CompactSeriesFlag.Points]);
+    const { plot, context } = createPlot();
+
+    new CompactRenderController(source).draw(plot, 0, 1);
+
+    expect(context.arc).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps zero-width bar settings visible at the one-pixel minimum', () => {
+    const source = createSource([[10]], [CompactSeriesFlag.Bars]);
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0, barWidth: 0 });
+    const { plot, context } = createPlot();
+
+    new CompactRenderController(source).draw(plot, 0, 0);
+
+    expect(context.rect).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), uPlot.pxRatio, 10);
+  });
+
+  test('normalizes percent-stacked bars for extents and cursor focus', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
+    const source = createSource(
+      [
+        [1, 1],
+        [3, 1],
+      ],
+      [flags, flags],
+      1,
+      'series',
+      'single',
+      { stroke: '#f00', areaFill: '#fcc', lineWidth: 1 }
+    );
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.extent(plot, 'y', 0, 1)).toEqual([0, 1]);
+    expect(controller.updateCursor(plot, 0, 1, 'local')).toMatchObject({
+      seriesIndex: 1,
+      dataIndex: 0,
+      top: 1,
+    });
+  });
+
+  test('configures percent-stacked value scales with the fixed 0 to 1 range', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
+    const source = createSource([[1], [3]], [flags, flags], 1);
+    const builder = new UPlotConfigBuilder();
+
+    installCompactRenderer(builder, source);
+
+    expect(builder.scales[0].props.stackingMode).toBe(StackingMode.Percent);
+  });
+
+  test('formats stacked bar labels from segment values and rounds only exposed normal stacks', () => {
+    const cases = [
+      {
+        flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack,
+        expected: [1, 1, 3, 1],
+        roundedCorners: 4,
+      },
+      {
+        flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+        expected: [0.25, 0.5, 0.75, 0.5],
+        roundedCorners: 0,
+      },
+      {
+        flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+        values: [
+          [-1, -1],
+          [-3, -1],
+        ],
+        expected: [0.25, 0.5, 0.75, 0.5],
+        roundedCorners: 0,
+      },
+    ];
+
+    for (const {
+      flags,
+      values = [
+        [1, 1],
+        [3, 1],
+      ],
+      expected,
+      roundedCorners,
+    } of cases) {
+      const source = createSource(values, [flags, flags], 1, 'series', 'single', {
+        stroke: '#f00',
+        areaFill: '#fcc',
+        lineWidth: 1,
+      });
+      const formatValueAt = jest.fn(() => 'value');
+      Reflect.set(source, 'formatValueAt', formatValueAt);
+      Reflect.set(source, 'barOptions', {
+        mode: 'grouped',
+        groupWidth: 0.8,
+        barWidth: 0.8,
+        barRadius: 0.2,
+        showValue: 'always',
+      });
+      const { plot, context } = createPlot();
+
+      new CompactRenderController(source).draw(plot, 0, 1);
+
+      expect(formatValueAt.mock.calls.map(([, , value]) => value)).toEqual(expected);
+      expect(context.quadraticCurveTo).toHaveBeenCalledTimes(roundedCorners);
+    }
+  });
+
+  test('suppresses colliding auto labels within a stacked bar', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[1], [1]], [flags, flags], 1);
+    Reflect.set(source, 'formatValueAt', () => '1');
+    Reflect.set(source, 'barOptions', {
+      mode: 'grouped',
+      groupWidth: 0.8,
+      barWidth: 0.8,
+      showValue: 'auto',
+    });
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value);
+
+    new CompactRenderController(source).draw(plot, 0, 0);
+
+    expect(context.fillText).toHaveBeenCalledTimes(1);
+  });
+
+  test('exposes a full bar-group cursor rectangle for standalone highlight mode', () => {
+    const source = createSource([[1], [3]], [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 1,
+    });
+    Reflect.set(source, 'barOptions', {
+      mode: 'grouped',
+      groupWidth: 0.8,
+      barWidth: 1,
+      fullHighlight: true,
+    });
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 0, 80, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 1,
+      centered: false,
+      left: 0,
+      top: 0,
+      width: 40,
+      height: 100,
+    });
   });
 
   test('computes stacked extents with visible-window scratch and updates typed visibility', () => {
@@ -1154,7 +1333,7 @@ function createSource(
     columns: {
       styleIds: new Uint8Array(values.length),
       scaleIds: new Uint8Array(values.length),
-      flags: Uint8Array.from(flags),
+      flags: Uint16Array.from(flags),
       visibility: new Uint8Array(values.length).fill(1),
       stackGroupIds: new Uint8Array(values.length).fill(stackGroupCount === 0 ? 0 : 1),
     },
@@ -1235,6 +1414,7 @@ function createPlot(): {
     rect: jest.fn(),
     clip: jest.fn(),
     createLinearGradient: jest.fn(() => gradient),
+    measureText: jest.fn(() => ({ width: 8 })),
     fillText: jest.fn(),
   } as unknown as jest.Mocked<CanvasRenderingContext2D>;
   const plot = {

@@ -1,8 +1,9 @@
+import { css } from '@emotion/css';
 import { type MouseEvent, useCallback, useMemo, useState } from 'react';
 
 import { DisplayValue, fieldReducers, isReducerID } from '@grafana/data';
 import { AxisPlacement, VizLegendOptions } from '@grafana/schema';
-import { VizLayout, VizLegend, VizLegendItem, VizLegendItemSource } from '@grafana/ui';
+import { useStyles2, VizLayout, VizLegend, VizLegendItem, VizLegendItemSource } from '@grafana/ui';
 import { getCompactRenderController, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { CompactNativeRenderPlan, CompactNativeSeriesFlag } from '../GraphNG/compactNativePlan';
@@ -20,6 +21,7 @@ export function CompactPlotLegend({
   displayMode,
   ...legendProps
 }: CompactPlotLegendProps) {
+  const styles = useStyles2(getStyles);
   const [, setVisibilityRevision] = useState(0);
   const onSeriesVisibilityChange = useCallback(
     (item: VizLegendItem<number>, event: MouseEvent<HTMLButtonElement>) => {
@@ -49,6 +51,7 @@ export function CompactPlotLegend({
         sortBy={legendProps.sortBy}
         sortDesc={legendProps.sortDesc}
         isSortable={true}
+        className={displayMode === 'table' ? styles.table : undefined}
         displayValueColumns={calcs.map((reducerId) => {
           const reducer = fieldReducers.get(reducerId);
           return { title: reducer.name, description: reducer.description };
@@ -57,6 +60,32 @@ export function CompactPlotLegend({
     </VizLayout.Legend>
   );
 }
+
+const getStyles = () => ({
+  table: css({
+    tableLayout: 'fixed',
+    maxWidth: '100%',
+    'th:first-child': {
+      width: 'auto',
+    },
+    'th:not(:first-child), td:not(:first-child)': {
+      width: 88,
+      maxWidth: 88,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+    },
+    'td:first-child': {
+      overflow: 'hidden',
+    },
+    'td:first-child > span': {
+      minWidth: 0,
+    },
+    'td:first-child button': {
+      minWidth: 0,
+      maxWidth: '100%',
+    },
+  }),
+});
 
 export function toggleCompactLegendSeries(
   controller: Pick<ReturnType<typeof getCompactRenderController>, 'setSeriesVisibility'>,

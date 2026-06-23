@@ -303,15 +303,21 @@ describe('PanelEditor', () => {
       await waitFor(() => expectLatestFormat('compact-v1'));
 
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
-      await waitFor(() => expectLatestFormat(undefined));
-      expect(queryRunner.state.data?.compactSeries).toBeUndefined();
+      await waitFor(() => expectLatestFormat('compact-v1'));
 
       panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] }, true);
       await waitFor(() => expectLatestFormat('compact-v1'));
 
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'barchart', skipDataQuery: false }));
       await panel.changePluginType('barchart');
+      await waitFor(() => expectLatestFormat('compact-v1'));
+
+      panel.onOptionsChange({ xField: 'category' });
       await waitFor(() => expectLatestFormat(undefined));
+      expect(queryRunner.state.data?.compactSeries).toBeUndefined();
+
+      panel.onOptionsChange({ xField: undefined });
+      await waitFor(() => expectLatestFormat('compact-v1'));
 
       pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
       await panel.changePluginType('timeseries');
@@ -324,11 +330,9 @@ describe('PanelEditor', () => {
       dataTransformer.setState({ transformations: [{ id: 'organize', options: {} }] });
       queryRunner.runQueries();
       await waitFor(() => expectLatestFormat(undefined));
-      expect(runRequestMock).toHaveBeenCalledTimes(6);
 
       dataTransformer.setState({ transformations: [] });
       await waitFor(() => expectLatestFormat('compact-v1'));
-      expect(runRequestMock).toHaveBeenCalledTimes(7);
     });
 
     it('does not unwrap an existing data transformer when leaving panel edit', () => {

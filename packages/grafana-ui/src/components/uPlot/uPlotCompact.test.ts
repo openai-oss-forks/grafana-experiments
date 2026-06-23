@@ -109,6 +109,7 @@ describe('uPlot compact X host', () => {
   test('renders receiver-local compact marker state for native synchronization', async () => {
     const sourceController = createController();
     const receiverController = createController();
+    let useBarRectangle = false;
     receiverController.updateCursor.mockImplementation((_plot, index, _mouseY, origin) =>
       index != null && origin === 'native-sync'
         ? {
@@ -119,6 +120,7 @@ describe('uPlot compact X host', () => {
             left: 140,
             top: 60,
             size: 10,
+            ...(useBarRectangle ? { width: 10, height: 10, centered: false } : undefined),
             fill: 'rgb(12, 34, 56)',
             stroke: 'rgba(12, 34, 56, 0.5)',
           }
@@ -166,6 +168,7 @@ describe('uPlot compact X host', () => {
     expect(marker?.style.borderColor).toBe('rgba(12, 34, 56, 0.5)');
     expect(marker?.style.borderWidth).toBe('2.5px');
 
+    useBarRectangle = true;
     Reflect.set(receiverPlot.cursor, 'event', new MouseEvent('mousemove'));
     receiverPlot.setCursor({ left: 120, top: 40 }, true, false, 'native-sync');
     expect(receiverController.updateCursor).toHaveBeenLastCalledWith(
@@ -174,6 +177,8 @@ describe('uPlot compact X host', () => {
       40,
       'native-sync'
     );
+    expect(marker?.style.marginLeft).toBe('0px');
+    expect(marker?.style.marginTop).toBe('0px');
 
     receiverController.updateCursor.mockReturnValue(null);
     sourcePlot.setCursor({ left: 120, top: 50 }, true, true);

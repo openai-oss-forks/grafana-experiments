@@ -24,7 +24,10 @@ import {
 } from '@grafana/ui';
 import { FILTER_OUT_OPERATOR, TimeRange2, TooltipHoverMode } from '@grafana/ui/internal';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
-import { isCompactTimeSeriesPanelConfigurationSupported } from 'app/features/query/state/compactQueryPolicy';
+import {
+  getCompactTimeSeriesCapability,
+  isCompactTimeSeriesPanelConfigurationSupported,
+} from 'app/features/query/state/compactQueryPolicy';
 
 import { CompactTooltipPlugin } from './CompactTooltipPlugin';
 import { TimeSeriesTooltip } from './TimeSeriesTooltip';
@@ -143,6 +146,7 @@ export const TimeSeriesPanel = ({
       dataLinkPostProcessor,
       cursorMode: options.tooltip.mode,
       highlightSeriesOnHover: options.highlightSeriesOnHover !== false,
+      capability: getCompactTimeSeriesCapability(fieldConfig),
     };
   }, [
     dataLinkPostProcessor,

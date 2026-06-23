@@ -180,6 +180,9 @@ interface RendererConfigRecord {
   readonly showPoints: VisibilityMode | undefined;
   readonly stackingMode: StackingMode;
   readonly stackingGroup: string;
+  readonly barAlignment: -1 | 0 | 1;
+  readonly barWidthFactor: number;
+  readonly barMaxWidth: number;
 }
 
 interface RendererStackGroupRecord {
@@ -188,6 +191,7 @@ interface RendererStackGroupRecord {
   readonly scaleId: number;
   readonly drawStyle: GraphDrawStyle;
   readonly path: CompactSeriesFlag;
+  readonly mode: StackingMode;
 }
 
 interface LabelProfile {
@@ -215,7 +219,7 @@ export function createCompactNativeRenderPlan(
   data: CompactTimeSeriesData,
   options: CompactFieldConfigOptions
 ): CompactNativeRenderPlan {
-  assertCompactFieldConfig(options.fieldConfig);
+  assertCompactFieldConfig(options.fieldConfig, options.capability);
   const seriesCount = data.series.length;
   const access = createSeriesAccess(data);
   const configIdBuilder = new CompactIndexColumnBuilder(seriesCount);
@@ -323,7 +327,7 @@ export function createCompactNativeRenderPlan(
       }
     }
 
-    scratch.config.custom = canonicalizeCompactCustomConfig(scratch.config.custom);
+    scratch.config.custom = canonicalizeCompactCustomConfig(scratch.config.custom, options.capability);
 
     const configuredDisplayNameId = internOptionalString(
       scratchConfig.displayName,
@@ -618,7 +622,7 @@ function createRenderSource(
   const styleIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const scaleIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const stackGroupIdBuilder = new CompactIndexColumnBuilder(seriesCount);
-  const flags = new Uint8Array(seriesCount);
+  const flags = new Uint16Array(seriesCount);
   const visibility = new Uint8Array(seriesCount);
   const styles: CompactStyleRecord[] = [];
   const scales: CompactScaleRecord[] = [];
@@ -631,6 +635,7 @@ function createRenderSource(
   const rendererConfigs = new Map<number, RendererConfigRecord>();
   const colorCalculators = new Map<number, ReturnType<typeof getFieldColorCalculator>>();
   const scaleCalculators: NumericRangeValueCache<ReturnType<typeof getScaleCalculator>> = new Map();
+  const percentDisplays = new Map<number, DisplayProcessor>();
   const colorState: { displayName: string; seriesIndex: number; range?: NumericRange } = {
     displayName: '',
     seriesIndex: 0,
@@ -669,6 +674,9 @@ function createRenderSource(
       showPoints: configuredShowPoints,
       stackingMode,
       stackingGroup,
+      barAlignment,
+      barWidthFactor,
+      barMaxWidth,
     } = rendererConfig;
     const displayName = colorMode.useSeriesName ? getDisplayName(seriesIndex) : '';
     colorTarget.config = config;
@@ -718,6 +726,9 @@ function createRenderSource(
         disconnectThreshold,
         spanNullsThreshold,
         showValues,
+        barAlignment,
+        barWidthFactor,
+        barMaxWidth,
       });
       styleIdsByColor.set(lineColor, rendererStyleId);
     }
@@ -739,6 +750,8 @@ function createRenderSource(
     let seriesFlags = pathFlag;
     if (drawStyle === GraphDrawStyle.Line) {
       seriesFlags |= CompactSeriesFlag.DrawLine;
+    } else if (drawStyle === GraphDrawStyle.Bars) {
+      seriesFlags |= CompactSeriesFlag.Bars;
     }
     const showPoints = drawStyle === GraphDrawStyle.Points ? VisibilityMode.Always : configuredShowPoints;
     if (showPoints === VisibilityMode.Always) {
@@ -746,7 +759,7 @@ function createRenderSource(
     } else if (showPoints === VisibilityMode.Auto) {
       seriesFlags |= CompactSeriesFlag.AutoPoints;
     }
-    if (stackingMode === StackingMode.Normal) {
+    if (stackingMode === StackingMode.Normal || stackingMode === StackingMode.Percent) {
       const stackGroupIndex = internStructuralRecord(
         {
           direction: getStackDirection(source, seriesIndex, custom.transform),
@@ -754,6 +767,7 @@ function createRenderSource(
           scaleId: rendererScaleId,
           drawStyle,
           path: pathFlag,
+          mode: stackingMode,
         },
         stackGroups,
         stackGroupBuckets
@@ -761,6 +775,9 @@ function createRenderSource(
       stackGroupCounts[stackGroupIndex] = (stackGroupCounts[stackGroupIndex] ?? 0) + 1;
       stackGroupIdBuilder.set(seriesIndex, stackGroupIndex + 1);
       seriesFlags |= CompactSeriesFlag.Stack;
+      if (stackingMode === StackingMode.Percent) {
+        seriesFlags |= CompactSeriesFlag.PercentStack;
+      }
     }
     flags[seriesIndex] = seriesFlags;
     visibility[seriesIndex] = custom.hideFrom?.viz ? 0 : 1;
@@ -784,7 +801,7 @@ function createRenderSource(
     stackGroupCount,
     cursorMode: options.cursorMode ?? 'single',
     focusOverlayColor:
-      options.highlightSeriesOnHover === false
+      options.highlightSeriesOnHover === false || options.barOptions?.fullHighlight
         ? undefined
         : colorManipulator.alpha(options.theme.colors.background.canvas, 0.5),
     seriesIdentityAt: getSeriesIdentity,
@@ -793,11 +810,16 @@ function createRenderSource(
     ...(hasValueLabels
       ? {
           formatValueAt: (seriesIndex: number, _index: number, value: number) =>
-            formattedValueToString(getDisplay(seriesIndex)(value)),
+            formattedValueToString(
+              (flags[seriesIndex] & CompactSeriesFlag.PercentStack) !== 0
+                ? getPercentDisplay(seriesIndex, getConfigId, getConfig, options, percentDisplays)(value)
+                : getDisplay(seriesIndex)(value)
+            ),
           valueColor: options.theme.colors.text.primary,
           valueFontFamily: options.theme.typography.fontFamily,
         }
       : undefined),
+    ...(options.barOptions ? { barOptions: options.barOptions } : undefined),
   });
   if (!isCompactRenderSource(source)) {
     throw new Error('Compact native renderer source construction failed');
@@ -933,6 +955,9 @@ function compileRendererConfig(config: FieldConfig<GraphFieldConfig>): RendererC
     showPoints: custom.showPoints,
     stackingMode: custom.stacking?.mode ?? StackingMode.None,
     stackingGroup: custom.stacking?.group ?? '',
+    barAlignment: custom.barAlignment ?? 0,
+    barWidthFactor: custom.barWidthFactor ?? 0.6,
+    barMaxWidth: custom.barMaxWidth ?? 200,
   };
 }
 
@@ -977,12 +1002,19 @@ function getStackDirection(
 function compactStackGroups(
   rawStackGroupIds: CompactIndexColumn,
   stackGroupCounts: number[],
-  flags: Uint8Array
+  flags: CompactIndexColumn
 ): { stackGroupIds: CompactIndexColumn; stackGroupCount: number } {
   const remappedGroupIds = new Uint32Array(stackGroupCounts.length);
+  const requiredPercentGroups = new Uint8Array(stackGroupCounts.length);
+  for (let seriesIndex = 0; seriesIndex < rawStackGroupIds.length; seriesIndex++) {
+    const groupId = rawStackGroupIds[seriesIndex];
+    if (groupId > 0 && (flags[seriesIndex] & CompactSeriesFlag.PercentStack) !== 0) {
+      requiredPercentGroups[groupId - 1] = 1;
+    }
+  }
   let stackGroupCount = 0;
   for (let groupIndex = 0; groupIndex < stackGroupCounts.length; groupIndex++) {
-    if (stackGroupCounts[groupIndex] > 1) {
+    if (stackGroupCounts[groupIndex] > 1 || requiredPercentGroups[groupIndex] !== 0) {
       remappedGroupIds[groupIndex] = ++stackGroupCount;
     }
   }
@@ -997,7 +1029,7 @@ function compactStackGroups(
     const stackGroupId = rawGroupId === 0 ? 0 : remappedGroupIds[rawGroupId - 1];
     builder.set(seriesIndex, stackGroupId);
     if (stackGroupId === 0) {
-      flags[seriesIndex] &= ~CompactSeriesFlag.Stack;
+      flags[seriesIndex] &= ~(CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack);
     }
   }
   return { stackGroupIds: builder.finish(), stackGroupCount };
@@ -1043,6 +1075,30 @@ function getCachedColorCalculator(
     cache.set(configId, calculator);
   }
   return calculator;
+}
+
+function getPercentDisplay(
+  seriesIndex: number,
+  getConfigId: (seriesIndex: number) => number,
+  getConfig: (seriesIndex: number) => FieldConfig<GraphFieldConfig>,
+  options: CompactFieldConfigOptions,
+  cache: Map<number, DisplayProcessor>
+): DisplayProcessor {
+  const configId = getConfigId(seriesIndex);
+  let display = cache.get(configId);
+  if (!display) {
+    display = getDisplayProcessor({
+      field: {
+        name: TIME_SERIES_VALUE_FIELD_NAME,
+        type: FieldType.number,
+        config: { ...getConfig(seriesIndex), unit: 'percentunit' },
+      },
+      theme: options.theme,
+      timeZone: options.timeZone,
+    });
+    cache.set(configId, display);
+  }
+  return display;
 }
 
 function getCachedScaleCalculator(

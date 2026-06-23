@@ -1,5 +1,5 @@
 import { CompactTimeSeriesData } from '@grafana/data';
-import { GraphDrawStyle } from '@grafana/schema';
+import { GraphDrawStyle, StackingMode } from '@grafana/schema';
 
 import { getRenderableCompactSeries } from './TimeSeriesPanel';
 import { Options } from './panelcfg.gen';
@@ -12,6 +12,25 @@ describe('getRenderableCompactSeries', () => {
     expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options)).toBe(compactSeries);
   });
 
+  it('keeps compact data for supported TimeSeries bars', () => {
+    expect(
+      getRenderableCompactSeries(
+        compactSeries,
+        {
+          defaults: {
+            custom: {
+              drawStyle: GraphDrawStyle.Bars,
+              barWidthFactor: 0.8,
+              stacking: { mode: StackingMode.Percent, group: 'A' },
+            },
+          },
+          overrides: [],
+        },
+        options
+      )
+    ).toBe(compactSeries);
+  });
+
   it('treats malformed legend reducers like the request policy does', () => {
     const malformedOptions = { legend: { calcs: 'last' } } as unknown as Options;
     expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, malformedOptions)).toBe(
@@ -19,18 +38,7 @@ describe('getRenderableCompactSeries', () => {
     );
   });
 
-  it.each([
-    {
-      name: 'bar draw style',
-      fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
-      hasFullFormatRequest: false,
-    },
-    {
-      name: 'full-format request',
-      fieldConfig: { defaults: {}, overrides: [] },
-      hasFullFormatRequest: true,
-    },
-  ])('withholds stale compact data for $name', ({ fieldConfig, hasFullFormatRequest }) => {
-    expect(getRenderableCompactSeries(compactSeries, fieldConfig, options, hasFullFormatRequest)).toBeUndefined();
+  it('withholds stale compact data for a full-format request', () => {
+    expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options, true)).toBeUndefined();
   });
 });

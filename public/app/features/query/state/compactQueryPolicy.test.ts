@@ -74,11 +74,6 @@ describe('compact dashboard query policy', () => {
     {
       app: CoreApp.Dashboard,
       panelPluginId: 'timeseries',
-      fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
-    },
-    {
-      app: CoreApp.Dashboard,
-      panelPluginId: 'timeseries',
       fieldConfig: { defaults: { custom: { stacking: { mode: StackingMode.Percent, group: 'A' } } }, overrides: [] },
     },
     {
@@ -267,7 +262,7 @@ describe('compact dashboard query policy', () => {
     ).toBeUndefined();
   });
 
-  test('supports palette-by-name and inert bar settings without admitting bars', () => {
+  test('supports palette-by-name, line-inert bar settings, and the TimeSeries bar renderer', () => {
     expect(
       getPreferredDashboardQueryFormat({
         app: CoreApp.Dashboard,
@@ -295,7 +290,113 @@ describe('compact dashboard query policy', () => {
       getPreferredDashboardQueryFormat({
         app: CoreApp.Dashboard,
         panelPluginId: 'timeseries',
-        fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
+        fieldConfig: {
+          defaults: {
+            color: { mode: FieldColorModeId.Thresholds },
+            custom: { drawStyle: GraphDrawStyle.Bars },
+          },
+          overrides: [],
+        },
+      })
+    ).toBe('compact-v1');
+  });
+
+  test('supports percent stacking for TimeSeries bars without admitting it for lines', () => {
+    const stacking = { mode: StackingMode.Percent, group: 'A' };
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        fieldConfig: {
+          defaults: { custom: { drawStyle: GraphDrawStyle.Bars, stacking } },
+          overrides: [],
+        },
+      })
+    ).toBe('compact-v1');
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        fieldConfig: {
+          defaults: { custom: { drawStyle: GraphDrawStyle.Line, stacking } },
+          overrides: [],
+        },
+      })
+    ).toBeUndefined();
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        fieldConfig: {
+          defaults: { custom: { drawStyle: GraphDrawStyle.Line, stacking } },
+          overrides: [
+            {
+              matcher: { id: FieldMatcherID.byName, options: 'does-not-exist' },
+              properties: [{ id: 'custom.drawStyle', value: GraphDrawStyle.Bars }],
+            },
+          ],
+        },
+      })
+    ).toBeUndefined();
+  });
+
+  test('falls back instead of throwing for malformed field configuration', () => {
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'timeseries',
+        fieldConfig: { overrides: [{ properties: null }] } as unknown as FieldConfigSource,
+      })
+    ).toBeUndefined();
+  });
+
+  test('admits the supported standalone time-axis Bar chart subset', () => {
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'barchart',
+        fieldConfig: {
+          defaults: { custom: { fillOpacity: 80, lineWidth: 1 } },
+          overrides: [],
+        },
+        legendCalcs: [ReducerID.min, ReducerID.max],
+        panelOptions: {
+          orientation: VizOrientation.Auto,
+          stacking: StackingMode.Percent,
+          showValue: 'auto',
+          groupWidth: 0.7,
+          barWidth: 0.97,
+          barRadius: 0.2,
+          fullHighlight: true,
+          xTickLabelRotation: 0,
+          xTickLabelMaxLength: 0,
+          xTickLabelSpacing: 0,
+        },
+      })
+    ).toBe('compact-v1');
+  });
+
+  test.each([
+    { xField: 'category' },
+    { colorByField: 'color' },
+    { barWidth: 2 },
+    { stacking: 'future' },
+    { xTickLabelMaxLength: 12 },
+  ])('keeps unsupported standalone Bar chart configuration on JSON: %p', (unsupported) => {
+    expect(
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'barchart',
+        fieldConfig: { defaults: {}, overrides: [] },
+        panelOptions: {
+          orientation: VizOrientation.Vertical,
+          stacking: StackingMode.None,
+          showValue: 'auto',
+          groupWidth: 0.7,
+          barWidth: 0.97,
+          fullHighlight: false,
+          ...unsupported,
+        },
       })
     ).toBeUndefined();
   });

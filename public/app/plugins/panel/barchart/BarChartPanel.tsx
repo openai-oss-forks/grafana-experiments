@@ -18,6 +18,7 @@ import { AdHocFilterModel, FILTER_FOR_OPERATOR, TooltipHoverMode } from '@grafan
 import { TimeSeriesTooltip } from '../timeseries/TimeSeriesTooltip';
 
 import { BarChartLegend, hasVisibleLegendSeries } from './BarChartLegend';
+import { CompactBarChart, getRenderableCompactBarSeries } from './CompactBarChart';
 import { Options } from './panelcfg.gen';
 import { prepConfig, prepSeries } from './utils';
 
@@ -25,6 +26,22 @@ const charWidth = measureText('M', UPLOT_AXIS_FONT_SIZE).width;
 const toRads = Math.PI / 180;
 
 export const BarChartPanel = (props: PanelProps<Options>) => {
+  const hasFullFormatRequest =
+    props.data.request != null && props.data.request.preferredQueryResultFormat !== 'compact-v1';
+  const compactSeries = getRenderableCompactBarSeries(
+    props.data.compactSeries,
+    props.fieldConfig,
+    props.options,
+    hasFullFormatRequest
+  );
+  return compactSeries ? (
+    <CompactBarChart {...props} compactSeries={compactSeries} />
+  ) : (
+    <LegacyBarChartPanel {...props} />
+  );
+};
+
+const LegacyBarChartPanel = (props: PanelProps<Options>) => {
   const { data, options, fieldConfig, width, height, timeZone, id, replaceVariables } = props;
 
   // will need this if joining on time to re-create data links

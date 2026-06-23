@@ -18,6 +18,7 @@ export {
   getCompactRenderController,
   installCompactRenderer,
   isCompactRenderSource,
+  type CompactBarRenderOptions,
   type CompactCursorSnapshot,
   type CompactRenderColumns,
   type CompactRenderSource,
