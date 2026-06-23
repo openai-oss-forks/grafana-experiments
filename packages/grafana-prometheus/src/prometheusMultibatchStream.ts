@@ -1163,12 +1163,10 @@ async function streamQueryRange(
     signal,
   });
 
-  if (!isMultiBatchContentType(response.headers.get('Content-Type'))) {
+  const responseContentType = response.headers.get('Content-Type');
+  if (!isMultiBatchContentType(responseContentType)) {
     const body = new Uint8Array(await response.arrayBuffer());
-    if (requestCompactResponse || isCompactContentType(response.headers.get('Content-Type'))) {
-      if (!response.ok && !isCompactContentType(response.headers.get('Content-Type'))) {
-        throw new Error(new TextDecoder().decode(body));
-      }
+    if (isCompactContentType(responseContentType)) {
       emit(decodeCompactQueryDataResponse(body, response.headers, request, target, LoadingState.Done));
       return;
     }
