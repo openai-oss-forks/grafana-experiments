@@ -348,6 +348,20 @@ describe('compact dashboard query policy', () => {
         fieldConfig: { overrides: [{ properties: null }] } as unknown as FieldConfigSource,
       })
     ).toBeUndefined();
+    for (const fieldConfig of [
+      { defaults: null, overrides: [null] },
+      { defaults: {}, overrides: [{ matcher: { id: FieldMatcherID.numeric }, properties: [null] }] },
+      { defaults: { unit: 1 }, overrides: [] },
+    ]) {
+      expect(
+        getPreferredDashboardQueryFormat({
+          app: CoreApp.Dashboard,
+          panelPluginId: 'barchart',
+          fieldConfig: fieldConfig as unknown as FieldConfigSource,
+          panelOptions: {},
+        })
+      ).toBeUndefined();
+    }
   });
 
   test('admits the supported standalone time-axis Bar chart subset', () => {
@@ -356,8 +370,17 @@ describe('compact dashboard query policy', () => {
         app: CoreApp.Dashboard,
         panelPluginId: 'barchart',
         fieldConfig: {
-          defaults: { custom: { fillOpacity: 80, lineWidth: 1 } },
-          overrides: [],
+          defaults: { custom: { drawStyle: GraphDrawStyle.Line, fillOpacity: 80, lineWidth: 1 } },
+          overrides: [
+            {
+              matcher: { id: FieldMatcherID.byName, options: 'requests' },
+              properties: [
+                { id: 'custom.drawStyle', value: GraphDrawStyle.Line },
+                { id: 'custom.showPoints', value: 'sometimes' },
+                { id: 'custom.stacking', value: { mode: 'future' } },
+              ],
+            },
+          ],
         },
         legendCalcs: [ReducerID.min, ReducerID.max],
         panelOptions: {
@@ -374,6 +397,59 @@ describe('compact dashboard query policy', () => {
         },
       })
     ).toBe('compact-v1');
+  });
+
+  test('falls back when standalone field overrides can change the category axis', () => {
+    const panelOptions = {
+      orientation: VizOrientation.Vertical,
+      stacking: StackingMode.None,
+      showValue: 'auto',
+      groupWidth: 0.7,
+      barWidth: 0.97,
+      xTickLabelMaxLength: 0,
+    };
+    const preferredFormat = (fieldConfig: FieldConfigSource) =>
+      getPreferredDashboardQueryFormat({
+        app: CoreApp.Dashboard,
+        panelPluginId: 'barchart',
+        fieldConfig,
+        panelOptions,
+      });
+
+    expect(
+      preferredFormat({
+        defaults: {},
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'Time' },
+            properties: [{ id: 'custom.axisPlacement', value: AxisPlacement.Hidden }],
+          },
+        ],
+      })
+    ).toBeUndefined();
+    expect(
+      preferredFormat({
+        defaults: {},
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'Time' },
+            properties: [{ id: 'custom.axisLabel', value: 'Timestamp' }],
+          },
+        ],
+      })
+    ).toBeUndefined();
+    expect(
+      preferredFormat({
+        defaults: {},
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.numeric, options: {} },
+            properties: [{ id: 'custom.axisPlacement', value: AxisPlacement.Hidden }],
+          },
+        ],
+      })
+    ).toBe('compact-v1');
+    expect(preferredFormat({ defaults: { unit: 'time:YYYY-MM-DD' }, overrides: [] })).toBeUndefined();
   });
 
   test.each([

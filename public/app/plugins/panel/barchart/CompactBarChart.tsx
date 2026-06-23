@@ -12,25 +12,18 @@ import {
   useDataLinksContext,
 } from '@grafana/data';
 import { getPluginImportUtils } from '@grafana/runtime';
-import {
-  AxisPlacement,
-  BarAlignment,
-  GraphDrawStyle,
-  GraphFieldConfig,
-  StackingMode,
-  TooltipDisplayMode,
-  VisibilityMode,
-  VizOrientation,
-} from '@grafana/schema';
+import { AxisPlacement, GraphFieldConfig, TooltipDisplayMode, VisibilityMode, VizOrientation } from '@grafana/schema';
 import { measureText, UPLOT_AXIS_FONT_SIZE, useTheme2 } from '@grafana/ui';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
-import { isCompactStandaloneBarChartConfigurationSupported } from 'app/features/query/state/compactQueryPolicy';
+import {
+  buildCompactStandaloneBarFieldConfig,
+  isCompactStandaloneBarChartConfigurationSupported,
+} from 'app/features/query/state/compactQueryPolicy';
 
 import { CompactTooltipPlugin } from '../timeseries/CompactTooltipPlugin';
 
 import { Options } from './panelcfg.gen';
 
-const STACK_GROUP = '__compact_barchart';
 const COMPACT_GRAPH_PROPERTIES = [
   'barAlignment',
   'barMaxWidth',
@@ -64,33 +57,7 @@ export function buildCompactBarFieldConfig(
   fieldConfig: FieldConfigSource,
   options: Options
 ): FieldConfigSource<GraphFieldConfig> {
-  const defaults = fieldConfig.defaults;
-  const custom: GraphFieldConfig = defaults.custom ?? {};
-  return {
-    defaults: {
-      ...defaults,
-      custom: {
-        ...custom,
-        drawStyle: GraphDrawStyle.Bars,
-        showPoints: VisibilityMode.Never,
-        showValues: options.showValue !== VisibilityMode.Never,
-        barAlignment: BarAlignment.Center,
-        barWidthFactor: options.barWidth,
-        barMaxWidth: 200,
-        stacking: {
-          mode: options.stacking ?? StackingMode.None,
-          group: STACK_GROUP,
-        },
-        axisSoftMin: custom.axisSoftMin ?? 0,
-        axisSoftMax: custom.axisSoftMax ?? 0,
-      },
-    },
-    overrides: fieldConfig.overrides.map((override) => ({
-      ...override,
-      matcher: { ...override.matcher },
-      properties: override.properties.map((property) => ({ ...property })),
-    })),
-  };
+  return buildCompactStandaloneBarFieldConfig(fieldConfig, options);
 }
 
 export function CompactBarChart(props: PanelProps<Options> & { compactSeries: CompactTimeSeriesData }) {
@@ -134,29 +101,34 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
       },
     };
   }, [adaptedFieldConfig, dataLinkPostProcessor, fieldConfigRegistry, options, replaceVariables, theme, timeZone]);
-  const compactOptions = useMemo(
-    () => ({
+  const compactOptions = useMemo(() => {
+    const categoriesAreHorizontal = compactOrientation === VizOrientation.Horizontal;
+    const tickLabelRotation = -(options.xTickLabelRotation ?? 0);
+    const tickFilter = createCompactTickFilter(options.xTickLabelSpacing ?? 0);
+    return {
       orientation: compactOrientation,
       tooltip: options.tooltip,
       highlightSeriesOnHover: options.fullHighlight !== false,
-      compactPadding: createCompactRotationPadding(compactOrientation, options.xTickLabelRotation ?? 0),
+      compactPadding: createCompactRotationPadding(options.xTickLabelRotation ?? 0),
       compactXAxisConfig: {
+        // Default axis labels apply only to numeric fields; category-label overrides use the full renderer.
         show: adaptedFieldConfig.defaults.custom?.axisPlacement !== AxisPlacement.Hidden,
-        label: adaptedFieldConfig.defaults.custom?.axisLabel,
-        tickLabelRotation: compactOrientation === VizOrientation.Horizontal ? -(options.xTickLabelRotation ?? 0) : 0,
-        filter: createCompactTickFilter(options.xTickLabelSpacing ?? 0),
+        gap: 15,
+        grid: { show: false },
+        ticks: { show: false },
+        tickLabelRotation: categoriesAreHorizontal ? tickLabelRotation : 0,
+        filter: categoriesAreHorizontal ? tickFilter : undefined,
       },
-    }),
-    [
-      adaptedFieldConfig.defaults.custom?.axisLabel,
-      adaptedFieldConfig.defaults.custom?.axisPlacement,
-      compactOrientation,
-      options.fullHighlight,
-      options.tooltip,
-      options.xTickLabelRotation,
-      options.xTickLabelSpacing,
-    ]
-  );
+      compactValueAxisConfig: categoriesAreHorizontal ? undefined : { tickLabelRotation, filter: tickFilter },
+    };
+  }, [
+    adaptedFieldConfig.defaults.custom?.axisPlacement,
+    compactOrientation,
+    options.fullHighlight,
+    options.tooltip,
+    options.xTickLabelRotation,
+    options.xTickLabelSpacing,
+  ]);
 
   return (
     <TimeSeries
@@ -190,15 +162,15 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
   );
 }
 
-function createCompactRotationPadding(orientation: VizOrientation, rotation: number): Padding | undefined {
-  if (orientation !== VizOrientation.Horizontal || rotation === 0) {
+export function createCompactRotationPadding(rotation: number): Padding | undefined {
+  if (rotation === 0) {
     return undefined;
   }
   const radians = (Math.abs(rotation) * Math.PI) / 180;
-  const labelWidth = measureText('00:00:00', UPLOT_AXIS_FONT_SIZE).width;
+  const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
   const edgePadding = Math.ceil(Math.cos(radians) * labelWidth);
   const bottomPadding = Math.ceil(Math.sin(radians) * labelWidth);
-  return [0, rotation > 0 ? edgePadding : 0, bottomPadding, rotation < 0 ? edgePadding : 0];
+  return [UPLOT_AXIS_FONT_SIZE, rotation > 0 ? edgePadding : 0, bottomPadding, rotation < 0 ? edgePadding : 0];
 }
 
 function createCompactBarFieldConfigRegistry(): FieldConfigOptionsRegistry {
@@ -231,8 +203,9 @@ function createCompactTickFilter(spacing: number): Axis.Filter | undefined {
   if (spacing === 0) {
     return undefined;
   }
-  return (plot, splits) => {
-    const dimension = (plot.scales.x.ori === 1 ? plot.bbox.height : plot.bbox.width) / uPlot.pxRatio;
+  return (plot, splits, axisIndex) => {
+    const scale = plot.scales[plot.axes[axisIndex].scale ?? 'x'];
+    const dimension = (scale.ori === 1 ? plot.bbox.height : plot.bbox.width) / uPlot.pxRatio;
     const maxTicks = Math.max(1, Math.floor(dimension / Math.abs(spacing)));
     const skip = splits.length <= maxTicks ? 1 : Math.ceil(splits.length / maxTicks);
     const last = splits.length - 1;

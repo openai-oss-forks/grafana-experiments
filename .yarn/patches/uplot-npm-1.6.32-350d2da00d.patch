@@ -98,7 +98,7 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  		data = _data == null ? [] : _data;
  
  		self.data = self._data = data;
-@@ -3896,6 +3939,37 @@ function uPlot(opts, data, then) {
+@@ -3896,6 +3939,39 @@ function uPlot(opts, data, then) {
  
  	self.setData = setData;
  
@@ -116,6 +116,8 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
 +		dataLen = source.pointCount;
 +		resetYSeries(true);
 +		fire("setData");
++		if (scaleX.distr == 100)
++			shouldConvergeSize = true;
 +		if (_resetScales !== false) {
 +			let xsc = scaleX;
 +			if (xsc.auto(self, viaAutoScaleX))
@@ -671,7 +673,7 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  		data = _data == null ? [] : _data;
  
  		self.data = self._data = data;
-@@ -3894,6 +3937,37 @@ function uPlot(opts, data, then) {
+@@ -3894,6 +3937,39 @@ function uPlot(opts, data, then) {
  
  	self.setData = setData;
  
@@ -689,6 +691,8 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
 +		dataLen = source.pointCount;
 +		resetYSeries(true);
 +		fire("setData");
++		if (scaleX.distr == 100)
++			shouldConvergeSize = true;
 +		if (_resetScales !== false) {
 +			let xsc = scaleX;
 +			if (xsc.auto(self, viaAutoScaleX))

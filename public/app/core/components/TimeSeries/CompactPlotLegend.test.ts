@@ -22,6 +22,16 @@ describe('toggleCompactLegendSeries', () => {
     toggleCompactLegendSeries(controller, plan, 1, true);
     expect([...visibility]).toEqual([1, 1, 1]);
   });
+
+  it('does not toggle bars excluded by configured visibility', () => {
+    const { controller, plan, visibility } = setup(['p50', 'p50', 'p99'], [1, 0, 1]);
+
+    toggleCompactLegendSeries(controller, plan, 0, false);
+    expect([...visibility]).toEqual([1, 0, 0]);
+
+    toggleCompactLegendSeries(controller, plan, 0, false);
+    expect([...visibility]).toEqual([1, 0, 1]);
+  });
 });
 
 describe('getCompactLegendSortValue', () => {
@@ -46,20 +56,28 @@ describe('getCompactLegendSortValue', () => {
   });
 });
 
-function setup(displayNames: string[]) {
+function setup(displayNames: string[], barLayoutVisibility?: number[]) {
   const visibility = new Uint8Array(displayNames.length);
   visibility.fill(1);
+  const layout = barLayoutVisibility ? Uint8Array.from(barLayoutVisibility) : undefined;
+  if (layout) {
+    for (let index = 0; index < layout.length; index++) {
+      visibility[index] = layout[index];
+    }
+  }
   const plan = {
     seriesCount: displayNames.length,
-    source: { columns: { visibility } },
+    source: { columns: { visibility }, barLayoutVisibility: layout },
     getDisplayName: (index: number) => displayNames[index],
   } as unknown as CompactNativeRenderPlan;
   const controller = {
     setSeriesVisibility: (index: number | null, show: boolean) => {
       if (index == null) {
-        visibility.fill(show ? 1 : 0);
+        for (let seriesIndex = 0; seriesIndex < visibility.length; seriesIndex++) {
+          visibility[seriesIndex] = show ? (layout?.[seriesIndex] ?? 1) : 0;
+        }
       } else {
-        visibility[index] = show ? 1 : 0;
+        visibility[index] = show ? (layout?.[index] ?? 1) : 0;
       }
     },
   };

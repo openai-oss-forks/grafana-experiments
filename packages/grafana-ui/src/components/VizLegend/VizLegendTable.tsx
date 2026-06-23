@@ -248,8 +248,18 @@ function IndexedVizLegendTable<T>({
     );
   }
 
+  const valueColumnCount = Math.max(0, Object.keys(header).length - 1);
+
   return (
-    <table className={cx(styles.table, className)}>
+    <table
+      className={cx(styles.table, !itemRenderer && styles.fixedTable, className)}
+      style={
+        itemRenderer
+          ? undefined
+          : { minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }
+      }
+    >
+      {!itemRenderer && <LegendTableColGroup valueColumnCount={valueColumnCount} />}
       <LegendTableHeader
         header={header}
         isSortable={isSortable}

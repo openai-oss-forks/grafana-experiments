@@ -1,5 +1,19 @@
-import { CoreApp, DataQueryRequest, FieldConfigSource } from '@grafana/data';
-import { GraphDrawStyle, StackingMode, VisibilityMode, VizOrientation } from '@grafana/schema';
+import {
+  CoreApp,
+  DataQueryRequest,
+  FieldConfigProperty,
+  FieldConfigSource,
+  FieldMatcherID,
+  FieldType,
+} from '@grafana/data';
+import {
+  BarAlignment,
+  GraphDrawStyle,
+  GraphFieldConfig,
+  StackingMode,
+  VisibilityMode,
+  VizOrientation,
+} from '@grafana/schema';
 import {
   CompactPanelCapability,
   isCompactFieldConfigSupported,
@@ -23,6 +37,17 @@ interface CompactTimeSeriesPanelConfiguration {
   legendCalcs?: readonly string[];
   panelOptions?: unknown;
 }
+
+const standaloneBarStackGroup = '__compact_barchart';
+const standaloneBarPanelOwnedFieldProperties = new Set([
+  'custom.barAlignment',
+  'custom.barMaxWidth',
+  'custom.barWidthFactor',
+  'custom.drawStyle',
+  'custom.showPoints',
+  'custom.showValues',
+  'custom.stacking',
+]);
 
 export function isCompactTimeSeriesPanelConfigurationSupported({
   fieldConfig,
@@ -111,11 +136,125 @@ export function isCompactStandaloneBarChartConfigurationSupported({
   legendCalcs = [],
   panelOptions,
 }: CompactTimeSeriesPanelConfiguration): boolean {
+  const finalFieldConfig = fieldConfig ? buildCompactStandaloneBarFieldConfig(fieldConfig, panelOptions) : undefined;
   return (
     !hasUnsupportedLegendReducer(legendCalcs) &&
     isSupportedStandaloneBarChartOptions(panelOptions) &&
-    isCompactFieldConfigSupported(fieldConfig, 'standalone-barchart')
+    isCompactFieldConfigSupported(finalFieldConfig, 'standalone-barchart') &&
+    !hasUnsupportedStandaloneCategoryFieldConfig(fieldConfig)
   );
+}
+
+export function buildCompactStandaloneBarFieldConfig(
+  fieldConfig: FieldConfigSource,
+  panelOptions: unknown
+): FieldConfigSource<GraphFieldConfig> {
+  const defaults = getObjectProperty(fieldConfig, 'defaults');
+  const overrides = getObjectProperty(fieldConfig, 'overrides');
+  if (
+    typeof defaults !== 'object' ||
+    defaults === null ||
+    Array.isArray(defaults) ||
+    !Array.isArray(overrides) ||
+    overrides.some((override) => {
+      const properties = getObjectProperty(override, 'properties');
+      return (
+        !Array.isArray(properties) ||
+        properties.some((property) => typeof property !== 'object' || property === null || Array.isArray(property))
+      );
+    })
+  ) {
+    return fieldConfig;
+  }
+
+  const custom = fieldConfig.defaults.custom;
+  if (custom != null && (typeof custom !== 'object' || Array.isArray(custom))) {
+    return fieldConfig;
+  }
+
+  const barWidth = getObjectProperty(panelOptions, 'barWidth');
+  const stacking = getObjectProperty(panelOptions, 'stacking');
+  const showValue = getObjectProperty(panelOptions, 'showValue');
+  return {
+    defaults: {
+      ...fieldConfig.defaults,
+      custom: {
+        ...custom,
+        drawStyle: GraphDrawStyle.Bars,
+        showPoints: VisibilityMode.Never,
+        showValues: showValue !== VisibilityMode.Never,
+        barAlignment: BarAlignment.Center,
+        barWidthFactor: typeof barWidth === 'number' ? barWidth : undefined,
+        barMaxWidth: 200,
+        stacking: {
+          mode: isStandaloneBarStacking(stacking) ? stacking : StackingMode.None,
+          group: standaloneBarStackGroup,
+        },
+        axisSoftMin: custom?.axisSoftMin ?? 0,
+        axisSoftMax: custom?.axisSoftMax ?? 0,
+      },
+    },
+    overrides: fieldConfig.overrides.map((override) => ({
+      ...override,
+      matcher: { ...override.matcher },
+      properties: override.properties
+        .filter((property) => !standaloneBarPanelOwnedFieldProperties.has(property.id))
+        .map((property) => ({ ...property })),
+    })),
+  };
+}
+
+function hasUnsupportedStandaloneCategoryFieldConfig(fieldConfig: FieldConfigSource | undefined): boolean {
+  if (!fieldConfig) {
+    return false;
+  }
+
+  const defaults = getObjectProperty(fieldConfig, 'defaults');
+  const defaultUnit = getObjectProperty(defaults, 'unit');
+  if (defaultUnit != null && (typeof defaultUnit !== 'string' || defaultUnit.startsWith('time:'))) {
+    return true;
+  }
+
+  const overrides = getObjectProperty(fieldConfig, 'overrides');
+  if (!Array.isArray(overrides)) {
+    return false;
+  }
+  return overrides.some((override) => {
+    const matcher = getObjectProperty(override, 'matcher');
+    const matcherId = getObjectProperty(matcher, 'id');
+    if (typeof matcherId === 'string' && isDefinitelyNumericMatcher(matcherId, getObjectProperty(matcher, 'options'))) {
+      return false;
+    }
+    const properties = getObjectProperty(override, 'properties');
+    return (
+      Array.isArray(properties) &&
+      properties.some((property) => {
+        const propertyId = getObjectProperty(property, 'id');
+        if (propertyId === 'custom.axisLabel' || propertyId === 'custom.axisPlacement') {
+          return true;
+        }
+        if (propertyId !== FieldConfigProperty.Unit) {
+          return false;
+        }
+        const value = getObjectProperty(property, 'value');
+        return value != null && (typeof value !== 'string' || value.startsWith('time:'));
+      })
+    );
+  });
+}
+
+function isDefinitelyNumericMatcher(matcherId: string, matcherOptions: unknown): boolean {
+  if (matcherId === FieldMatcherID.numeric) {
+    return true;
+  }
+  if (matcherId === FieldMatcherID.byType) {
+    return matcherOptions === FieldType.number;
+  }
+  if (matcherId === FieldMatcherID.byTypes) {
+    const types = matcherOptions instanceof Set ? Array.from(matcherOptions) : matcherOptions;
+    return Array.isArray(types) && types.length > 0 && types.every((type) => type === FieldType.number);
+  }
+  return false;
 }
 
 export function getPreferredDashboardQueryFormat({
@@ -197,10 +336,7 @@ function isSupportedStandaloneBarChartOptions(options: unknown): boolean {
       orientation === VizOrientation.Auto ||
       orientation === VizOrientation.Horizontal ||
       orientation === VizOrientation.Vertical) &&
-    (stacking == null ||
-      stacking === StackingMode.None ||
-      stacking === StackingMode.Normal ||
-      stacking === StackingMode.Percent) &&
+    (stacking == null || isStandaloneBarStacking(stacking)) &&
     (showValue == null ||
       showValue === VisibilityMode.Auto ||
       showValue === VisibilityMode.Always ||
@@ -222,6 +358,10 @@ function isSupportedStandaloneBarChartOptions(options: unknown): boolean {
         isOptionalFiniteRange(getObjectProperty(text, 'valueSize'), 1, Number.POSITIVE_INFINITY))) &&
     isOptionalBoolean(getObjectProperty(options, 'fullHighlight'))
   );
+}
+
+function isStandaloneBarStacking(value: unknown): value is StackingMode {
+  return value === StackingMode.None || value === StackingMode.Normal || value === StackingMode.Percent;
 }
 
 function isOptionalFiniteRange(value: unknown, minimum: number, maximum: number): boolean {

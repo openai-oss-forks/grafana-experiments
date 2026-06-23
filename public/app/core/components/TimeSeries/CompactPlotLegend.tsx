@@ -97,7 +97,7 @@ export function toggleCompactLegendSeries(
   if (append) {
     const show = plan.source.columns.visibility[seriesIndex] === 0;
     for (let index = 0; index < plan.seriesCount; index++) {
-      if (plan.getDisplayName(index) === label) {
+      if (isLegendToggleable(plan, index) && plan.getDisplayName(index) === label) {
         controller.setSeriesVisibility(index, show);
       }
     }
@@ -106,6 +106,9 @@ export function toggleCompactLegendSeries(
 
   let isolated = true;
   for (let index = 0; index < plan.seriesCount; index++) {
+    if (!isLegendToggleable(plan, index)) {
+      continue;
+    }
     const expectedVisibility = plan.getDisplayName(index) === label ? 1 : 0;
     if (plan.source.columns.visibility[index] !== expectedVisibility) {
       isolated = false;
@@ -115,7 +118,7 @@ export function toggleCompactLegendSeries(
   controller.setSeriesVisibility(null, isolated);
   if (!isolated) {
     for (let index = 0; index < plan.seriesCount; index++) {
-      if (plan.getDisplayName(index) === label) {
+      if (isLegendToggleable(plan, index) && plan.getDisplayName(index) === label) {
         controller.setSeriesVisibility(index, true);
       }
     }
@@ -130,7 +133,10 @@ function createLegendSource(
   const visibleIndexes = new Uint32Array(plan.seriesCount);
   let length = 0;
   for (let index = 0; index < plan.seriesCount; index++) {
-    if ((plan.columns.flags[index] & CompactNativeSeriesFlag.HiddenFromLegend) === 0) {
+    if (
+      isLegendToggleable(plan, index) &&
+      (plan.columns.flags[index] & CompactNativeSeriesFlag.HiddenFromLegend) === 0
+    ) {
       visibleIndexes[length++] = index;
     }
   }
@@ -199,6 +205,10 @@ function createLegendSource(
     getDisplayValues,
     getSortValue: (index, sortBy) => getCompactLegendSortValue(plan, calcs, sourceAt(index), sortBy),
   };
+}
+
+function isLegendToggleable(plan: CompactNativeRenderPlan, seriesIndex: number): boolean {
+  return (plan.source.barLayoutVisibility?.[seriesIndex] ?? 1) !== 0;
 }
 
 function getDisplayValuesForSeries(plan: CompactNativeRenderPlan, calcs: string[], seriesIndex: number) {

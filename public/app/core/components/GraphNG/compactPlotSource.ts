@@ -51,6 +51,7 @@ export interface CompactPlotSource {
   release(): void;
   xAt(index: number): number;
   closestXIndex(value: number, from: number, to: number): number;
+  barWidthValueAt?(seriesIndex: number, index: number): CompactPlotValue;
   cursorValueAt(seriesIndex: number, index: number): CompactPlotValue;
   yAt(seriesIndex: number, index: number): CompactPlotValue;
   scan(seriesIndex: number, from: number, to: number, visitor: CompactPointVisitor): void;
@@ -191,6 +192,13 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
       return value;
     }
     return this.getConstantIndex(seriesIndex) === index ? value : undefined;
+  }
+
+  barWidthValueAt(seriesIndex: number, index: number): CompactPlotValue {
+    this.assertSeriesIndex(seriesIndex);
+    this.assertPointIndex(index);
+    const localIndex = this.alignment.localIndexAt(this.getAxisId(seriesIndex), index);
+    return localIndex < 0 ? undefined : this.readConfiguredLocalValue(seriesIndex, localIndex);
   }
 
   scan(seriesIndex: number, from: number, to: number, visitor: CompactPointVisitor): void {

@@ -41,6 +41,7 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
   prepCompactConfig = (plan: CompactNativeRenderPlan, getTimeRange: () => TimeRange, annotationLanes?: number) => {
     const { theme, timeZone, options } = this.props;
     const compactXAxisConfig = options?.compactXAxisConfig;
+    const compactValueAxisConfig = options?.compactValueAxisConfig;
     const compactPadding = options?.compactPadding;
 
     return prepareCompactPlotConfigBuilder({
@@ -51,6 +52,7 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
       hoverProximity: options?.tooltip?.hoverProximity,
       orientation: options?.orientation,
       xAxisConfig: { ...getXAxisConfig(annotationLanes), ...compactXAxisConfig },
+      valueAxisConfig: compactValueAxisConfig,
       padding: compactPadding,
     });
   };

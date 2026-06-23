@@ -54,7 +54,7 @@ describe('CompactRenderController', () => {
       'single',
       { stroke: '#f00', areaFill: '#fcc', lineWidth: 1, barWidthFactor: 0.8 }
     );
-    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1, barRadius: 0 });
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8, barRadius: 0 });
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
 
@@ -65,6 +65,98 @@ describe('CompactRenderController', () => {
     expect(source.scan).toHaveBeenCalledWith(0, 0, 2, expect.any(Function));
     expect(source.scan).toHaveBeenCalledWith(1, 0, 2, expect.any(Function));
     expect(source.buffer).toBe(source.samples.buffer);
+    const bars = context.rect.mock.calls.slice(1);
+    for (const [, , width] of bars) {
+      expect(width).toBeCloseTo((100 / 3) * 0.8 * 0.4 - 1);
+    }
+    expect(bars[2][0] - bars[0][0]).toBeCloseTo((100 / 3) * 0.8 * 0.6);
+  });
+
+  test('maps grouped Bar chart timestamps onto categorical positions', () => {
+    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Bars]);
+    source.xAt = (index) => [0, 10, 30][index];
+    source.closestXIndex = jest.fn((value) => (value < 5 ? 0 : value < 20 ? 1 : 2));
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+    const controller = new CompactRenderController(source);
+
+    expect([0, 10, 30].map((value) => controller.groupedBarIndexAt(value))).toEqual([0, 1, 2]);
+    expect(source.closestXIndex).not.toHaveBeenCalled();
+    expect(controller.groupedBarValueAt(1.5)).toBe(20);
+    const [minimum, maximum] = controller.groupedBarRange();
+    expect(controller.groupedBarIndexAt(minimum)).toBeCloseTo(-4 / 11);
+    expect(controller.groupedBarIndexAt(maximum)).toBeCloseTo(26 / 11);
+    expect(controller.groupedBarSplits(minimum, maximum, 2)).toEqual([0, 30]);
+
+    const { plot, context } = createPlot();
+    const minimumIndex = controller.groupedBarIndexAt(minimum);
+    const indexRange = controller.groupedBarIndexAt(maximum) - minimumIndex;
+    plot.valToPos = (value, scaleKey) =>
+      scaleKey === 'x' ? ((controller.groupedBarIndexAt(value) - minimumIndex) / indexRange) * 100 : 80 - value * 10;
+    controller.draw(plot, 0, 2);
+    const bars = context.rect.mock.calls.slice(1);
+    expect(bars).toHaveLength(3);
+    for (const [, , width] of bars) {
+      expect(width).toBeCloseTo(80 / 3 - 1);
+    }
+  });
+
+  test('keeps grouped Bar chart tick splits within the spacing budget', () => {
+    const source = createSource([[1, 2, 3, 4, 5]], [CompactSeriesFlag.Bars]);
+    source.xAt = (index) => index;
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+    const controller = new CompactRenderController(source);
+    const [minimum, maximum] = controller.groupedBarRange();
+
+    expect(controller.groupedBarSplits(minimum, maximum, 2)).toEqual([0, 4]);
+  });
+
+  test('lays out currently visible grouped bars without exposing configured-hidden series', () => {
+    const source = createSource(
+      [[1], [2], [3]],
+      [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars, CompactSeriesFlag.Bars]
+    );
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.9, barWidth: 0.8 });
+    Reflect.set(source, 'barLayoutVisibility', new Uint8Array([1, 1, 0]));
+    source.columns.visibility[1] = 0;
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+
+    expect(source.columns.visibility).toEqual(new Uint8Array([1, 0, 0]));
+    controller.draw(plot, 0, 0);
+    const isolatedBars = context.rect.mock.calls.slice(1);
+
+    controller.setSeries(null, { show: true });
+    controller.setSeries(2, { show: true });
+    context.rect.mockClear();
+    controller.draw(plot, 0, 0);
+    const restoredBars = context.rect.mock.calls.slice(1);
+
+    expect(source.columns.visibility).toEqual(new Uint8Array([1, 1, 0]));
+    expect(isolatedBars).toHaveLength(1);
+    expect(restoredBars).toHaveLength(2);
+    expect(isolatedBars[0][2]).toBeGreaterThan(restoredBars[0][2]);
+  });
+
+  test('keeps an empty grouped-bar scale range non-degenerate', () => {
+    const source = createSource([[]], [CompactSeriesFlag.Bars]);
+    Reflect.set(source, 'barOptions', { mode: 'grouped' });
+    const controller = new CompactRenderController(source);
+    const [minimum, maximum] = controller.groupedBarRange();
+
+    expect([controller.groupedBarIndexAt(minimum), controller.groupedBarIndexAt(maximum)]).toEqual([0, 1]);
+  });
+
+  test('keeps the grouped scale stable when its only configured bar is restored', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Bars]);
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.7, barWidth: 0.9 });
+    Reflect.set(source, 'barLayoutVisibility', new Uint8Array([1]));
+    source.columns.visibility[0] = 0;
+    const controller = new CompactRenderController(source);
+
+    const hiddenRange = controller.groupedBarRange();
+    controller.setSeries(0, { show: true });
+
+    expect(controller.groupedBarRange()).toEqual(hiddenRange);
   });
 
   test('keeps configured point markers on TimeSeries bars', () => {
@@ -84,6 +176,189 @@ describe('CompactRenderController', () => {
     new CompactRenderController(source).draw(plot, 0, 0);
 
     expect(context.rect).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), uPlot.pxRatio, 10);
+  });
+
+  test.each([
+    { middle: undefined, expectedWidth: 24 },
+    { middle: null, expectedWidth: 12 },
+  ])(
+    'matches uPlot TimeSeries bar width and pixel rounding for a $middle middle sample',
+    ({ middle, expectedWidth }) => {
+      const source = createSource([[1.45, middle, 2.25]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+        stroke: '#f00',
+        areaFill: '#fcc',
+        lineWidth: 0,
+        barWidthFactor: 0.6,
+      });
+      source.xAt = (index) => index * 10;
+      if (middle === null) {
+        source.scan.mockImplementation((_series, from, to, visitor) => {
+          const renderValues = [1.45, undefined, 2.25];
+          for (let index = from; index <= to; index++) {
+            visitor(index, renderValues[index]);
+          }
+        });
+      }
+      source.cursorValueAt = jest.fn(source.cursorValueAt);
+      const controller = new CompactRenderController(source);
+      const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 2 : 80 - value * 10);
+
+      controller.draw(plot, 0, 2);
+
+      const bars = context.rect.mock.calls.slice(1);
+      expect(bars).toEqual([
+        [-expectedWidth / 2, 66, expectedWidth, 14],
+        [40 - expectedWidth / 2, 58, expectedWidth, 22],
+      ]);
+      expect(context.fill).toHaveBeenCalledTimes(1);
+      expect(source.cursorValueAt).toHaveBeenCalledTimes(3);
+
+      source.cursorValueAt.mockClear();
+      controller.draw(plot, 0, 2);
+      expect(source.cursorValueAt).not.toHaveBeenCalled();
+    }
+  );
+
+  test('fills dense TimeSeries bars with the stroke color when uPlot suppresses their outlines', () => {
+    for (const showValue of ['never', 'always'] as const) {
+      const source = createSource([[1, 2]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+        stroke: '#f00',
+        lineWidth: 1,
+        barWidthFactor: 0.6,
+      });
+      Reflect.set(source, 'barOptions', { showValue });
+      const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 2.1 : 80 - value * 10);
+
+      new CompactRenderController(source).draw(plot, 0, 1);
+
+      expect(context.fill).toHaveBeenCalledTimes(showValue === 'never' ? 1 : 2);
+      expect(context.fillStyle).toBe('#f00');
+      expect(context.stroke).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each([
+    {
+      name: 'unstacked series',
+      flags: CompactSeriesFlag.Bars,
+      stackGroupCount: 0,
+      expectedY: 65.5,
+      expectedHeight: 14.5,
+    },
+    {
+      name: 'bottom stack series',
+      flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+      stackGroupCount: 1,
+      expectedY: 70.4,
+      expectedHeight: 9.6,
+    },
+  ])('keeps uPlot baseline rounding for a dense $name', ({ flags, stackGroupCount, expectedY, expectedHeight }) => {
+    const source = createSource([[1.49, 2.25]], [flags], stackGroupCount, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 0,
+      barWidthFactor: 0.6,
+    });
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 4 : 80.4 - value * 10);
+
+    new CompactRenderController(source).draw(plot, 0, 1);
+
+    const [, y, , height] = context.rect.mock.calls.slice(1)[0];
+    expect(y).toBeCloseTo(expectedY);
+    expect(height).toBeCloseTo(expectedHeight);
+  });
+
+  test.each([
+    {
+      name: 'unstacked series',
+      flags: [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars],
+      stackGroupCount: 0,
+    },
+    {
+      name: 'stacked series',
+      flags: [CompactSeriesFlag.Bars | CompactSeriesFlag.Stack, CompactSeriesFlag.Bars | CompactSeriesFlag.Stack],
+      stackGroupCount: 1,
+    },
+  ])(
+    'matches global TimeSeries bar cadence for $name and refreshes it after hiding a series',
+    ({ flags, stackGroupCount }) => {
+      const source = createSource(
+        [
+          [1, undefined, 1],
+          [1, 1, 1],
+        ],
+        flags,
+        stackGroupCount,
+        'series',
+        'single',
+        { stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }
+      );
+      source.xAt = (index) => [0, 1, 10][index];
+      const controller = new CompactRenderController(source);
+      const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 10 : 80 - value * 10);
+
+      controller.draw(plot, 0, 2);
+
+      expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([6, 6, 6, 6, 6]);
+
+      controller.setSeries(1, { show: false });
+      context.rect.mockClear();
+      controller.draw(plot, 0, 2);
+      expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([60, 60]);
+    }
+  );
+
+  test('uses pre-transform stack presence to size constant TimeSeries bars', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [
+        [1, undefined, undefined],
+        [1, null, 1],
+      ],
+      [flags | CompactSeriesFlag.Constant, flags],
+      1,
+      'series',
+      'single',
+      { stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }
+    );
+    const barWidthValueAt = source.barWidthValueAt!;
+    source.barWidthValueAt = (series, index) => (series === 0 ? 1 : barWidthValueAt(series, index));
+    source.xAt = (index) => [0, 1, 10][index];
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 10 : 80 - value * 10);
+
+    new CompactRenderController(source).draw(plot, 0, 2);
+
+    expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([6, 6, 6]);
+  });
+
+  test('does not apply another series cadence to a constant TimeSeries stack', () => {
+    const source = createSource(
+      [
+        [1, undefined, undefined],
+        [1, 1, 1],
+      ],
+      [CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.Constant, CompactSeriesFlag.Bars],
+      1,
+      'series',
+      'single',
+      { stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }
+    );
+    Reflect.set(source.columns, 'stackGroupIds', new Uint8Array([1, 0]));
+    const barWidthValueAt = source.barWidthValueAt!;
+    source.barWidthValueAt = (series, index) =>
+      series === 0 ? (index === 1 ? undefined : 1) : barWidthValueAt(series, index);
+    source.xAt = (index) => [0, 1, 10][index];
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 10 : 80 - value * 10);
+
+    new CompactRenderController(source).draw(plot, 0, 2);
+
+    expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([60, 6, 6, 6]);
   });
 
   test('normalizes percent-stacked bars for extents and cursor focus', () => {
@@ -167,10 +442,11 @@ describe('CompactRenderController', () => {
         showValue: 'always',
       });
       const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value * 10);
 
       new CompactRenderController(source).draw(plot, 0, 1);
 
-      expect(formatValueAt.mock.calls.map(([, , value]) => value)).toEqual(expected);
+      expect(formatValueAt.mock.calls.map(([, , value]) => value)).toEqual([...expected, ...expected]);
       expect(context.quadraticCurveTo).toHaveBeenCalledTimes(roundedCorners);
     }
   });
@@ -193,6 +469,40 @@ describe('CompactRenderController', () => {
     expect(context.fillText).toHaveBeenCalledTimes(1);
   });
 
+  test('auto-sizes standalone bar values up to the legacy 30-pixel maximum', () => {
+    const source = createSource([[1]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 0,
+    });
+    Reflect.set(source, 'formatValueAt', () => '1');
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1, showValue: 'always' });
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value * 10);
+
+    new CompactRenderController(source).draw(plot, 0, 0);
+
+    expect(context.font).toBe('30px sans-serif');
+  });
+
+  test('uses one automatic font size across differently sized standalone bars', () => {
+    const source = createSource([[1, 5]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 0,
+    });
+    Reflect.set(source, 'formatValueAt', () => '1');
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1, showValue: 'always' });
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value * 10);
+    const fonts: string[] = [];
+    context.fillText.mockImplementation(() => fonts.push(context.font));
+
+    new CompactRenderController(source).draw(plot, 0, 1);
+
+    expect(fonts).toEqual(['25px sans-serif', '25px sans-serif']);
+  });
+
   test('exposes a full bar-group cursor rectangle for standalone highlight mode', () => {
     const source = createSource([[1], [3]], [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars], 0, 'series', 'single', {
       stroke: '#f00',
@@ -210,7 +520,7 @@ describe('CompactRenderController', () => {
 
     expect(controller.updateCursor(plot, 0, 80, 'local')).toMatchObject({
       hasPoint: true,
-      seriesIndex: 1,
+      seriesIndex: 0,
       centered: false,
       left: 0,
       top: 0,
@@ -1348,6 +1658,7 @@ function createSource(
     release: () => undefined,
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
+    barWidthValueAt: valueAt,
     cursorValueAt: valueAt,
     yAt: valueAt,
     scan,

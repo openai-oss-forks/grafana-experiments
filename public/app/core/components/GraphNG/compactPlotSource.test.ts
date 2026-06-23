@@ -56,7 +56,7 @@ describe('CompactPlotSource', () => {
     expect(plot.extent(0, 0, 4, 'all')).toEqual([-4, -2]);
     expect(plot.extent(0, 0, 4, 'positive')).toEqual([null, null]);
 
-    options[0] = { transform: GraphTransform.Constant };
+    options[0] = { noValue: '3', transform: GraphTransform.Constant };
     const constant = createCompactPlotSource(source, (index) => options[index]);
     expect(Array.from({ length: 5 }, (_, index) => constant.yAt(0, index))).toEqual([
       2,
@@ -65,6 +65,7 @@ describe('CompactPlotSource', () => {
       undefined,
       undefined,
     ]);
+    expect(Array.from({ length: 5 }, (_, index) => constant.barWidthValueAt!(0, index))).toEqual([2, 3, 3, 3, 4]);
     expect(constant.prepareBufferScan(0, 0, emptyBufferScan())).toBe(false);
 
     options[0] = { spanNulls: 50 };

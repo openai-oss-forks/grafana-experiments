@@ -19,6 +19,7 @@ export const enum CompactSeriesFlag {
   PercentStack = 1 << 6,
   DrawLine = 1 << 7,
   Bars = 1 << 8,
+  Constant = 1 << 9,
 }
 
 export interface CompactRenderColumns {
@@ -99,6 +100,7 @@ export interface CompactRenderSource extends CompactPlotSource {
   readonly valueColor?: string;
   readonly valueFontFamily?: string;
   readonly barOptions?: CompactBarRenderOptions;
+  readonly barLayoutVisibility?: Uint8Array;
   visibilityState: CompactVisibilityState;
 }
 
@@ -184,6 +186,7 @@ const enum ScanOperation {
   None,
   Area,
   Bars,
+  BarValueSize,
   GapClip,
   Line,
   Points,
@@ -199,7 +202,21 @@ const controllers = new WeakMap<CompactRenderSource, CompactRenderController>();
 const PROGRESSIVE_SAMPLE_THRESHOLD = 1_000_000;
 const PROGRESSIVE_POINT_BUDGET = 32_000;
 const CURSOR_STACK_CACHE_SIZE = 4;
+const BAR_VALUE_MIN_FONT_SIZE = 8;
+const BAR_VALUE_MAX_FONT_SIZE = 30;
+const BAR_VALUE_FIT_RATIO = 0.65;
+const retainPixel = (value: number) => value;
 const hoverStageProbe = getCompactHoverStageProbe();
+
+function normalizeBarCadence(value: number): number {
+  const cadence = Math.abs(value);
+  return Number.isInteger(cadence) ? cadence : Number(cadence.toFixed(6));
+}
+
+interface CompactBarWidthSample {
+  readonly previousTimestamp: number;
+  readonly timestamp: number;
+}
 
 export function getCompactHoverStageProbe():
   | { record(stage: string, sample: Record<string, number | boolean>): void }
@@ -309,6 +326,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private stackAreaLength = 0;
   private barSlots = new Int32Array(0);
   private visibleBarSlotCount = 0;
+  private groupedBarGroupWidth = 0.7;
+  private groupedBarWidth = 0.97;
   private readonly barLabelBounds = new Map<number, CompactRect[]>();
   private cursorStacks = new Float64Array(0);
   private cursorStackTotals = new Float64Array(0);
@@ -353,6 +372,21 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private barSlot = 0;
   private barSlotCount = 1;
   private barRoundOuterEdge = true;
+  private barColumnWidth = 0;
+  private barWidth = 0;
+  private barShift = 0;
+  private barStrokeWidth = 0;
+  private barPixelRound = retainPixel;
+  private barBaselineRound = retainPixel;
+  private groupedBarConfiguredStrokeWidth = 0;
+  private groupedBarStrokeSuppressed = false;
+  private groupedBarAutoValueFontSize: number | null = null;
+  private barWidthSamples: Array<CompactBarWidthSample | null> = [];
+  private barWidthSamplesPrepared = false;
+  private firstVisibleStackSeries = new Int32Array(0);
+  private lastVisibleStackSeries = new Int32Array(0);
+  private groupedBarLookupIndex = 0;
+  private batchBarPath = false;
   private currentCursorStackBase = 0;
   private decimatedX = 0;
   private decimatedMin: number | null = null;
@@ -392,13 +426,19 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   };
 
   private readonly visitPoint = (index: number, value: CompactPlotValue, timestamp?: number): void => {
-    const xValue = timestamp ?? this.source.xAt(index);
+    const groupedBarScan =
+      (this.operation === ScanOperation.Bars || this.operation === ScanOperation.BarValueSize) &&
+      this.source.barOptions?.mode === 'grouped';
+    const xValue = timestamp ?? (groupedBarScan ? index : this.source.xAt(index));
     switch (this.operation) {
       case ScanOperation.Area:
         this.visitArea(index, value, xValue);
         break;
       case ScanOperation.Bars:
         this.visitBar(index, value, xValue);
+        break;
+      case ScanOperation.BarValueSize:
+        this.visitBarValueSize(index, value, xValue);
         break;
       case ScanOperation.GapClip:
         this.visitGapClip(value, xValue);
@@ -445,7 +485,117 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       dataIndexAt: (seriesIndex) => this.readCursorSnapshotDataIndex(seriesIndex),
     };
     this.applyVisibilityState(source);
+    this.initializeBarSlots();
     this.ensureStackCursorScratch();
+  }
+
+  groupedBarIndexAt(value: number): number {
+    const pointCount = this.source.pointCount;
+    if (pointCount === 0) {
+      return value;
+    }
+    const first = this.source.xAt(0);
+    if (pointCount === 1) {
+      return value - first;
+    }
+
+    const lastIndex = pointCount - 1;
+    const lookupIndex = Math.min(lastIndex, this.groupedBarLookupIndex);
+    if (this.source.xAt(lookupIndex) === value) {
+      return lookupIndex;
+    }
+    if (lookupIndex < lastIndex && this.source.xAt(lookupIndex + 1) === value) {
+      return ++this.groupedBarLookupIndex;
+    }
+    if (lookupIndex > 0 && this.source.xAt(lookupIndex - 1) === value) {
+      return --this.groupedBarLookupIndex;
+    }
+
+    let lowerIndex: number;
+    if (value <= first) {
+      lowerIndex = 0;
+    } else if (value >= this.source.xAt(lastIndex)) {
+      lowerIndex = lastIndex - 1;
+    } else {
+      const nearestIndex = this.source.closestXIndex(value, 0, lastIndex);
+      if (this.source.xAt(nearestIndex) === value) {
+        this.groupedBarLookupIndex = nearestIndex;
+        return nearestIndex;
+      }
+      lowerIndex = this.source.xAt(nearestIndex) <= value ? nearestIndex : nearestIndex - 1;
+      lowerIndex = Math.max(0, Math.min(lastIndex - 1, lowerIndex));
+    }
+
+    this.groupedBarLookupIndex = lowerIndex;
+    const lower = this.source.xAt(lowerIndex);
+    const upper = this.source.xAt(lowerIndex + 1);
+    return upper === lower ? lowerIndex : lowerIndex + (value - lower) / (upper - lower);
+  }
+
+  groupedBarValueAt(index: number): number {
+    const pointCount = this.source.pointCount;
+    if (pointCount === 0) {
+      return index;
+    }
+    const first = this.source.xAt(0);
+    if (pointCount === 1) {
+      return first + index;
+    }
+
+    const lowerIndex = Math.max(0, Math.min(pointCount - 2, Math.floor(index)));
+    const lower = this.source.xAt(lowerIndex);
+    const upper = this.source.xAt(lowerIndex + 1);
+    return lower + (upper - lower) * (index - lowerIndex);
+  }
+
+  groupedBarIncrement(): number {
+    return this.source.pointCount > 1 ? Math.abs(this.source.xAt(1) - this.source.xAt(0)) : Number.POSITIVE_INFINITY;
+  }
+
+  groupedBarRange(): [number, number] {
+    const pointCount = this.source.pointCount;
+    if (pointCount === 0) {
+      return [0, 1];
+    }
+    const groupWidth = this.groupedBarGroupWidth;
+    const rangeWidth = Math.max(1, pointCount - 1);
+    const edgePosition = groupWidth / (2 * pointCount);
+    let minimumIndex = 0;
+    let maximumIndex = rangeWidth;
+    if (edgePosition === 0.5) {
+      minimumIndex -= rangeWidth;
+    } else {
+      const expandedWidth = rangeWidth / (1 - edgePosition * 2);
+      const offset = (expandedWidth - rangeWidth) / 2;
+      minimumIndex -= offset;
+      maximumIndex += offset;
+    }
+    return [this.groupedBarValueAt(minimumIndex), this.groupedBarValueAt(maximumIndex)];
+  }
+
+  groupedBarSplits(minimum: number, maximum: number, maximumCount: number): number[] {
+    const pointCount = this.source.pointCount;
+    if (pointCount === 0) {
+      return [];
+    }
+    const from = Math.max(0, Math.ceil(this.groupedBarIndexAt(minimum)));
+    const to = Math.min(pointCount - 1, Math.floor(this.groupedBarIndexAt(maximum)));
+    if (from > to) {
+      return [];
+    }
+    const count = to - from + 1;
+    const limit = Number.isFinite(maximumCount) ? Math.max(1, Math.floor(maximumCount)) : count;
+    const splitCount = Math.min(count, limit);
+    if (splitCount === 1) {
+      return [this.source.xAt(from)];
+    }
+
+    const splits = new Array<number>(splitCount);
+    for (let split = 0; split < splitCount; split++) {
+      const index = from + Math.round((split * (count - 1)) / (splitCount - 1));
+      splits[split] = this.source.xAt(index);
+    }
+    return splits;
   }
 
   replaceSource(oldSource: uPlot.CompactPlotSource, nextSource: uPlot.CompactPlotSource): void {
@@ -460,6 +610,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const previousSource = this.source;
     controllers.delete(previousSource);
     this.source = nextSource;
+    this.groupedBarLookupIndex = 0;
     this.bufferView = new DataView(nextSource.buffer);
     this.bufferBytes = new Uint8Array(nextSource.buffer);
     this.cursorSnapshot.source = nextSource;
@@ -467,6 +618,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.invalidateCursorSnapshot();
     copyVisibilityState(previousSource.visibilityState, nextSource.visibilityState);
     this.applyVisibilityState(nextSource);
+    this.initializeBarSlots();
     this.focusedSeries = -1;
     this.requestedFocusedSeries = -1;
     this.removeFocusOverlay();
@@ -475,6 +627,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.stackTotals = new Float64Array(0);
     this.stackAreaIndexes = new Int32Array(0);
     this.stackAreaLength = 0;
+    this.invalidateBarWidthSamples();
     this.barLabelBounds.clear();
     this.cursorSnapshotValues = new Float64Array(0);
     this.cursorSnapshotStates = new Uint8Array(0);
@@ -497,6 +650,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.stackPresence = new Uint8Array(0);
     this.stackAreaIndexes = new Int32Array(0);
     this.stackAreaLength = 0;
+    this.invalidateBarWidthSamples();
     this.barSlots = new Int32Array(0);
     this.visibleBarSlotCount = 0;
     this.barLabelBounds.clear();
@@ -592,6 +746,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.focusVisibleTo = to;
     this.barLabelBounds.clear();
     this.prepareStackScratch(scanFrom, scanTo);
+    this.prepareGroupedBarAutoValueFontSize(scanFrom, scanTo);
 
     if (this.shouldDrawProgressively(scanFrom, scanTo)) {
       this.plot = null;
@@ -721,19 +876,22 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     let redraw = false;
     if (options.show != null) {
       if (seriesIndex == null) {
-        const visibility = options.show ? 1 : 0;
+        const globalVisibility = options.show ? 1 : 0;
+        let visibleSeriesCount = 0;
         for (let index = 0; index < this.source.seriesCount; index++) {
+          const visibility = globalVisibility === 1 ? (this.source.barLayoutVisibility?.[index] ?? 1) : 0;
           if (this.source.columns.visibility[index] !== visibility) {
             this.source.columns.visibility[index] = visibility;
             redraw = true;
           }
+          visibleSeriesCount += visibility;
         }
-        this.visibleSeriesCount = visibility === 1 ? this.source.seriesCount : 0;
-        this.source.visibilityState.globalVisibility = visibility;
+        this.visibleSeriesCount = visibleSeriesCount;
+        this.source.visibilityState.globalVisibility = globalVisibility;
         this.source.visibilityState.overrides.clear();
       } else {
         this.assertSeriesIndex(seriesIndex);
-        const visibility = options.show ? 1 : 0;
+        const visibility = options.show ? (this.source.barLayoutVisibility?.[seriesIndex] ?? 1) : 0;
         const previousVisibility = this.source.columns.visibility[seriesIndex];
         redraw = previousVisibility !== visibility;
         this.source.columns.visibility[seriesIndex] = visibility;
@@ -747,7 +905,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         this.removeFocusOverlay();
       }
       if (redraw) {
-        this.refreshBarSlots();
+        if (this.source.barOptions?.mode === 'grouped') {
+          this.initializeBarSlots();
+        }
+        this.invalidateBarWidthSamples();
       }
       if (
         this.visibleSeriesCount > 1 &&
@@ -820,7 +981,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private applyVisibilityState(source: CompactRenderSource): void {
     const state = source.visibilityState;
     if (state.globalVisibility != null) {
-      source.columns.visibility.fill(state.globalVisibility);
+      for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
+        source.columns.visibility[seriesIndex] =
+          state.globalVisibility === 1 ? (source.barLayoutVisibility?.[seriesIndex] ?? 1) : 0;
+      }
     }
     if (source.seriesIdentityAt && source.seriesIdentityHashAt && state.overrides.size > 0) {
       for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
@@ -831,30 +995,55 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         const identity = source.seriesIdentityAt(seriesIndex);
         const override = overrides.find((candidate) => candidate.identity === identity);
         if (override) {
-          source.columns.visibility[seriesIndex] = override.visibility;
+          source.columns.visibility[seriesIndex] =
+            override.visibility === 1 ? (source.barLayoutVisibility?.[seriesIndex] ?? 1) : 0;
         }
       }
     }
     let visibleSeriesCount = 0;
     for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
+      if (source.barLayoutVisibility?.[seriesIndex] === 0) {
+        source.columns.visibility[seriesIndex] = 0;
+      }
       visibleSeriesCount += source.columns.visibility[seriesIndex] === 1 ? 1 : 0;
     }
     this.visibleSeriesCount = visibleSeriesCount;
-    this.refreshBarSlots();
   }
 
-  private refreshBarSlots(): void {
+  private initializeBarSlots(): void {
     if (this.barSlots.length !== this.source.seriesCount) {
       this.barSlots = new Int32Array(this.source.seriesCount);
     }
     this.barSlots.fill(-1);
+    let configuredBarCount = 0;
     let slot = 0;
+    let stacked = false;
     for (let series = 0; series < this.source.seriesCount; series++) {
-      if (this.isVisible(series) && (this.source.columns.flags[series] & CompactSeriesFlag.Bars) !== 0) {
+      const flags = this.source.columns.flags[series];
+      if ((this.source.barLayoutVisibility?.[series] ?? 1) !== 0 && (flags & CompactSeriesFlag.Bars) !== 0) {
+        configuredBarCount++;
+        stacked ||= (flags & CompactSeriesFlag.Stack) !== 0;
+      }
+      if (this.source.columns.visibility[series] !== 0 && (flags & CompactSeriesFlag.Bars) !== 0) {
         this.barSlots[series] = slot++;
       }
     }
     this.visibleBarSlotCount = slot;
+
+    let groupWidth = Math.max(0, Math.min(1, this.source.barOptions?.groupWidth ?? 0.7));
+    let barWidth = Math.max(0, Math.min(1, this.source.barOptions?.barWidth ?? 0.97));
+    if (stacked) {
+      [groupWidth, barWidth] = [barWidth, groupWidth];
+    } else {
+      if (configuredBarCount === 1) {
+        groupWidth = barWidth;
+      }
+      if (slot === 1) {
+        barWidth = 1;
+      }
+    }
+    this.groupedBarGroupWidth = groupWidth;
+    this.groupedBarWidth = barWidth;
   }
 
   updateCursor(
@@ -974,7 +1163,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const scaleKey = this.getScaleKey(seriesIndex);
     const top = plot.valToPos(value, scaleKey);
     const style = this.getStyle(seriesIndex);
-    const barRect = groupedBar ? this.getCursorBarRect(plot, seriesIndex, dataIndex, value, scaleKey, style) : null;
+    const barRect = groupedBar ? this.getCursorBarRect(plot, seriesIndex, dataIndex, value, scaleKey) : null;
     if (
       groupedBar &&
       (!barRect || !rectContains(barRect, this.requireCursorGroupPosition(plot), mouseY, plot.scales.x.ori === 1))
@@ -1041,19 +1230,18 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     seriesIndex: number,
     dataIndex: number,
     value: number,
-    scaleKey: string,
-    style: CompactStyleRecord
+    scaleKey: string
   ): CompactRect | null {
     const previousFlags = this.flags;
     const previousSlot = this.barSlot;
     const previousSlotCount = this.barSlotCount;
     const flags = this.source.columns.flags[seriesIndex];
-    const slot = this.getVisibleBarSlot(seriesIndex);
+    const slot = this.getConfiguredBarSlot(seriesIndex);
     this.flags = flags;
     this.barSlot = slot.index;
     this.barSlotCount = slot.count;
     const band = this.getBarBandForPlot(plot, dataIndex, this.source.xAt(dataIndex), false);
-    const placement = this.getBarPlacement(band.center, band.size, style, 1);
+    const placement = this.getGroupedBarPlacement(band.center, band.size, 1);
     this.flags = previousFlags;
     this.barSlot = previousSlot;
     this.barSlotCount = previousSlotCount;
@@ -1330,13 +1518,12 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   }
 
   private drawBars(series: number, from: number, to: number, style: CompactStyleRecord): void {
-    const grouped = this.source.barOptions?.mode === 'grouped' && (this.flags & CompactSeriesFlag.Stack) === 0;
-    this.barSlot = 0;
-    this.barSlotCount = 1;
+    const grouped = this.source.barOptions?.mode === 'grouped';
     if (grouped) {
-      const slot = this.getVisibleBarSlot(series);
-      this.barSlot = slot.index;
-      this.barSlotCount = slot.count;
+      this.selectGroupedBarSlot(series, this.flags);
+    }
+    if (!grouped) {
+      this.prepareTimeSeriesBarGeometry(series, style);
     }
     this.barRoundOuterEdge =
       (this.flags & CompactSeriesFlag.PercentStack) === 0 &&
@@ -1345,20 +1532,299 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const ctx = this.context!;
     ctx.setLineDash([]);
     ctx.lineCap = 'butt';
-    ctx.lineWidth = Math.max(0, style.lineWidth ?? 1) * uPlot.pxRatio;
+    this.groupedBarConfiguredStrokeWidth = grouped ? Math.round(Math.max(0, style.lineWidth ?? 1) * uPlot.pxRatio) : 0;
+    ctx.lineWidth = grouped ? this.groupedBarConfiguredStrokeWidth : this.barStrokeWidth;
+    const showValue = this.source.barOptions?.showValue ?? (style.showValues ? 'always' : 'never');
+    this.batchBarPath = !grouped && style.areaGradient == null && showValue === 'never';
+    this.hasPath = false;
+    if (this.batchBarPath) {
+      ctx.beginPath();
+    }
     this.operation = ScanOperation.Bars;
     this.source.scan(series, from, to, this.visitPoint);
+    if (this.batchBarPath && this.hasPath) {
+      const fill = this.getSolidBarFill(style);
+      if (fill != null) {
+        ctx.fillStyle = fill;
+        ctx.fill();
+      }
+      if (this.barStrokeWidth > 0) {
+        ctx.strokeStyle = style.stroke;
+        ctx.stroke();
+      }
+    }
+    this.batchBarPath = false;
   }
 
-  private getVisibleBarSlot(series: number): { index: number; count: number } {
+  private prepareGroupedBarAutoValueFontSize(from: number, to: number): void {
+    const options = this.source.barOptions;
+    this.groupedBarAutoValueFontSize = null;
+    if (
+      options?.mode !== 'grouped' ||
+      options.valueSize != null ||
+      options.showValue === 'never' ||
+      !this.source.formatValueAt
+    ) {
+      return;
+    }
+
+    const ctx = this.context!;
+    ctx.save();
+    try {
+      ctx.font = `${14 * uPlot.pxRatio}px ${this.source.valueFontFamily ?? 'sans-serif'}`;
+      this.groupedBarAutoValueFontSize = BAR_VALUE_MAX_FONT_SIZE * uPlot.pxRatio;
+      for (let series = 0; series < this.source.seriesCount; series++) {
+        const flags = this.source.columns.flags[series];
+        if (!this.isVisible(series) || (flags & CompactSeriesFlag.Bars) === 0) {
+          continue;
+        }
+        const showValue = options.showValue ?? (this.getStyle(series).showValues ? 'always' : 'never');
+        if (showValue === 'never') {
+          continue;
+        }
+
+        this.seriesIndex = series;
+        this.flags = flags;
+        this.scaleKey = this.getScaleKey(series);
+        this.selectGroupedBarSlot(series, flags);
+        this.operation = ScanOperation.BarValueSize;
+        this.source.scan(series, from, to, this.visitPoint);
+        if ((flags & CompactSeriesFlag.Stack) !== 0) {
+          this.operation = ScanOperation.StackCommit;
+          this.source.scan(series, from, to, this.visitPoint);
+        }
+      }
+    } finally {
+      ctx.restore();
+      this.stackScratch.fill(0, 0, this.stackPointCount * this.source.stackGroupCount);
+      this.operation = ScanOperation.None;
+    }
+  }
+
+  private prepareTimeSeriesBarGeometry(series: number, style: CompactStyleRecord): void {
+    const plot = this.plot!;
+    const xScale = plot.scales.x;
+    this.barColumnWidth = xScale.ori === 1 ? plot.bbox.height : plot.bbox.width;
+    const widthSample = this.getBarWidthSample(series);
+    if (widthSample != null) {
+      this.barColumnWidth = Math.abs(
+        plot.valToPos(widthSample.timestamp, 'x', true) - plot.valToPos(widthSample.previousTimestamp, 'x', true)
+      );
+    }
+
+    const factor = Math.max(0, Math.min(1, style.barWidthFactor ?? 0.6));
+    let fullGap = this.barColumnWidth * (1 - factor);
+    const preliminaryBarWidth = this.barColumnWidth - fullGap;
+    if (fullGap < 1) {
+      fullGap = 0;
+    }
+
+    const pixelIncrement = Number(plot.series?.[series + 1]?.pxAlign ?? 1);
+    const configuredPixelRound =
+      pixelIncrement === 0
+        ? retainPixel
+        : pixelIncrement === 1
+          ? Math.round
+          : (value: number) => Math.round(value / pixelIncrement) * pixelIncrement;
+    let strokeWidth = configuredPixelRound(Math.max(0, style.lineWidth ?? 1) * uPlot.pxRatio);
+    if (strokeWidth >= preliminaryBarWidth / 2) {
+      strokeWidth = 0;
+    }
+
+    this.barPixelRound = fullGap < 5 ? retainPixel : configuredPixelRound;
+    this.barBaselineRound = this.hasVisibleStackBase(series) ? this.barPixelRound : configuredPixelRound;
+    const insetStroke = fullGap > 0;
+    const rawBarWidth = this.barColumnWidth - fullGap - (insetStroke ? strokeWidth : 0);
+    this.barWidth = this.barPixelRound(
+      Math.min(Math.max(uPlot.pxRatio, rawBarWidth), (style.barMaxWidth ?? 200) * uPlot.pxRatio)
+    );
+    this.barStrokeWidth = strokeWidth;
+
+    const alignment = style.barAlignment ?? 0;
+    const direction = (xScale.dir ?? 1) * (xScale.ori === 0 ? 1 : -1);
+    this.barShift =
+      (alignment === 0 ? this.barWidth / 2 : alignment === direction ? 0 : this.barWidth) -
+      alignment * direction * (insetStroke ? strokeWidth / 2 : 0);
+  }
+
+  private getBarWidthSample(series: number): CompactBarWidthSample | null {
+    if (!this.barWidthSamplesPrepared) {
+      this.prepareBarWidthSamples();
+    }
+    return this.barWidthSamples[series] ?? null;
+  }
+
+  private prepareBarWidthSamples(): void {
+    const seriesCount = this.source.seriesCount;
+    const stackGroups: number[][] = Array.from({ length: this.source.stackGroupCount + 1 }, () => []);
+    const cadences = new Set<number>();
+    this.barWidthSamples = new Array<CompactBarWidthSample | null>(seriesCount).fill(null);
+    this.firstVisibleStackSeries = new Int32Array(this.source.stackGroupCount + 1);
+    this.firstVisibleStackSeries.fill(-1);
+    this.lastVisibleStackSeries = new Int32Array(this.source.stackGroupCount + 1);
+    this.lastVisibleStackSeries.fill(-1);
+    let visibleBarCount = 0;
+    let globalCadence = Number.POSITIVE_INFINITY;
+    let globalSample: CompactBarWidthSample | null = null;
+
+    for (let series = 0; series < seriesCount; series++) {
+      const flags = this.source.columns.flags[series];
+      if (!this.isVisible(series) || (flags & CompactSeriesFlag.Bars) === 0) {
+        continue;
+      }
+      visibleBarCount++;
+      const rawSample = this.findBarWidthSample(series, true);
+      if (rawSample != null) {
+        const cadence = normalizeBarCadence(rawSample.timestamp - rawSample.previousTimestamp);
+        cadences.add(cadence);
+        if (cadence < globalCadence) {
+          globalCadence = cadence;
+          globalSample = rawSample;
+        }
+      }
+
+      if ((flags & CompactSeriesFlag.Stack) === 0) {
+        this.barWidthSamples[series] = this.findBarWidthSample(series, false);
+        continue;
+      }
+      const group = this.getStackGroup(series);
+      stackGroups[group].push(series);
+      if (this.firstVisibleStackSeries[group] < 0) {
+        this.firstVisibleStackSeries[group] = series;
+      }
+      this.lastVisibleStackSeries[group] = series;
+    }
+
+    for (const seriesIndexes of stackGroups) {
+      if (seriesIndexes.length > 0) {
+        this.prepareStackBarWidthSamples(seriesIndexes);
+      }
+    }
+
+    if (visibleBarCount > 1 && cadences.size > 1 && globalSample != null) {
+      for (let series = 0; series < seriesCount; series++) {
+        const flags = this.source.columns.flags[series];
+        if (!this.isVisible(series) || (flags & CompactSeriesFlag.Bars) === 0) {
+          continue;
+        }
+        if ((flags & CompactSeriesFlag.Constant) !== 0) {
+          continue;
+        }
+        const sample = this.barWidthSamples[series];
+        if (sample == null || normalizeBarCadence(sample.timestamp - sample.previousTimestamp) > globalCadence) {
+          this.barWidthSamples[series] = globalSample;
+        }
+      }
+    }
+    this.barWidthSamplesPrepared = true;
+  }
+
+  private findBarWidthSample(series: number, rawValues: boolean): CompactBarWidthSample | null {
+    let previousTimestamp: number | null = null;
+    let minimumTimestampDelta = Number.POSITIVE_INFINITY;
+    let sample: CompactBarWidthSample | null = null;
+    for (let index = 0; index < this.source.pointCount; index++) {
+      const value =
+        rawValues && this.source.barWidthValueAt
+          ? this.source.barWidthValueAt(series, index)
+          : this.source.cursorValueAt(series, index);
+      if (value === undefined) {
+        continue;
+      }
+      const timestamp = this.source.xAt(index);
+      if (previousTimestamp != null) {
+        const delta = Math.abs(timestamp - previousTimestamp);
+        if (delta < minimumTimestampDelta) {
+          minimumTimestampDelta = delta;
+          sample = { previousTimestamp, timestamp };
+        }
+      }
+      previousTimestamp = timestamp;
+    }
+    return sample;
+  }
+
+  private prepareStackBarWidthSamples(seriesIndexes: number[]): void {
+    const values = new Array<CompactPlotValue>(seriesIndexes.length);
+    const previousTimestamps = new Array<number | null>(seriesIndexes.length).fill(null);
+    const minimumTimestampDeltas = new Float64Array(seriesIndexes.length).fill(Number.POSITIVE_INFINITY);
+    const samples = new Array<CompactBarWidthSample | null>(seriesIndexes.length).fill(null);
+    for (let index = 0; index < this.source.pointCount; index++) {
+      let stackHasValue = false;
+      for (let offset = 0; offset < seriesIndexes.length; offset++) {
+        const series = seriesIndexes[offset];
+        const value = this.source.cursorValueAt(series, index);
+        values[offset] = value;
+        const barWidthValue = this.source.barWidthValueAt ? this.source.barWidthValueAt(series, index) : value;
+        stackHasValue ||= barWidthValue != null;
+      }
+
+      const timestamp = this.source.xAt(index);
+      for (let offset = 0; offset < seriesIndexes.length; offset++) {
+        if (!stackHasValue && values[offset] === undefined) {
+          continue;
+        }
+        const previousTimestamp = previousTimestamps[offset];
+        if (previousTimestamp != null) {
+          const delta = Math.abs(timestamp - previousTimestamp);
+          if (delta < minimumTimestampDeltas[offset]) {
+            minimumTimestampDeltas[offset] = delta;
+            samples[offset] = { previousTimestamp, timestamp };
+          }
+        }
+        previousTimestamps[offset] = timestamp;
+      }
+    }
+
+    for (let offset = 0; offset < seriesIndexes.length; offset++) {
+      this.barWidthSamples[seriesIndexes[offset]] = samples[offset];
+    }
+  }
+
+  private hasVisibleStackBase(series: number): boolean {
+    if ((this.source.columns.flags[series] & CompactSeriesFlag.Stack) === 0) {
+      return false;
+    }
+    if (!this.barWidthSamplesPrepared) {
+      this.prepareBarWidthSamples();
+    }
+    const group = this.getStackGroup(series);
+    const firstSeries = this.firstVisibleStackSeries[group];
+    return firstSeries >= 0 && firstSeries !== series;
+  }
+
+  private invalidateBarWidthSamples(): void {
+    this.barWidthSamples = [];
+    this.barWidthSamplesPrepared = false;
+    this.firstVisibleStackSeries = new Int32Array(0);
+    this.lastVisibleStackSeries = new Int32Array(0);
+  }
+
+  private getConfiguredBarSlot(series: number): { index: number; count: number } {
     return {
       index: Math.max(0, this.barSlots[series] ?? -1),
       count: Math.max(1, this.visibleBarSlotCount),
     };
   }
 
+  private selectGroupedBarSlot(series: number, flags: number): void {
+    this.barSlot = 0;
+    this.barSlotCount = 1;
+    if ((flags & CompactSeriesFlag.Stack) === 0) {
+      const slot = this.getConfiguredBarSlot(series);
+      this.barSlot = slot.index;
+      this.barSlotCount = slot.count;
+    }
+  }
+
   private isLastVisibleStackBar(series: number): boolean {
     const group = this.getStackGroup(series);
+    if (this.source.barOptions?.mode !== 'grouped') {
+      if (!this.barWidthSamplesPrepared) {
+        this.prepareBarWidthSamples();
+      }
+      return this.lastVisibleStackSeries[group] === series;
+    }
     for (let candidate = series + 1; candidate < this.source.seriesCount; candidate++) {
       if (
         this.isVisible(candidate) &&
@@ -1371,6 +1837,36 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     return true;
   }
 
+  private visitBarValueSize(index: number, rawValue: CompactPlotValue, timestamp: number): void {
+    if (rawValue == null) {
+      return;
+    }
+
+    const value = this.renderValue(index, rawValue, false);
+    const base = this.currentStackBase;
+    const valuePosition = this.plot!.valToPos(value, this.scaleKey, true);
+    const basePosition = this.plot!.valToPos(base, this.scaleKey, true);
+    const { center, size: bandSize } = this.getBarBandForPlot(this.plot!, index, timestamp, true);
+    const { start: bandStart, size: barSize } = this.getGroupedBarPlacement(center, bandSize);
+    const valueStart = Math.min(valuePosition, basePosition);
+    const valueSize = Math.abs(valuePosition - basePosition);
+    const horizontalGroups = this.plot!.scales.x.ori !== 1;
+    const x = horizontalGroups ? bandStart : valueStart;
+    const y = horizontalGroups ? valueStart : bandStart;
+    const width = horizontalGroups ? barSize : valueSize;
+    const height = horizontalGroups ? valueSize : barSize;
+    let labelValue = rawValue;
+    if ((this.flags & CompactSeriesFlag.PercentStack) !== 0) {
+      const total = this.stackTotals[this.getStackScratchIndex(index)];
+      labelValue = total === 0 ? 0 : rawValue / total;
+    }
+    const text = this.source.formatValueAt!(this.seriesIndex, index, labelValue);
+    this.groupedBarAutoValueFontSize = Math.min(
+      this.groupedBarAutoValueFontSize!,
+      this.calculateAutoBarValueFontSize(text, rawValue, x, y, width, height, horizontalGroups)
+    );
+  }
+
   private visitBar(index: number, rawValue: CompactPlotValue, timestamp: number): void {
     if (rawValue == null) {
       return;
@@ -1380,12 +1876,46 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const value = this.renderValue(index, rawValue, false);
     const base = this.currentStackBase;
     const scaleKey = this.scaleKey;
-    const valuePosition = this.plot!.valToPos(value, scaleKey, true);
-    const basePosition = this.plot!.valToPos(base, scaleKey, true);
-    const { center, size: bandSize } = this.getBarBandForPlot(this.plot!, index, timestamp, true);
-    const { start: bandStart, size: barSize } = this.getBarPlacement(center, bandSize, style);
-    const valueStart = Math.min(valuePosition, basePosition);
-    const valueSize = Math.abs(valuePosition - basePosition);
+    const grouped = this.source.barOptions?.mode === 'grouped';
+    let valuePosition = this.plot!.valToPos(value, scaleKey, true);
+    let basePosition = this.plot!.valToPos(base, scaleKey, true);
+    let bandStart: number;
+    let barSize: number;
+    let groupedBandSize = 0;
+    if (grouped) {
+      const { center, size: bandSize } = this.getBarBandForPlot(this.plot!, index, timestamp, true);
+      groupedBandSize = bandSize;
+      ({ start: bandStart, size: barSize } = this.getGroupedBarPlacement(center, bandSize));
+    } else {
+      valuePosition = this.barPixelRound(valuePosition);
+      basePosition = this.barBaselineRound(basePosition);
+      bandStart = this.barPixelRound(this.plot!.valToPos(timestamp, 'x', true) - this.barShift);
+      barSize = this.barWidth;
+    }
+    const outerBandStart = bandStart;
+    const outerBarSize = barSize;
+    const outerValueStart = Math.min(valuePosition, basePosition);
+    const outerValueSize = Math.abs(valuePosition - basePosition);
+    const valueAtStart = valuePosition <= basePosition;
+    let strokeWidth = grouped ? this.groupedBarConfiguredStrokeWidth : this.barStrokeWidth;
+    if (grouped && strokeWidth >= barSize / 2) {
+      strokeWidth = 0;
+    }
+    this.groupedBarStrokeSuppressed = grouped && this.groupedBarConfiguredStrokeWidth > 0 && strokeWidth === 0;
+    if (grouped && strokeWidth > 0) {
+      if (barSize < groupedBandSize) {
+        bandStart += strokeWidth / 2;
+        barSize = Math.max(0, barSize - strokeWidth);
+      }
+      const pathStart = outerValueStart + Math.floor(strokeWidth / 2);
+      const pathEnd = pathStart + Math.max(0, outerValueSize - strokeWidth);
+      valuePosition = valueAtStart ? pathStart : pathEnd;
+      basePosition = valueAtStart ? pathEnd : pathStart;
+      this.context!.lineWidth = strokeWidth;
+    }
+    const strokeInset = grouped ? 0 : Math.floor(strokeWidth / 2);
+    const valueStart = grouped ? Math.min(valuePosition, basePosition) : outerValueStart + strokeInset;
+    const valueSize = grouped ? Math.abs(valuePosition - basePosition) : Math.max(0, outerValueSize - strokeWidth);
     const xScale = this.plot!.scales.x;
     const horizontalGroups = xScale?.ori !== 1;
     const x = horizontalGroups ? bandStart : valueStart;
@@ -1393,7 +1923,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const width = horizontalGroups ? barSize : valueSize;
     const height = horizontalGroups ? valueSize : barSize;
 
-    if (width <= 0 || height <= 0) {
+    if ((grouped && (width < 0 || height < 0)) || (!grouped && (width <= 0 || height <= 0))) {
       return;
     }
 
@@ -1401,24 +1931,36 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const radius = this.barRoundOuterEdge
       ? Math.min((this.source.barOptions?.barRadius ?? 0) * Math.min(width, height), Math.min(width, height) / 2)
       : 0;
-    ctx.beginPath();
-    addRoundedRect(ctx, x, y, width, height, radius, horizontalGroups, rawValue < 0);
-    const fill = this.getBarFill(style, valuePosition, basePosition, horizontalGroups);
-    if (fill != null) {
-      ctx.fillStyle = fill;
-      ctx.fill();
+    if (!this.batchBarPath) {
+      ctx.beginPath();
     }
-    if ((style.lineWidth ?? 1) > 0) {
-      ctx.strokeStyle = style.stroke;
-      ctx.stroke();
+    addRoundedRect(ctx, x, y, width, height, radius, horizontalGroups, rawValue < 0);
+    if (this.batchBarPath) {
+      this.hasPath = true;
+    } else {
+      const fill = this.getBarFill(style, valuePosition, basePosition, horizontalGroups);
+      if (fill != null) {
+        ctx.fillStyle = fill;
+        ctx.fill();
+      }
+      if (strokeWidth > 0) {
+        ctx.strokeStyle = style.stroke;
+        ctx.stroke();
+      }
     }
 
-    let labelValue = rawValue;
-    if ((this.flags & CompactSeriesFlag.PercentStack) !== 0) {
-      const total = this.stackTotals[this.getStackScratchIndex(index)];
-      labelValue = total === 0 ? 0 : rawValue / total;
+    if (!this.batchBarPath) {
+      let labelValue = rawValue;
+      if ((this.flags & CompactSeriesFlag.PercentStack) !== 0) {
+        const total = this.stackTotals[this.getStackScratchIndex(index)];
+        labelValue = total === 0 ? 0 : rawValue / total;
+      }
+      const labelX = grouped ? (horizontalGroups ? outerBandStart : outerValueStart) : x;
+      const labelY = grouped ? (horizontalGroups ? outerValueStart : outerBandStart) : y;
+      const labelWidth = grouped ? (horizontalGroups ? outerBarSize : outerValueSize) : width;
+      const labelHeight = grouped ? (horizontalGroups ? outerValueSize : outerBarSize) : height;
+      this.drawBarValueLabel(index, labelValue, rawValue, labelX, labelY, labelWidth, labelHeight, horizontalGroups);
     }
-    this.drawBarValueLabel(index, labelValue, rawValue, x, y, width, height, horizontalGroups);
   }
 
   private getBarBandForPlot(
@@ -1427,11 +1969,27 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     timestamp: number,
     canvasPixels: boolean
   ): { center: number; size: number } {
-    const center = plot.valToPos(timestamp, 'x', canvasPixels);
     const pointCount = this.source.pointCount;
     const scale = plot.scales.x;
     const rawDimension = scale?.ori === 1 ? plot.bbox.height : plot.bbox.width;
     const dimension = canvasPixels ? rawDimension : rawDimension / uPlot.pxRatio;
+    if (this.source.barOptions?.mode === 'grouped') {
+      const groupWidth = this.groupedBarGroupWidth;
+      const groupSize = groupWidth / Math.max(1, pointCount);
+      const gapSize = pointCount > 1 ? (1 - groupWidth) / (pointCount - 1) : 0;
+      const ordinalPosition = index * (groupSize + gapSize) + groupSize / 2;
+      const position =
+        scale?.ori === 1
+          ? scale.dir === -1
+            ? ordinalPosition
+            : 1 - ordinalPosition
+          : scale?.dir === -1
+            ? 1 - ordinalPosition
+            : ordinalPosition;
+      const offset = canvasPixels ? (scale?.ori === 1 ? plot.bbox.top : plot.bbox.left) : 0;
+      return { center: offset + dimension * position, size: dimension / Math.max(1, pointCount) };
+    }
+    const center = plot.valToPos(timestamp, 'x', canvasPixels);
     if (pointCount <= 1) {
       return { center, size: dimension };
     }
@@ -1447,33 +2005,24 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     return { center, size: Math.max(1, Math.min(Math.abs(center - previous), Math.abs(next - center))) };
   }
 
-  private getBarPlacement(
+  private getGroupedBarPlacement(
     center: number,
     bandSize: number,
-    style: CompactStyleRecord,
     pixelRatio = uPlot.pxRatio
   ): { start: number; size: number } {
-    const options = this.source.barOptions;
-    if (options?.mode === 'grouped') {
-      const barWidth = Math.max(0, Math.min(1, options.barWidth ?? 0.97));
-      if ((this.flags & CompactSeriesFlag.Stack) !== 0) {
-        const size = this.clampBarSize(bandSize * barWidth, Number.POSITIVE_INFINITY, pixelRatio);
-        return { start: center - size / 2, size };
-      }
-      const groupWidth = bandSize * Math.max(0, Math.min(1, options.groupWidth ?? 0.7));
-      const slotSize = groupWidth / Math.max(1, this.barSlotCount);
-      const size = this.clampBarSize(slotSize * barWidth, Number.POSITIVE_INFINITY, pixelRatio);
-      const slotCenter = center - groupWidth / 2 + slotSize * (this.barSlot + 0.5);
-      return { start: slotCenter - size / 2, size };
+    const barWidth = this.groupedBarWidth;
+    const groupWidthFactor = this.groupedBarGroupWidth;
+    if ((this.flags & CompactSeriesFlag.Stack) !== 0) {
+      const size = this.clampBarSize(bandSize * groupWidthFactor, Number.POSITIVE_INFINITY, pixelRatio);
+      return { start: center - size / 2, size };
     }
-
-    const size = this.clampBarSize(
-      bandSize * Math.max(0, Math.min(1, style.barWidthFactor ?? 0.6)),
-      style.barMaxWidth ?? 200,
-      pixelRatio
-    );
-    const alignment = style.barAlignment ?? 0;
-    return { start: center - size / 2 + (alignment * size) / 2, size };
+    const groupWidth = bandSize * groupWidthFactor;
+    const slotCount = Math.max(1, this.barSlotCount);
+    const barFraction = barWidth / slotCount;
+    const gapFraction = slotCount > 1 ? (1 - barWidth) / (slotCount - 1) : 0;
+    const size = this.clampBarSize(groupWidth * barFraction, Number.POSITIVE_INFINITY, pixelRatio);
+    const start = center - groupWidth / 2 + groupWidth * this.barSlot * (barFraction + gapFraction);
+    return { start, size };
   }
 
   private clampBarSize(size: number, maxWidth: number, pixelRatio: number): number {
@@ -1486,6 +2035,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     basePosition: number,
     horizontalGroups: boolean
   ): string | CanvasGradient | null | undefined {
+    if (this.shouldFillBarsWithStroke(style)) {
+      return style.stroke;
+    }
     if (style.areaGradient == null) {
       return style.areaFill;
     }
@@ -1495,6 +2047,17 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     gradient.addColorStop(0, style.areaGradient[0]);
     gradient.addColorStop(1, style.areaGradient[1]);
     return gradient;
+  }
+
+  private getSolidBarFill(style: CompactStyleRecord): string | undefined {
+    return this.shouldFillBarsWithStroke(style) ? style.stroke : (style.areaFill ?? undefined);
+  }
+
+  private shouldFillBarsWithStroke(style: CompactStyleRecord): boolean {
+    return (
+      (this.source.barOptions?.mode === 'grouped' ? this.groupedBarStrokeSuppressed : this.barStrokeWidth === 0) &&
+      (style.lineWidth ?? 1) > 0
+    );
   }
 
   private drawBarValueLabel(
@@ -1516,11 +2079,22 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const text = this.source.formatValueAt(this.seriesIndex, index, value);
     const ctx = this.context!;
     ctx.save();
-    const fontSize = Math.max(1, options?.valueSize ?? 12) * uPlot.pxRatio;
+    const plotBounds = this.plot!.bbox;
+    let fontSize: number;
+    if (options?.valueSize != null) {
+      fontSize = Math.max(1, options.valueSize) * uPlot.pxRatio;
+    } else if (options?.mode === 'grouped') {
+      fontSize = this.groupedBarAutoValueFontSize ?? BAR_VALUE_MAX_FONT_SIZE * uPlot.pxRatio;
+      if (fontSize < BAR_VALUE_MIN_FONT_SIZE * uPlot.pxRatio) {
+        ctx.restore();
+        return;
+      }
+    } else {
+      fontSize = 12 * uPlot.pxRatio;
+    }
     ctx.font = `${fontSize}px ${this.source.valueFontFamily ?? 'sans-serif'}`;
     const metrics = ctx.measureText(text);
     const textHeight = fontSize;
-    const plotBounds = this.plot!.bbox;
     const labelFitsGroup = horizontalGroups ? metrics.width <= width : textHeight <= height;
     const labelFitsPlot = horizontalGroups
       ? rawValue < 0
@@ -1571,6 +2145,36 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       ctx.fillText(text, rawValue < 0 ? x - 5 : x + width + 5, y + height / 2);
     }
     ctx.restore();
+  }
+
+  private calculateAutoBarValueFontSize(
+    text: string,
+    rawValue: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    horizontalGroups: boolean
+  ): number {
+    const measurementSize = 14 * uPlot.pxRatio;
+    const measuredWidth = this.context!.measureText(text).width;
+    const plotBounds = this.plot!.bbox;
+    const outsideSpace = horizontalGroups
+      ? rawValue < 0
+        ? plotBounds.top + plotBounds.height - (y + height) - 5
+        : y - plotBounds.top - 5
+      : rawValue < 0
+        ? x - plotBounds.left - 5
+        : plotBounds.left + plotBounds.width - (x + width) - 5;
+    const availableWidth = horizontalGroups ? width * BAR_VALUE_FIT_RATIO : outsideSpace;
+    const availableHeight = horizontalGroups ? outsideSpace : height * BAR_VALUE_FIT_RATIO;
+    return Math.round(
+      Math.min(
+        BAR_VALUE_MAX_FONT_SIZE * uPlot.pxRatio,
+        availableHeight,
+        (availableWidth * measurementSize) / (measuredWidth + 2 * uPlot.pxRatio)
+      )
+    );
   }
 
   private drawDirectLinearLine(

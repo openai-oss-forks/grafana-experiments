@@ -26,6 +26,37 @@ describe('uPlot compact X host', () => {
     expect(target.contains(plot.root)).toBe(false);
   });
 
+  test('recalculates custom X axes when compact source values change', async () => {
+    const axisValues = jest.fn((_plot: uPlot, splits: number[]) => splits.map(String));
+    const options: uPlot.Options = {
+      ...createOptions(),
+      axes: [{ scale: 'x', values: axisValues }],
+      scales: {
+        x: {
+          time: false,
+          distr: 100,
+          fwd: (value) => value,
+          bwd: (value) => value,
+          range: () => [1000, 3000],
+        },
+      },
+    };
+    const plot = uPlot.compact(
+      options,
+      createSource([1, 2, 3], [1000, 1500, 3000]),
+      createController(),
+      document.createElement('div')
+    );
+    await flushCommit();
+    const initialCalls = axisValues.mock.calls.length;
+
+    plot.setCompactData?.(createSource([1, 2, 3], [1000, 2500, 3000]));
+    await flushCommit();
+
+    expect(axisValues.mock.calls.length).toBeGreaterThan(initialCalls);
+    plot.destroy();
+  });
+
   test('rejects legacy data replacement on a compact plot', () => {
     expect(() => uPlot.compact(createOptions(), createSource([1]), null, document.createElement('div'))).toThrow(
       'render controller'
@@ -328,7 +359,10 @@ async function flushCommit(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function createSource(values: number[]): uPlot.CompactPlotSource {
+function createSource(
+  values: number[],
+  xValues = values.map((_value, index) => 1000 + index * 1000)
+): uPlot.CompactPlotSource {
   const buffer = new Float64Array(values).buffer;
   return {
     kind: 'compact-v1',
@@ -336,8 +370,16 @@ function createSource(values: number[]): uPlot.CompactPlotSource {
     pointCount: values.length,
     seriesCount: 1,
     release: () => undefined,
-    xAt: (index) => 1000 + index * 1000,
-    closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round((value - 1000) / 1000))),
+    xAt: (index) => xValues[index],
+    closestXIndex: (value, from, to) => {
+      let closest = from;
+      for (let index = from + 1; index <= to; index++) {
+        if (Math.abs(xValues[index] - value) < Math.abs(xValues[closest] - value)) {
+          closest = index;
+        }
+      }
+      return closest;
+    },
     cursorValueAt: (_seriesIndex, index) => values[index],
     yAt: (_seriesIndex, index) => values[index],
     scan: (_seriesIndex, from, to, visitor) => {

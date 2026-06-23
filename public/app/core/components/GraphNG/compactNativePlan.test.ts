@@ -24,6 +24,7 @@ import {
   GraphTransform,
   ScaleDistribution,
   StackingMode,
+  VisibilityMode,
 } from '@grafana/schema';
 import { CompactSeriesFlag } from '@grafana/ui/internal';
 
@@ -584,7 +585,9 @@ describe('CompactNativeRenderPlan', () => {
         compactProperty('custom.barAlignment', 'barAlignment', true),
         compactProperty('custom.barWidthFactor', 'barWidthFactor', true),
         compactProperty('custom.barMaxWidth', 'barMaxWidth', true),
+        compactProperty('custom.showPoints', 'showPoints', true),
         compactProperty('custom.stacking', 'stacking', true),
+        compactProperty('custom.transform', 'transform', true),
       ]),
       fieldConfig: {
         defaults: {
@@ -593,10 +596,19 @@ describe('CompactNativeRenderPlan', () => {
             barAlignment: -1,
             barWidthFactor: 0.75,
             barMaxWidth: 48,
+            showPoints: VisibilityMode.Auto,
             stacking: { mode: StackingMode.Percent, group: 'primary' },
           },
         },
-        overrides: [],
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byFrameRefID, options: 'B' },
+            properties: [
+              { id: 'custom.showPoints', value: VisibilityMode.Always },
+              { id: 'custom.transform', value: GraphTransform.Constant },
+            ],
+          },
+        ],
       },
     });
 
@@ -604,6 +616,9 @@ describe('CompactNativeRenderPlan', () => {
     expect(plan.source.columns.flags[0] & CompactSeriesFlag.Bars).toBeTruthy();
     expect(plan.source.columns.flags[0] & CompactSeriesFlag.Stack).toBeTruthy();
     expect(plan.source.columns.flags[0] & CompactSeriesFlag.PercentStack).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.AutoPoints).toBe(0);
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.Points).toBeTruthy();
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.Constant).toBeTruthy();
     expect(plan.source.styles[0]).toMatchObject({
       barAlignment: -1,
       barWidthFactor: 0.75,
@@ -614,11 +629,55 @@ describe('CompactNativeRenderPlan', () => {
     expect(getSeries).not.toHaveBeenCalled();
   });
 
-  test('retains percent normalization metadata for a singleton bar stack', () => {
+  test.each([
+    {
+      name: 'percent',
+      mode: StackingMode.Percent,
+      transform: undefined,
+      expectedFlag: CompactSeriesFlag.PercentStack,
+    },
+    {
+      name: 'constant',
+      mode: StackingMode.Normal,
+      transform: GraphTransform.Constant,
+      expectedFlag: CompactSeriesFlag.Constant,
+    },
+  ])('retains $name metadata for a singleton bar stack', ({ mode, transform, expectedFlag }) => {
     const { source } = columnarSource([series('A', 'requests', [1, 2, 3])]);
     const plan = createCompactNativeRenderPlan(source, {
       ...baseOptions,
       capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.stacking', 'stacking', true),
+        compactProperty('custom.transform', 'transform', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            stacking: { mode, group: 'primary' },
+            transform,
+          },
+        },
+        overrides: [],
+      },
+    });
+
+    expect(plan.source.stackGroupCount).toBe(1);
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Stack).toBeTruthy();
+    expect(plan.source.columns.flags[0] & expectedFlag).toBeTruthy();
+  });
+
+  test.each([
+    { name: 'single unstacked series', stacking: StackingMode.None, expectedStackGroupCount: 0 },
+    { name: 'single normally stacked series', stacking: StackingMode.Normal, expectedStackGroupCount: 1 },
+  ])('retains the topology for a $name', ({ stacking, expectedStackGroupCount }) => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2, 3])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'standalone-barchart',
+      barOptions: { mode: 'grouped', groupWidth: 0.7, barWidth: 0.9 },
       fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
         compactProperty('custom.drawStyle', 'drawStyle', true),
         compactProperty('custom.stacking', 'stacking', true),
@@ -627,15 +686,83 @@ describe('CompactNativeRenderPlan', () => {
         defaults: {
           custom: {
             drawStyle: GraphDrawStyle.Bars,
-            stacking: { mode: StackingMode.Percent, group: 'primary' },
+            stacking: { mode: stacking, group: 'primary' },
           },
         },
         overrides: [],
       },
     });
 
-    expect(plan.source.stackGroupCount).toBe(1);
-    expect(plan.source.columns.flags[0] & CompactSeriesFlag.PercentStack).toBeTruthy();
+    expect(plan.source.barOptions).toMatchObject({ groupWidth: 0.7, barWidth: 0.9 });
+    expect(plan.source.stackGroupCount).toBe(expectedStackGroupCount);
+  });
+
+  test('separates configured hide rules from transient legend state', () => {
+    const { source } = columnarSource([
+      series('A', 'requests', [1, 2, 3]),
+      series('B', 'errors', [3, 2, 1]),
+      series('C', 'latency', [2, 3, 1]),
+    ]);
+    const systemOverride = {
+      matcher: { id: FieldMatcherID.byName, options: 'errors' },
+      properties: [{ id: 'custom.hideFrom', value: { viz: true, legend: false, tooltip: true } }],
+    };
+    Reflect.set(systemOverride, '__systemRef', 'hide-series');
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'standalone-barchart',
+      barOptions: { mode: 'grouped', groupWidth: 0.7, barWidth: 0.9 },
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.hideFrom', 'hideFrom', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            hideFrom: { legend: false, tooltip: true, viz: false },
+          },
+        },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'requests' },
+            properties: [{ id: 'custom.hideFrom', value: { legend: true } }],
+          },
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'errors' },
+            properties: [{ id: 'custom.hideFrom', value: { legend: true, tooltip: false } }],
+          },
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'latency' },
+            properties: [{ id: 'custom.hideFrom', value: { tooltip: false, viz: true } }],
+          },
+          systemOverride,
+        ],
+      },
+    });
+
+    expect(plan.source.columns.visibility).toEqual(new Uint8Array([1, 0, 0]));
+    expect(plan.source.barLayoutVisibility).toEqual(new Uint8Array([1, 1, 0]));
+    expect(plan.columns.flags[0] & CompactNativeSeriesFlag.HiddenFromTooltip).not.toBe(0);
+    expect(plan.columns.flags[1] & CompactNativeSeriesFlag.HiddenFromViz).not.toBe(0);
+    expect(plan.columns.flags[1] & CompactNativeSeriesFlag.HiddenFromLegend).not.toBe(0);
+    expect(plan.columns.flags[1] & CompactNativeSeriesFlag.HiddenFromTooltip).not.toBe(0);
+    expect(plan.columns.flags[2] & CompactNativeSeriesFlag.HiddenFromViz).not.toBe(0);
+    expect(plan.columns.flags[2] & CompactNativeSeriesFlag.HiddenFromTooltip).toBe(0);
+    expect(plan.source.barOptions).toMatchObject({ groupWidth: 0.7, barWidth: 0.9 });
+  });
+
+  test('keeps standalone no-value display text without rendering missing bars', () => {
+    const { source } = columnarSource([seriesFromLogicalValues('A', 'requests', [1, null, 3])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'standalone-barchart',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [compactProperty('noValue', 'noValue', false)]),
+      fieldConfig: { defaults: { noValue: '5' }, overrides: [] },
+    });
+
+    expect(plan.getStyle(0).config.noValue).toBe('5');
+    expect(plan.source.yAt(0, 1)).toBeNull();
   });
 
   test('uses the original value direction for negative and constant transforms', () => {

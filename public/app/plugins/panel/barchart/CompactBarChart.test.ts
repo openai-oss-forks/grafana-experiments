@@ -1,7 +1,12 @@
-import { CompactTimeSeriesData, FieldConfigSource } from '@grafana/data';
+import { CompactTimeSeriesData, FieldConfigSource, FieldMatcherID } from '@grafana/data';
 import { GraphDrawStyle, StackingMode, VisibilityMode, VizOrientation } from '@grafana/schema';
+import { measureText, UPLOT_AXIS_FONT_SIZE } from '@grafana/ui';
 
-import { buildCompactBarFieldConfig, getRenderableCompactBarSeries } from './CompactBarChart';
+import {
+  buildCompactBarFieldConfig,
+  createCompactRotationPadding,
+  getRenderableCompactBarSeries,
+} from './CompactBarChart';
 import { Options } from './panelcfg.gen';
 
 describe('compact standalone Bar chart', () => {
@@ -35,6 +40,18 @@ describe('compact standalone Bar chart', () => {
     expect(getRenderableCompactBarSeries(compactSeries, fieldConfig, unsupported)).toBeUndefined();
   });
 
+  it('reserves plot-edge space whenever tick labels are rotated', () => {
+    expect(createCompactRotationPadding(0)).toBeUndefined();
+    const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
+    expect(createCompactRotationPadding(45)).toEqual([
+      UPLOT_AXIS_FONT_SIZE,
+      Math.ceil(Math.cos(Math.PI / 4) * labelWidth),
+      Math.ceil(Math.sin(Math.PI / 4) * labelWidth),
+      0,
+    ]);
+    expect(createCompactRotationPadding(-45)).toEqual(expect.arrayContaining([expect.any(Number)]));
+  });
+
   it('adapts panel-level bar settings without mutating the saved field configuration', () => {
     const adapted = buildCompactBarFieldConfig(fieldConfig, options);
     expect(adapted).not.toBe(fieldConfig);
@@ -48,5 +65,37 @@ describe('compact standalone Bar chart', () => {
       axisSoftMax: 0,
     });
     expect(fieldConfig.defaults.custom).toEqual({ fillOpacity: 80, lineWidth: 2 });
+  });
+
+  it('ignores field options that the full Bar chart owns at panel level', () => {
+    const configured: FieldConfigSource = {
+      defaults: {
+        noValue: '5',
+        custom: { drawStyle: GraphDrawStyle.Line, stacking: { mode: StackingMode.Normal, group: 'saved' } },
+      },
+      overrides: [
+        {
+          matcher: { id: FieldMatcherID.byName, options: 'requests' },
+          properties: [
+            { id: 'noValue', value: '7' },
+            { id: 'custom.stacking', value: { mode: StackingMode.Normal, group: 'override' } },
+            { id: 'custom.barWidthFactor', value: 0.2 },
+            { id: 'custom.drawStyle', value: GraphDrawStyle.Line },
+            { id: 'custom.lineColor', value: 'red' },
+          ],
+        },
+      ],
+    };
+
+    const adapted = buildCompactBarFieldConfig(configured, options);
+
+    expect(adapted.defaults.noValue).toBe('5');
+    expect(adapted.defaults.custom?.stacking).toEqual({ mode: StackingMode.Percent, group: '__compact_barchart' });
+    expect(adapted.overrides[0].properties).toEqual([
+      { id: 'noValue', value: '7' },
+      { id: 'custom.lineColor', value: 'red' },
+    ]);
+    expect(configured.overrides[0].properties).toHaveLength(5);
+    expect(getRenderableCompactBarSeries(compactSeries, configured, options)).toBe(compactSeries);
   });
 });

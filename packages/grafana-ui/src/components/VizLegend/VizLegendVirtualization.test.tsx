@@ -139,6 +139,33 @@ describe('high-cardinality visualization UI', () => {
     expect(getComputedStyle(label.closest('tr')!).display).toBe('table-row');
   });
 
+  test('keeps non-virtual indexed value columns readable in narrow legends', () => {
+    const source = createItemSource(1);
+    source.getDisplayValues = () => [
+      { title: 'Mean', text: '1', numeric: 1 },
+      { title: 'Min', text: '1', numeric: 1 },
+      { title: 'Max', text: '1', numeric: 1 },
+      { title: 'Last', text: '1', numeric: 1 },
+      { title: 'Total', text: '1', numeric: 1 },
+    ];
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        isSortable
+        displayValueColumns={source.getDisplayValues(0)}
+      />
+    );
+
+    const table = screen.getByRole('table');
+    expect(getComputedStyle(table).tableLayout).toBe('fixed');
+    expect(table).toHaveStyle({ minWidth: '600px' });
+    expect(table.querySelector('col[span="5"]')).toHaveStyle({ width: '88px' });
+    expect(screen.getByRole('columnheader', { name: 'Name' })).toHaveStyle({ width: 'auto' });
+  });
+
   test('recovers the visible window when an indexed source shrinks', () => {
     const largeSource = createItemSource(1_000);
     const { rerender } = render(<VizLegendList items={[]} itemSource={largeSource} placement="right" />);

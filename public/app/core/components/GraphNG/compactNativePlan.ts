@@ -33,6 +33,7 @@ import {
   GraphFieldConfig,
   GraphGradientMode,
   GraphTransform,
+  HideSeriesConfig,
   LineInterpolation,
   ScaleDistribution,
   StackingMode,
@@ -224,6 +225,7 @@ export function createCompactNativeRenderPlan(
   const access = createSeriesAccess(data);
   const configIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const flags = new Uint8Array(seriesCount);
+  const barLayoutVisibility = new Uint8Array(seriesCount);
   const configuredDisplayNameIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const compiledConfigs: CompiledConfigRecord[] = [];
   const compiledConfigBuckets = new Map<number, number[]>();
@@ -299,6 +301,12 @@ export function createCompactNativeRenderPlan(
     scratch.display = undefined;
     scratch.labels = undefined;
     context.dataFrameIndex = seriesIndex;
+    const configuredHideFrom: HideSeriesConfig = {
+      legend: false,
+      tooltip: false,
+      viz: false,
+      ...options.fieldConfig.defaults.custom?.hideFrom,
+    };
 
     setFieldConfigDefaults(scratch.config, options.fieldConfig.defaults, context);
     for (let ruleIndex = 0; ruleIndex < options.fieldConfig.overrides.length; ruleIndex++) {
@@ -322,6 +330,13 @@ export function createCompactNativeRenderPlan(
       ) {
         continue;
       }
+      if (!('__systemRef' in rule)) {
+        for (const property of rule.properties) {
+          if (property.id === 'custom.hideFrom' && typeof property.value === 'object' && property.value !== null) {
+            Object.assign(configuredHideFrom, property.value);
+          }
+        }
+      }
       for (const property of rule.properties) {
         setDynamicConfigValue(scratch.config, property, context);
       }
@@ -335,7 +350,13 @@ export function createCompactNativeRenderPlan(
       configuredDisplayNameKeys
     );
     configuredDisplayNameIdBuilder.set(seriesIndex, configuredDisplayNameId);
-    flags[seriesIndex] = calculateFlags(scratchConfig, access.getPresenceByteLength(seriesIndex));
+    flags[seriesIndex] = calculateFlags(
+      scratchConfig,
+      configuredHideFrom,
+      access.getPresenceByteLength(seriesIndex),
+      options.capability
+    );
+    barLayoutVisibility[seriesIndex] = configuredHideFrom.viz ? 0 : 1;
 
     const configId = internCompiledConfig(
       scratchConfig,
@@ -355,7 +376,7 @@ export function createCompactNativeRenderPlan(
   const reusablePlotOptions: CompactPlotSeriesOptions = {};
   const plotSource = createCompactPlotSource(data, (seriesIndex) => {
     const config = styles[compiledConfigs[configIds[seriesIndex]].styleId].config;
-    reusablePlotOptions.noValue = config.noValue;
+    reusablePlotOptions.noValue = options.capability === 'standalone-barchart' ? undefined : config.noValue;
     reusablePlotOptions.transform = config.custom?.transform;
     reusablePlotOptions.spanNulls = config.custom?.spanNulls;
     reusablePlotOptions.insertNulls = config.custom?.insertNulls;
@@ -564,6 +585,7 @@ export function createCompactNativeRenderPlan(
     getSeriesIdentity,
     getSeriesIdentityHash,
     visibilityState,
+    barLayoutVisibility,
     getDisplay,
     options
   );
@@ -616,6 +638,7 @@ function createRenderSource(
   getSeriesIdentity: (seriesIndex: number) => string,
   getSeriesIdentityHash: (seriesIndex: number) => number,
   visibilityState: CompactVisibilityState,
+  barLayoutVisibility: Uint8Array,
   getDisplay: (seriesIndex: number) => DisplayProcessor,
   options: CompactFieldConfigOptions
 ): CompactRenderSource {
@@ -756,8 +779,11 @@ function createRenderSource(
     const showPoints = drawStyle === GraphDrawStyle.Points ? VisibilityMode.Always : configuredShowPoints;
     if (showPoints === VisibilityMode.Always) {
       seriesFlags |= CompactSeriesFlag.Points;
-    } else if (showPoints === VisibilityMode.Auto) {
+    } else if (showPoints === VisibilityMode.Auto && drawStyle !== GraphDrawStyle.Bars) {
       seriesFlags |= CompactSeriesFlag.AutoPoints;
+    }
+    if (drawStyle === GraphDrawStyle.Bars && custom.transform === GraphTransform.Constant) {
+      seriesFlags |= CompactSeriesFlag.Constant;
     }
     if (stackingMode === StackingMode.Normal || stackingMode === StackingMode.Percent) {
       const stackGroupIndex = internStructuralRecord(
@@ -786,7 +812,15 @@ function createRenderSource(
   const styleIds = styleIdBuilder.finish();
   const scaleIds = scaleIdBuilder.finish();
   const rawStackGroupIds = stackGroupIdBuilder.finish();
-  const { stackGroupIds, stackGroupCount } = compactStackGroups(rawStackGroupIds, stackGroupCounts, flags);
+  const preserveSingletonStacks =
+    options.capability === 'standalone-barchart' && options.barOptions?.mode === 'grouped';
+  const { stackGroupIds, stackGroupCount } = compactStackGroups(
+    rawStackGroupIds,
+    stackGroupCounts,
+    flags,
+    preserveSingletonStacks
+  );
+  const barOptions = options.barOptions;
 
   Object.assign(source, {
     columns: {
@@ -807,6 +841,7 @@ function createRenderSource(
     seriesIdentityAt: getSeriesIdentity,
     seriesIdentityHashAt: getSeriesIdentityHash,
     visibilityState,
+    ...(barOptions ? { barLayoutVisibility } : undefined),
     ...(hasValueLabels
       ? {
           formatValueAt: (seriesIndex: number, _index: number, value: number) =>
@@ -819,7 +854,7 @@ function createRenderSource(
           valueFontFamily: options.theme.typography.fontFamily,
         }
       : undefined),
-    ...(options.barOptions ? { barOptions: options.barOptions } : undefined),
+    ...(barOptions ? { barOptions } : undefined),
   });
   if (!isCompactRenderSource(source)) {
     throw new Error('Compact native renderer source construction failed');
@@ -1002,19 +1037,20 @@ function getStackDirection(
 function compactStackGroups(
   rawStackGroupIds: CompactIndexColumn,
   stackGroupCounts: number[],
-  flags: CompactIndexColumn
+  flags: CompactIndexColumn,
+  preserveSingletons = false
 ): { stackGroupIds: CompactIndexColumn; stackGroupCount: number } {
   const remappedGroupIds = new Uint32Array(stackGroupCounts.length);
-  const requiredPercentGroups = new Uint8Array(stackGroupCounts.length);
+  const requiredGroups = new Uint8Array(stackGroupCounts.length);
   for (let seriesIndex = 0; seriesIndex < rawStackGroupIds.length; seriesIndex++) {
     const groupId = rawStackGroupIds[seriesIndex];
-    if (groupId > 0 && (flags[seriesIndex] & CompactSeriesFlag.PercentStack) !== 0) {
-      requiredPercentGroups[groupId - 1] = 1;
+    if (groupId > 0 && (flags[seriesIndex] & (CompactSeriesFlag.PercentStack | CompactSeriesFlag.Constant)) !== 0) {
+      requiredGroups[groupId - 1] = 1;
     }
   }
   let stackGroupCount = 0;
   for (let groupIndex = 0; groupIndex < stackGroupCounts.length; groupIndex++) {
-    if (stackGroupCounts[groupIndex] > 1 || requiredPercentGroups[groupIndex] !== 0) {
+    if (stackGroupCounts[groupIndex] > 1 || requiredGroups[groupIndex] !== 0 || preserveSingletons) {
       remappedGroupIds[groupIndex] = ++stackGroupCount;
     }
   }
@@ -1593,16 +1629,25 @@ function splitConfig(config: FieldConfig<GraphFieldConfig>): {
   };
 }
 
-function calculateFlags(config: FieldConfig<GraphFieldConfig>, presenceByteLength: number): number {
+function calculateFlags(
+  config: FieldConfig<GraphFieldConfig>,
+  configuredHideFrom: HideSeriesConfig,
+  presenceByteLength: number,
+  capability: CompactFieldConfigOptions['capability']
+): number {
   const custom = config.custom;
   let flags = presenceByteLength > 0 ? CompactNativeSeriesFlag.HasGaps : 0;
   if (custom?.hideFrom?.viz) {
     flags |= CompactNativeSeriesFlag.HiddenFromViz;
   }
-  if (custom?.hideFrom?.legend) {
+  if (configuredHideFrom.legend) {
     flags |= CompactNativeSeriesFlag.HiddenFromLegend;
   }
-  if (custom?.hideFrom?.tooltip) {
+  const hiddenFromTooltip =
+    capability === 'standalone-barchart'
+      ? configuredHideFrom.tooltip || (!configuredHideFrom.viz && custom?.hideFrom?.viz === true)
+      : custom?.hideFrom?.tooltip === true;
+  if (hiddenFromTooltip) {
     flags |= CompactNativeSeriesFlag.HiddenFromTooltip;
   }
   if (custom?.transform === GraphTransform.NegativeY) {
