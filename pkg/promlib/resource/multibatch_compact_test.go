@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -37,6 +39,41 @@ func (s recordingSender) Send(response *backend.CallResourceResponse) error {
 	s.responses <- &copyResponse
 	return nil
 }
+
+type failingSender struct {
+	responses chan *backend.CallResourceResponse
+	calls     int
+	failAt    int
+	err       error
+}
+
+func (s *failingSender) Send(response *backend.CallResourceResponse) error {
+	s.calls++
+	if s.calls == s.failAt {
+		return s.err
+	}
+	copyResponse := *response
+	copyResponse.Body = append([]byte(nil), response.Body...)
+	copyResponse.Headers = cloneResponseHeaders(response.Headers)
+	s.responses <- &copyResponse
+	return nil
+}
+
+type recordingLogger struct {
+	errorMessages []string
+	errorArgs     [][]interface{}
+}
+
+func (l *recordingLogger) Debug(string, ...interface{}) {}
+func (l *recordingLogger) Info(string, ...interface{})  {}
+func (l *recordingLogger) Warn(string, ...interface{})  {}
+func (l *recordingLogger) Error(message string, args ...interface{}) {
+	l.errorMessages = append(l.errorMessages, message)
+	l.errorArgs = append(l.errorArgs, args)
+}
+func (l *recordingLogger) With(...interface{}) log.Logger         { return l }
+func (l *recordingLogger) Level() log.Level                       { return log.Debug }
+func (l *recordingLogger) FromContext(context.Context) log.Logger { return l }
 
 func TestExecuteCompactMultiBatchStreamSendsFirstBatchBeforeFinalArrives(t *testing.T) {
 	reader, writer := io.Pipe()
@@ -253,6 +290,37 @@ func TestExecuteMultiBatchStreamPassesThroughJSONLBeforeFinalArrives(t *testing.
 	require.NoError(t, <-done)
 }
 
+func TestExecuteMultiBatchStreamFramesReadErrorAfterResponseStart(t *testing.T) {
+	logger := &recordingLogger{}
+	firstPayload := []byte("{\"type\":\"status\",\"frame\":\"main\",\"data\":{\"isIncomplete\":true}}\n")
+	upstreamBody := append(
+		multiBatchResponseHeader(),
+		multiBatchPayloadFrame(multiBatchPayloadTypeJSONL, 0, multiBatchPayloadEncodingIdentity, firstPayload)...,
+	)
+	upstreamBody = append(upstreamBody, []byte("{\"statusCode\":500,\"message\":\"raw error\"}")...)
+	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {preferredMultiBatchContentType + "; version=1"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte("{}")}, logger)
+	require.NoError(t, err)
+
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), nonCompactMultiBatchRequest(), sender))
+
+	first := receiveResponse(t, sender.responses)
+	final := receiveResponse(t, sender.responses)
+	require.Equal(t, "MBRH", string(first.Body[:4]))
+	require.Equal(t, "MBBF", string(first.Body[12:16]))
+	requireFinalJSONLErrorFrame(t, final)
+	require.NotContains(t, string(final.Body), "raw error")
+	require.Len(t, logger.errorMessages, 1)
+	require.Equal(t, "Failed to stream Prometheus multi-batch response", logger.errorMessages[0])
+	loggedErr, ok := logger.errorArgs[0][1].(error)
+	require.True(t, ok)
+	require.ErrorContains(t, loggedErr, "invalid Prometheus multi-batch frame magic")
+}
+
 func TestExecuteMultiBatchStreamWrapsPlainJSONFallback(t *testing.T) {
 	payload := []byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"api"},"values":[[0,"1"]]}]}}`)
 	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
@@ -294,6 +362,69 @@ func TestExecuteMultiBatchStreamWrapsPlainJSONFallback(t *testing.T) {
 	require.Equal(t, payload, response.Body[24:])
 }
 
+func TestExecuteCompactMultiBatchStreamFramesFallbackDecodeError(t *testing.T) {
+	logger := &recordingLogger{}
+	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader("not valid prometheus payload")),
+	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte("{}")}, logger)
+	require.NoError(t, err)
+
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), compactMultiBatchRequest(), sender))
+
+	preamble := receiveResponse(t, sender.responses)
+	final := receiveResponse(t, sender.responses)
+	require.Equal(t, "MBRH", string(preamble.Body[:4]))
+	requireFinalPluginErrorFrame(t, final)
+	require.Len(t, logger.errorMessages, 1)
+	require.Equal(t, "Failed to stream compact Prometheus multi-batch response", logger.errorMessages[0])
+	require.Contains(t, logger.errorArgs[0], "error")
+	loggedErr, ok := logger.errorArgs[0][1].(error)
+	require.True(t, ok)
+	require.ErrorContains(t, loggedErr, "decode Prometheus multi-batch JSONL event")
+	require.NotContains(t, string(final.Body), "not valid prometheus payload")
+}
+
+func TestExecuteCompactMultiBatchStreamFramesMalformedUpstreamAfterPreamble(t *testing.T) {
+	upstreamBody := append(multiBatchResponseHeader(), []byte("{\"statusCode\":500,\"message\":\"raw error\"}")...)
+	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {preferredMultiBatchContentType + "; version=1"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte("{}")}, log.DefaultLogger)
+	require.NoError(t, err)
+
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), compactMultiBatchRequest(), sender))
+
+	preamble := receiveResponse(t, sender.responses)
+	final := receiveResponse(t, sender.responses)
+	require.Equal(t, "MBRH", string(preamble.Body[:4]))
+	requireFinalPluginErrorFrame(t, final)
+	require.NotContains(t, string(final.Body), "raw error")
+}
+
+func TestExecuteCompactMultiBatchStreamReturnsSenderFailure(t *testing.T) {
+	senderErr := errors.New("sender failed")
+	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader("not valid prometheus payload")),
+	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte("{}")}, log.DefaultLogger)
+	require.NoError(t, err)
+
+	sender := &failingSender{
+		responses: make(chan *backend.CallResourceResponse, 1),
+		failAt:    2,
+		err:       senderErr,
+	}
+	require.ErrorIs(t, res.ExecuteStream(context.Background(), compactMultiBatchRequest(), sender), senderErr)
+	require.Equal(t, 2, sender.calls)
+	require.Equal(t, "MBRH", string(receiveResponse(t, sender.responses).Body[:4]))
+}
+
 func TestExecuteStreamPassesPlainJSONThroughWithoutMultiBatchAccept(t *testing.T) {
 	payload := []byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`)
 	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
@@ -319,6 +450,62 @@ func TestExecuteStreamPassesPlainJSONThroughWithoutMultiBatchAccept(t *testing.T
 	response := receiveResponse(t, sender.responses)
 	require.Equal(t, "application/json", http.Header(response.Headers).Get("Content-Type"))
 	require.Equal(t, payload, response.Body)
+}
+
+func compactMultiBatchRequest() *backend.CallResourceRequest {
+	return &backend.CallResourceRequest{
+		Method: http.MethodPost,
+		Path:   "api/v1/query_range",
+		URL:    "/api/v1/query_range",
+		Body:   []byte("query=up&start=0&end=120&step=60"),
+		Headers: map[string][]string{
+			"Content-Type":                      {"application/x-www-form-urlencoded"},
+			"X-Grafana-Query-Format":            {"compact-v1"},
+			compactMultiBatchRefIDHeader:        {"A"},
+			compactMultiBatchLegendFormatHeader: {"{{job}}"},
+			compactMultiBatchUTCOffsetHeader:    {"0"},
+		},
+	}
+}
+
+func nonCompactMultiBatchRequest() *backend.CallResourceRequest {
+	return &backend.CallResourceRequest{
+		Method: http.MethodPost,
+		Path:   "api/v1/query_range",
+		URL:    "/api/v1/query_range",
+		Body:   []byte("query=up&start=0&end=120&step=60"),
+		Headers: map[string][]string{
+			"Content-Type": {"application/x-www-form-urlencoded"},
+		},
+	}
+}
+
+func requireFinalPluginErrorFrame(t *testing.T, response *backend.CallResourceResponse) {
+	t.Helper()
+	require.Equal(t, "MBBF", string(response.Body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), response.Body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), response.Body[6]&multiBatchFinalFlag)
+	payloadLength := binary.BigEndian.Uint32(response.Body[8:12])
+	require.Equal(t, uint32(len(response.Body)-multiBatchFrameHeaderSize), payloadLength)
+
+	var payload map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(response.Body[multiBatchFrameHeaderSize:], &payload))
+	require.Contains(t, payload, "results")
+	require.Contains(t, string(response.Body[multiBatchFrameHeaderSize:]), multiBatchPluginErrorMessage)
+}
+
+func requireFinalJSONLErrorFrame(t *testing.T, response *backend.CallResourceResponse) {
+	t.Helper()
+	require.Equal(t, "MBBF", string(response.Body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), response.Body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), response.Body[6]&multiBatchFinalFlag)
+	payloadLength := binary.BigEndian.Uint32(response.Body[8:12])
+	require.Equal(t, uint32(len(response.Body)-multiBatchFrameHeaderSize), payloadLength)
+	require.JSONEq(
+		t,
+		"{\"type\":\"error\",\"frame\":\"main\",\"message\":\""+multiBatchPluginErrorMessage+"\"}",
+		strings.TrimSpace(string(response.Body[multiBatchFrameHeaderSize:])),
+	)
 }
 
 func TestCompactMultiBatchJSONLDecoderKeepsSchemaAcrossBatches(t *testing.T) {
@@ -356,12 +543,12 @@ func TestCompactMultiBatchJSONLDecoderKeepsSchemaAcrossBatches(t *testing.T) {
 	require.Equal(t, []float64{1, 20, 3}, fieldValues[float64](merged.Frames[0].Fields[1]))
 	require.Equal(t, "api", merged.Frames[0].Fields[1].Config.DisplayNameFromDS)
 
-	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 1)}
-	require.NoError(t, sendCompactDataResponseFrame(context.Background(), sender, http.StatusOK, query, merged, true))
-	frame := receiveResponse(t, sender.responses)
-	require.Equal(t, "MBBF", string(frame.Body[:4]))
-	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), frame.Body[5])
-	require.Equal(t, byte(multiBatchFinalFlag), frame.Body[6]&multiBatchFinalFlag)
+	frame, err := buildCompactDataResponseFrame(context.Background(), query, merged, true)
+	require.NoError(t, err)
+	body := multiBatchFrameBytes(frame)
+	require.Equal(t, "MBBF", string(body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), body[6]&multiBatchFinalFlag)
 }
 
 func TestDecodeMultiBatchPayloadUsesZstdFrameContentSize(t *testing.T) {
@@ -398,7 +585,7 @@ func TestReadMultiBatchFrameRejectsOversizedPayloadLength(t *testing.T) {
 	require.ErrorContains(t, err, "exceeds limit")
 }
 
-func TestSendCompactDataResponseFrameFallsBackToJSONForCompactUnsupported(t *testing.T) {
+func TestBuildCompactDataResponseFrameFallsBackToJSONForCompactUnsupported(t *testing.T) {
 	query := compactMultiBatchQuery{
 		RefID:        "A",
 		Start:        time.Unix(0, 0).UTC(),
@@ -417,15 +604,14 @@ func TestSendCompactDataResponseFrameFallsBackToJSONForCompactUnsupported(t *tes
 		},
 		Status: backend.StatusOK,
 	}
-	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 1)}
-
-	require.NoError(t, sendCompactDataResponseFrame(context.Background(), sender, http.StatusOK, query, response, true))
-	frame := receiveResponse(t, sender.responses)
-	require.Equal(t, "MBBF", string(frame.Body[:4]))
-	require.Equal(t, byte(multiBatchPayloadTypeJSONL), frame.Body[5])
-	require.Equal(t, byte(multiBatchFinalFlag), frame.Body[6]&multiBatchFinalFlag)
-	require.Contains(t, string(frame.Body[multiBatchFrameHeaderSize:]), `"results"`)
-	require.Contains(t, string(frame.Body[multiBatchFrameHeaderSize:]), `"A"`)
+	frame, err := buildCompactDataResponseFrame(context.Background(), query, response, true)
+	require.NoError(t, err)
+	body := multiBatchFrameBytes(frame)
+	require.Equal(t, "MBBF", string(body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), body[6]&multiBatchFinalFlag)
+	require.Contains(t, string(body[multiBatchFrameHeaderSize:]), `"results"`)
+	require.Contains(t, string(body[multiBatchFrameHeaderSize:]), `"A"`)
 }
 
 func TestCompactMultiBatchPayloadDecoderTreatsPlainNonOKPayloadAsError(t *testing.T) {
@@ -437,13 +623,13 @@ func TestCompactMultiBatchPayloadDecoderTreatsPlainNonOKPayloadAsError(t *testin
 	require.Equal(t, backend.Status(http.StatusTooManyRequests), response.Status)
 	require.ErrorContains(t, response.Error, "local_rate_limited")
 
-	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 1)}
-	require.NoError(t, sendCompactDataResponseFrame(context.Background(), sender, http.StatusTooManyRequests, query, response, true))
-	frame := receiveResponse(t, sender.responses)
-	require.Equal(t, "MBBF", string(frame.Body[:4]))
-	require.Equal(t, byte(multiBatchPayloadTypeJSONL), frame.Body[5])
-	require.Equal(t, byte(multiBatchFinalFlag), frame.Body[6]&multiBatchFinalFlag)
-	require.Contains(t, string(frame.Body[multiBatchFrameHeaderSize:]), "local_rate_limited")
+	frame, err := buildCompactDataResponseFrame(context.Background(), query, response, true)
+	require.NoError(t, err)
+	body := multiBatchFrameBytes(frame)
+	require.Equal(t, "MBBF", string(body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), body[6]&multiBatchFinalFlag)
+	require.Contains(t, string(body[multiBatchFrameHeaderSize:]), "local_rate_limited")
 }
 
 func TestCompactMultiBatchPayloadDecoderTreatsJSONErrorObjectAsError(t *testing.T) {
@@ -456,7 +642,7 @@ func TestCompactMultiBatchPayloadDecoderTreatsJSONErrorObjectAsError(t *testing.
 	require.ErrorContains(t, response.Error, "401: Unauthorized")
 }
 
-func TestSendCompactDataResponseFrameKeepsNoDataWithNoticesAsNoData(t *testing.T) {
+func TestBuildCompactDataResponseFrameKeepsNoDataWithNoticesAsNoData(t *testing.T) {
 	query := compactMultiBatchQuery{
 		RefID:        "A",
 		Start:        time.Unix(0, 0).UTC(),
@@ -475,15 +661,14 @@ func TestSendCompactDataResponseFrameKeepsNoDataWithNoticesAsNoData(t *testing.T
 		Frames: data.Frames{noDataFrame},
 		Status: backend.StatusOK,
 	}
-	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 1)}
-
-	require.NoError(t, sendCompactDataResponseFrame(context.Background(), sender, http.StatusOK, query, response, true))
-	frame := receiveResponse(t, sender.responses)
-	require.Equal(t, "MBBF", string(frame.Body[:4]))
-	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), frame.Body[5])
-	require.Equal(t, byte(multiBatchFinalFlag), frame.Body[6]&multiBatchFinalFlag)
-	require.NotContains(t, strings.ToValidUTF8(string(frame.Body), ""), "query response does not satisfy compact-v1")
-	require.NotContains(t, strings.ToValidUTF8(string(frame.Body), ""), "no_data_notices")
+	frame, err := buildCompactDataResponseFrame(context.Background(), query, response, true)
+	require.NoError(t, err)
+	body := multiBatchFrameBytes(frame)
+	require.Equal(t, "MBBF", string(body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), body[6]&multiBatchFinalFlag)
+	require.NotContains(t, strings.ToValidUTF8(string(body), ""), "query response does not satisfy compact-v1")
+	require.NotContains(t, strings.ToValidUTF8(string(body), ""), "no_data_notices")
 }
 
 func TestMergeDataResponsesUsesFinalBatchPrecedence(t *testing.T) {

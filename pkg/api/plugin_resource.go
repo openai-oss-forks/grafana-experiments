@@ -118,6 +118,14 @@ func (hs *HTTPServer) makePluginResourceRequest(w http.ResponseWriter, req *http
 }
 
 func handleCallResourceError(err error, reqCtx *contextmodel.ReqContext) {
+	// A streaming plugin owns the response format after its first write.
+	// Writing Grafana's generic JSON error here would append a second,
+	// incompatible body to an already-started response.
+	if reqCtx.Resp.Written() {
+		reqCtx.Logger.Error("Failed to call resource after response started", "error", err)
+		return
+	}
+
 	var maxBytesErr *http.MaxBytesError
 	if errors.As(err, &maxBytesErr) {
 		resp := response.Error(http.StatusRequestEntityTooLarge, "Request body too large", err)

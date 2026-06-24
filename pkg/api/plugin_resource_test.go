@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -212,6 +213,49 @@ func TestIntegrationCallResource(t *testing.T) {
 		require.Equal(t, responseBody.Message, "Failed to call resource")
 		require.NoError(t, resp.Body.Close())
 		require.Equal(t, 500, resp.StatusCode)
+	})
+
+	t.Run("Test error after response start does not append JSON", func(t *testing.T) {
+		startedPC, err := backend.HandlerFromMiddlewares(&pluginfakes.FakePluginClient{
+			CallResourceHandlerFunc: backend.CallResourceHandlerFunc(func(ctx context.Context,
+				req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+				err := sender.Send(&backend.CallResourceResponse{
+					Status: http.StatusOK,
+					Headers: http.Header{
+						"Content-Type": {"application/com.openai.prometheus.multibatch; version=1"},
+					},
+					Body: []byte("MBRH"),
+				})
+				require.NoError(t, err)
+				return errors.New("something went wrong after response start")
+			}),
+		}, middlewares...)
+		require.NoError(t, err)
+
+		startedSrv := SetupAPITestServer(t, func(hs *HTTPServer) {
+			hs.Cfg = cfg
+			hs.pluginContextProvider = pcp
+			hs.QuotaService = quotatest.New(false, nil)
+			hs.pluginStore = testCtx.PluginStore
+			hs.pluginClient = startedPC
+			hs.log = log.New("test")
+		})
+
+		req := startedSrv.NewGetRequest("/api/plugins/grafana-testdata-datasource/resources/scenarios")
+		webtest.RequestWithSignedInUser(req, &user.SignedInUser{UserID: 1, OrgID: 1, Permissions: map[int64]map[string][]string{
+			1: accesscontrol.GroupScopesByActionContext(context.Background(), []accesscontrol.Permission{
+				{Action: pluginaccesscontrol.ActionAppAccess, Scope: pluginaccesscontrol.ScopeProvider.GetResourceAllScope()},
+			}),
+		}})
+		resp, err := startedSrv.SendJSON(req)
+		require.NoError(t, err)
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, "MBRH", string(bodyBytes))
+		require.NotContains(t, string(bodyBytes), "Failed to call resource")
+		require.NoError(t, resp.Body.Close())
+		require.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 
 	t.Run("Test oversized request body returns 413", func(t *testing.T) {

@@ -71,12 +71,21 @@ func isCompactMultiBatchRequest(req *backend.CallResourceRequest) bool {
 	return req.GetHTTPHeaders().Get(compact.Header) == compact.Version
 }
 
-func (r *Resource) executeCompactMultiBatchStream(ctx context.Context, req *backend.CallResourceRequest, resp *http.Response, sender backend.CallResourceResponseSender) error {
-	query, err := compactMultiBatchQueryFromRequest(req)
-	if err != nil {
-		return err
-	}
+func (r *Resource) executeCompactMultiBatchStream(
+	req *backend.CallResourceRequest,
+	resp *http.Response,
+	query compactMultiBatchQuery,
+	encoder *multiBatchResponseEncoder,
+) error {
+	return encoder.finish(streamCompactMultiBatchResponse(req, resp, query, encoder))
+}
 
+func streamCompactMultiBatchResponse(
+	req *backend.CallResourceRequest,
+	resp *http.Response,
+	query compactMultiBatchQuery,
+	encoder *multiBatchResponseEncoder,
+) error {
 	upstreamIsMultiBatch := isMultiBatchContentType(resp.Header.Get("Content-Type"))
 	reader := bufio.NewReader(resp.Body)
 	if upstreamIsMultiBatch {
@@ -85,8 +94,7 @@ func (r *Resource) executeCompactMultiBatchStream(ctx context.Context, req *back
 		}
 	}
 
-	headers := compactMultiBatchResponseHeaders(resp.Header)
-	if err := sender.Send(&backend.CallResourceResponse{Status: resp.StatusCode, Headers: headers, Body: multiBatchResponseHeader()}); err != nil {
+	if err := encoder.start(); err != nil {
 		return err
 	}
 
@@ -102,7 +110,11 @@ func (r *Resource) executeCompactMultiBatchStream(ctx context.Context, req *back
 			return err
 		}
 		accumulated = mergeDataResponses(accumulated, batch)
-		return sendCompactDataResponseFrame(ctx, sender, resp.StatusCode, query, accumulated, true)
+		frame, err := buildCompactDataResponseFrame(encoder.ctx, query, accumulated, true)
+		if err != nil {
+			return err
+		}
+		return encoder.writeFrame(frame)
 	}
 
 	for {
@@ -123,7 +135,11 @@ func (r *Resource) executeCompactMultiBatchStream(ctx context.Context, req *back
 		}
 		accumulated = mergeDataResponses(accumulated, batch)
 		isFinal := frame.flags&multiBatchFinalFlag != 0
-		if err := sendCompactDataResponseFrame(ctx, sender, resp.StatusCode, query, accumulated, isFinal); err != nil {
+		responseFrame, err := buildCompactDataResponseFrame(encoder.ctx, query, accumulated, isFinal)
+		if err != nil {
+			return err
+		}
+		if err := encoder.writeFrame(responseFrame); err != nil {
 			return err
 		}
 		if isFinal {
@@ -143,48 +159,52 @@ func compactMultiBatchResponseHeaders(upstream http.Header) http.Header {
 	return headers
 }
 
-func sendCompactDataResponseFrame(ctx context.Context, sender backend.CallResourceResponseSender, statusCode int, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) error {
+func buildCompactDataResponseFrame(ctx context.Context, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) (multiBatchFrame, error) {
 	if response.Error != nil {
-		return sendJSONDataResponseFrame(sender, statusCode, query, response, isFinal)
+		return buildJSONDataResponseFrame(query, response, isFinal)
 	}
 
 	compactResponse, err := encodeCompactMultiBatchResponse(ctx, query, response)
 	if err != nil {
 		if !errors.Is(err, compact.ErrUnsupported) {
-			return err
+			return multiBatchFrame{}, err
 		}
-		return sendJSONDataResponseFrame(sender, statusCode, query, response, isFinal)
+		return buildJSONDataResponseFrame(query, response, isFinal)
 	}
 
 	var payload bytes.Buffer
 	if err := compact.WriteQueryDataResponse(ctx, compactResponse, &payload); err != nil {
-		return err
+		return multiBatchFrame{}, err
 	}
 
 	flags := byte(0)
 	if isFinal {
 		flags = multiBatchFinalFlag
 	}
-	return sender.Send(&backend.CallResourceResponse{
-		Status: statusCode,
-		Body:   multiBatchPayloadFrame(multiBatchPayloadTypeCompactV1, flags, multiBatchPayloadEncodingIdentity, payload.Bytes()),
-	})
+	return multiBatchFrame{
+		payloadType:     multiBatchPayloadTypeCompactV1,
+		flags:           flags,
+		payloadEncoding: multiBatchPayloadEncodingIdentity,
+		payload:         payload.Bytes(),
+	}, nil
 }
 
-func sendJSONDataResponseFrame(sender backend.CallResourceResponseSender, statusCode int, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) error {
+func buildJSONDataResponseFrame(query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) (multiBatchFrame, error) {
 	payload, err := json.Marshal(&backend.QueryDataResponse{Responses: backend.Responses{query.RefID: response}})
 	if err != nil {
-		return err
+		return multiBatchFrame{}, err
 	}
 
 	flags := byte(0)
 	if isFinal {
 		flags = multiBatchFinalFlag
 	}
-	return sender.Send(&backend.CallResourceResponse{
-		Status: statusCode,
-		Body:   multiBatchPayloadFrame(multiBatchPayloadTypeJSONL, flags, multiBatchPayloadEncodingIdentity, payload),
-	})
+	return multiBatchFrame{
+		payloadType:     multiBatchPayloadTypeJSONL,
+		flags:           flags,
+		payloadEncoding: multiBatchPayloadEncodingIdentity,
+		payload:         payload,
+	}, nil
 }
 
 func encodeCompactMultiBatchResponse(ctx context.Context, query compactMultiBatchQuery, response backend.DataResponse) (*compact.QueryDataResponse, error) {
@@ -239,6 +259,33 @@ func multiBatchPayloadFrame(payloadType byte, flags byte, payloadEncoding byte, 
 	binary.BigEndian.PutUint32(frame[8:12], uint32(len(payload)))
 	copy(frame[multiBatchFrameHeaderSize:], payload)
 	return frame
+}
+
+func multiBatchFrameBytes(frame multiBatchFrame) []byte {
+	return multiBatchPayloadFrame(frame.payloadType, frame.flags, frame.payloadEncoding, frame.payload)
+}
+
+func isSupportedMultiBatchPayloadType(payloadType byte) bool {
+	return payloadType == multiBatchPayloadTypeJSONL || payloadType == multiBatchPayloadTypeCompactV1
+}
+
+func multiBatchErrorFrame(message string) multiBatchFrame {
+	payload, _ := json.Marshal(struct {
+		Type    string `json:"type"`
+		Frame   string `json:"frame"`
+		Message string `json:"message"`
+	}{
+		Type:    "error",
+		Frame:   "main",
+		Message: message,
+	})
+	payload = append(payload, '\n')
+	return multiBatchFrame{
+		payloadType:     multiBatchPayloadTypeJSONL,
+		flags:           multiBatchFinalFlag,
+		payloadEncoding: multiBatchPayloadEncodingIdentity,
+		payload:         payload,
+	}
 }
 
 func readMultiBatchResponseHeader(reader io.Reader) error {
