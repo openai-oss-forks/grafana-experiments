@@ -400,6 +400,37 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[0].error?.message).toBe('401: Unauthorized');
   });
 
+  it('uses a protocol-neutral fallback for generic Prometheus JSON error payloads', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(JSON.stringify({ error: {} }), FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: false,
+      status: 500,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].error?.message).toBe('Prometheus response returned an error');
+  });
+
   it('decodes regular JSON query response payload frames through the standard response decoder', async () => {
     const target: PromQuery = { expr: 'up', refId: 'A' };
     const request = requestForTarget(target);
