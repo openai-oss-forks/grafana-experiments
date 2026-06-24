@@ -328,6 +328,36 @@ describe('uPlot compact X host', () => {
     expect(retainedPath).toHaveBeenCalledTimes(retainedCalls);
     plot.destroy();
   });
+
+  test('keeps legacy ordinal render windows in ordinal index space', async () => {
+    const timestamps = Array.from({ length: 29 }, (_, index) => 1_779_692_400_000 + index * 86_400_000);
+    const target = document.createElement('div');
+    const plot = new uPlot(
+      {
+        width: 300,
+        height: 200,
+        series: [{}, { scale: 'y', stroke: '#f00' }],
+        axes: [],
+        scales: { x: { time: false, distr: 2 }, y: { auto: true } },
+        legend: { show: false },
+        cursor: { show: true },
+      },
+      [timestamps, timestamps.map((_timestamp, index) => index)],
+      target
+    );
+    await flushCommit();
+
+    expect(plot.scales.x).toMatchObject({ min: 0, max: 28 });
+    expect(plot.getX?.(28)).toBe(timestamps[28]);
+    expect(plot.valToIdx(28)).toBe(28);
+    expect(plot.series[0].idxs).toEqual([0, 28]);
+    expect(plot.series[1].idxs).toEqual([0, 28]);
+
+    plot.setCursor({ left: plot.valToPos(28, 'x'), top: 100 }, true);
+    expect(plot.cursor.idx).toBe(28);
+    expect(target.querySelector('.u-cursor-pt')).not.toHaveClass('u-off');
+    plot.destroy();
+  });
 });
 
 function createOptions(withYScale = false): uPlot.Options {

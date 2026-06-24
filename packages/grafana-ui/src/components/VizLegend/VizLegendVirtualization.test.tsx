@@ -27,11 +27,35 @@ describe('high-cardinality visualization UI', () => {
     const toolbars = screen.getAllByRole('toolbar');
     expect(toolbars).toHaveLength(2);
     expect(toolbars[0]).toHaveAttribute('aria-orientation', 'horizontal');
-    expect(toolbars[0].parentElement).toHaveStyle({ flex: '1 1 0', minWidth: 0 });
-    expect(toolbars[1].parentElement).toHaveStyle({ flex: '1 1 0', minWidth: 0 });
+    expect(toolbars[0].parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
+    expect(toolbars[1].parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
     expect(source.getItem).toHaveBeenCalled();
     expect(source.getItem.mock.calls.length).toBeLessThan(50);
     expect(source.getItem.mock.calls[0][0]).toBe(0);
+  });
+
+  test('keeps materialized bottom indexed legends bounded so long labels can wrap', () => {
+    const source = createItemSource(40);
+    source.getItem.mockImplementation((index) => ({
+      label: `series-${index}-${'x'.repeat(200)}`,
+      yAxis: index % 2 === 0 ? 1 : 2,
+    }));
+
+    render(<VizLegendList items={[]} itemSource={source} placement="bottom" />);
+
+    for (const [index, name] of [source.getItem(0).label, source.getItem(1).label].entries()) {
+      const button = screen.getByRole('button', { name });
+      const item = button.closest('li');
+      const list = item?.closest('ul');
+      expect(button).toHaveStyle({ overflowWrap: 'anywhere', whiteSpace: 'normal' });
+      expect(item).toHaveStyle({ display: 'inline-block', maxWidth: '100%', verticalAlign: 'top' });
+      expect(list).toHaveStyle({ maxWidth: '100%', minWidth: 0, width: 'fit-content' });
+      if (index === 1) {
+        expect(list).toHaveStyle({ textAlign: 'right' });
+        expect(list?.parentElement).toHaveStyle({ flexBasis: 0, justifyContent: 'flex-end' });
+      }
+      expect(list?.parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
+    }
   });
 
   test('sorts indexed tables without materializing offscreen items', () => {

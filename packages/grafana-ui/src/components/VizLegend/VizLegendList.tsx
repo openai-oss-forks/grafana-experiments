@@ -145,11 +145,7 @@ function IndexedVizLegendList<T>({
     return (
       <div className={cx(styles.bottomWrapper, className)}>
         {axisSources[0].length > 0 && (
-          <div
-            className={cx(styles.section, {
-              [styles.virtualSection]: axisSources[0].length > VIRTUALIZE_THRESHOLD,
-            })}
-          >
+          <div className={cx(styles.section, styles.boundedSection)}>
             <IndexedVizLegendGroup<T>
               itemSource={axisSources[0]}
               itemRenderer={(item, index) => renderItem(axisSources[0], item, index)}
@@ -158,15 +154,12 @@ function IndexedVizLegendList<T>({
           </div>
         )}
         {axisSources[1].length > 0 && (
-          <div
-            className={cx(styles.section, styles.sectionRight, {
-              [styles.virtualSection]: axisSources[1].length > VIRTUALIZE_THRESHOLD,
-            })}
-          >
+          <div className={cx(styles.section, styles.sectionRight, styles.boundedSection, styles.boundedSectionRight)}>
             <IndexedVizLegendGroup<T>
               itemSource={axisSources[1]}
               itemRenderer={(item, index) => renderItem(axisSources[1], item, index)}
               horizontal
+              alignRight
             />
           </div>
         )}
@@ -205,10 +198,12 @@ function IndexedVizLegendList<T>({
 }
 
 function IndexedVizLegendGroup<T>({
+  alignRight = false,
   horizontal,
   itemRenderer,
   itemSource,
 }: {
+  alignRight?: boolean;
   horizontal: boolean;
   itemRenderer: NonNullable<Props<T>['itemRenderer']>;
   itemSource: VizLegendItemSource<T>;
@@ -229,11 +224,13 @@ function IndexedVizLegendGroup<T>({
   for (let index = 0; index < itemSource.length; index++) {
     items.push(
       <li className={styles.indexedBottomListItem} key={itemSource.getItemKey(index)}>
-        <span className={styles.itemBottom}>{itemRenderer(itemSource.getItem(index), index)}</span>
+        <span className={cx(styles.itemBottom, styles.indexedItemBottom)}>
+          {itemRenderer(itemSource.getItem(index), index)}
+        </span>
       </li>
     );
   }
-  return <ul className={styles.indexedBottomList}>{items}</ul>;
+  return <ul className={cx(styles.indexedBottomList, alignRight && styles.indexedBottomListRight)}>{items}</ul>;
 }
 
 function VirtualizedVizLegendList<T>({
@@ -351,8 +348,9 @@ const getStyles = (theme: GrafanaTheme2) => {
     section: css({
       display: 'flex',
     }),
-    virtualSection: css({
+    boundedSection: css({
       flex: '1 1 0',
+      maxWidth: '100%',
       minWidth: 0,
     }),
     sectionRight: css({
@@ -360,12 +358,34 @@ const getStyles = (theme: GrafanaTheme2) => {
       flexGrow: 1,
       flexBasis: '50%',
     }),
+    boundedSectionRight: css({ flexBasis: 0 }),
     indexedBottomList: css({
       listStyleType: 'none',
       margin: 0,
+      maxWidth: '100%',
+      minWidth: 0,
       padding: 0,
+      width: 'fit-content',
     }),
-    indexedBottomListItem: css({ display: 'inline-block' }),
+    indexedBottomListRight: css({ textAlign: 'right' }),
+    indexedBottomListItem: css({
+      display: 'inline-block',
+      maxWidth: '100%',
+      verticalAlign: 'top',
+    }),
+    indexedItemBottom: css({
+      maxWidth: '100%',
+      minWidth: 0,
+      whiteSpace: 'normal',
+      '& > *': {
+        maxWidth: '100%',
+        minWidth: 0,
+      },
+      '& button': {
+        overflowWrap: 'anywhere',
+        whiteSpace: 'normal',
+      },
+    }),
     virtualScroll: css({
       height: '100%',
       minHeight: VIRTUAL_ROW_HEIGHT * 3,

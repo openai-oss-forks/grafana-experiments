@@ -199,7 +199,7 @@ function createGraphProperty(path: (typeof COMPACT_GRAPH_PROPERTIES)[number]): F
   };
 }
 
-function createCompactTickFilter(spacing: number): Axis.Filter | undefined {
+export function createCompactTickFilter(spacing: number): Axis.Filter | undefined {
   if (spacing === 0) {
     return undefined;
   }

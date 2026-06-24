@@ -321,7 +321,11 @@ export function prepareCompactPlotConfigBuilder(options: {
   return builder;
 }
 
-function formatCompactBarTimeTicks(splits: number[], timeZone: string, increment: number): string[] {
+export function formatCompactBarTimeTicks(
+  splits: Array<number | null>,
+  timeZone: string,
+  increment: number
+): Array<string | null> {
   const intervals = systemDateFormats.interval;
   let format = intervals.year;
   if (increment < timeUnitSize.second) {
@@ -337,7 +341,7 @@ function formatCompactBarTimeTicks(splits: number[], timeZone: string, increment
   } else if (increment < timeUnitSize.year) {
     format = intervals.month;
   }
-  return splits.map((value) => dateTimeFormat(value, { format, timeZone }));
+  return splits.map((value) => (value == null ? null : dateTimeFormat(value, { format, timeZone })));
 }
 
 function preparePlotConfigBuilderCore(

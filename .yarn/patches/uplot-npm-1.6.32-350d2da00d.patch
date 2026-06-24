@@ -54,12 +54,13 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  	const drawOrderMap = {
  		axes: drawAxesGrid,
  		series: drawSeries,
-@@ -3826,9 +3835,43 @@ function uPlot(opts, data, then) {
+@@ -3826,9 +3835,44 @@ function uPlot(opts, data, then) {
  
  	let data0 = null;
  
 +	const xAt = index => compactSource == null ? data0[index] : compactSource.xAt(index);
-+	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data0, lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data[0], lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const scaleXAt = index => compactSource == null ? data[0][index] : compactSource.xAt(index);
 +
 +	function validateCompactSource(source) {
 +		if (source == null || source.kind != "compact-v1" || !(source.buffer instanceof ArrayBuffer) ||
@@ -162,10 +163,10 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  						if (i1 - i0 > 1) {
  							// closest indices can be outside of view
 -							if (data[0][i0] < wsc.min)
-+							if (xAt(i0) < wsc.min)
++							if (scaleXAt(i0) < wsc.min)
  								i0++;
 -							if (data[0][i1] > wsc.max)
-+							if (xAt(i1) > wsc.max)
++							if (scaleXAt(i1) > wsc.max)
  								i1--;
  						}
  
@@ -363,7 +364,7 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
 -				idx = cursor.idx = closestIdx(valAtPosX, data[0], i0, i1);
 -				xPos = valToPosX(data[0][idx], scaleX, xDim, 0);
 +				idx = cursor.idx = closestX(valAtPosX, i0, i1);
-+				xPos = valToPosX(xAt(idx), scaleX, xDim, 0);
++				xPos = valToPosX(scaleXAt(idx), scaleX, xDim, 0);
  			}
  
  			// closest pt values
@@ -629,12 +630,13 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  	const drawOrderMap = {
  		axes: drawAxesGrid,
  		series: drawSeries,
-@@ -3824,9 +3833,43 @@ function uPlot(opts, data, then) {
+@@ -3824,9 +3833,44 @@ function uPlot(opts, data, then) {
  
  	let data0 = null;
  
 +	const xAt = index => compactSource == null ? data0[index] : compactSource.xAt(index);
-+	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data0, lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data[0], lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const scaleXAt = index => compactSource == null ? data[0][index] : compactSource.xAt(index);
 +
 +	function validateCompactSource(source) {
 +		if (source == null || source.kind != "compact-v1" || !(source.buffer instanceof ArrayBuffer) ||
@@ -737,10 +739,10 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  						if (i1 - i0 > 1) {
  							// closest indices can be outside of view
 -							if (data[0][i0] < wsc.min)
-+							if (xAt(i0) < wsc.min)
++							if (scaleXAt(i0) < wsc.min)
  								i0++;
 -							if (data[0][i1] > wsc.max)
-+							if (xAt(i1) > wsc.max)
++							if (scaleXAt(i1) > wsc.max)
  								i1--;
  						}
  
@@ -938,7 +940,7 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
 -				idx = cursor.idx = closestIdx(valAtPosX, data[0], i0, i1);
 -				xPos = valToPosX(data[0][idx], scaleX, xDim, 0);
 +				idx = cursor.idx = closestX(valAtPosX, i0, i1);
-+				xPos = valToPosX(xAt(idx), scaleX, xDim, 0);
++				xPos = valToPosX(scaleXAt(idx), scaleX, xDim, 0);
  			}
  
  			// closest pt values
