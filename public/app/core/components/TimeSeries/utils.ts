@@ -203,6 +203,7 @@ export function prepareCompactPlotConfigBuilder(options: {
 
   const filterTicks: uPlot.Axis.Filter | undefined =
     timeZones.length > 1 ? (_u, splits) => splits.map((value, index) => (index < 2 ? null : value)) : undefined;
+  const groupedBarFilter: uPlot.Axis.Filter | undefined = groupedBars ? (_plot, splits) => splits : undefined;
   for (const timeZone of timeZones) {
     builder.addAxis({
       scaleKey: 'x',
@@ -212,17 +213,21 @@ export function prepareCompactPlotConfigBuilder(options: {
       timeZone,
       theme,
       grid: { show: timeZone === timeZones[0] },
-      filter: filterTicks,
       splits: groupedBars
         ? (plot, _axisIndex, minimum, maximum, _increment, space) => {
             const dimension = (plot.scales.x.ori === 1 ? plot.bbox.height : plot.bbox.width) / uPlot.pxRatio;
             return compactController.groupedBarSplits(minimum, maximum, dimension / Math.max(1, space));
           }
         : undefined,
+      formatValue: groupedBars
+        ? (value) =>
+            formatCompactBarTimeTicks([Number(value)], timeZone, compactController.groupedBarIncrement())[0] ?? ''
+        : undefined,
       values: groupedBars
         ? (_plot, splits) => formatCompactBarTimeTicks(splits, timeZone, compactController.groupedBarIncrement())
         : undefined,
       ...xAxisConfig,
+      filter: xAxisConfig?.filter ?? filterTicks ?? groupedBarFilter,
     });
   }
 

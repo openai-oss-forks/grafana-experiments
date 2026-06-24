@@ -335,6 +335,59 @@ describe('PanelEditor', () => {
       await waitFor(() => expectLatestFormat('compact-v1'));
     });
 
+    it('keeps replacement data loading across compact format changes', async () => {
+      pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries: createCompactSeries(),
+        },
+      });
+      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({
+        key: 'panel-1',
+        pluginId: 'timeseries',
+        fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] },
+        $data: queryRunner,
+      });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-1h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+      deactivate = activateFullSceneTree(dashboard);
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'barchart', skipDataQuery: false }));
+      await panel.changePluginType('barchart');
+      runQueries.mockClear();
+      panel.onOptionsChange({ xField: 'category' });
+
+      expect(queryRunner.state.data).toMatchObject({
+        state: LoadingState.Loading,
+        compactSeries: undefined,
+      });
+      expect(runQueries).toHaveBeenCalledTimes(1);
+
+      queryRunner.setState({
+        data: {
+          ...queryRunner.state.data!,
+          state: LoadingState.Loading,
+          request: { requestId: 'in-flight-full' } as DataQueryRequest,
+        },
+      });
+      runQueries.mockClear();
+      panel.onOptionsChange({ xField: undefined });
+
+      expect(queryRunner.state.data?.state).toBe(LoadingState.Loading);
+      expect(runQueries).toHaveBeenCalledTimes(1);
+    });
+
     it('does not unwrap an existing data transformer when leaving panel edit', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });

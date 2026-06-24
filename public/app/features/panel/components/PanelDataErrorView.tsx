@@ -5,6 +5,7 @@ import {
   FieldType,
   getPanelDataSummary,
   GrafanaTheme2,
+  LoadingState,
   PanelData,
   PanelDataSummary,
   PanelPluginVisualizationSuggestion,
@@ -103,7 +104,7 @@ export function PanelDataErrorView(props: PanelDataErrorViewProps) {
   const showEmptyState = Boolean(
     config.featureToggles.newVizSuggestions && context.app === CoreApp.PanelEditor && noQueryConfigured && noData
   );
-  const message = getMessageFor(props, dataSummary, showEmptyState);
+  const message = getMessageFor(props, dataSummary, showEmptyState, context.app === CoreApp.PanelEditor);
 
   return (
     <div className={styles.wrapper}>
@@ -139,13 +140,17 @@ export function PanelDataErrorView(props: PanelDataErrorViewProps) {
 function getMessageFor(
   { data, fieldConfig, message, needsNumberField, needsTimeField, needsStringField }: PanelDataErrorViewProps,
   dataSummary: PanelDataSummary,
-  showEmptyState: boolean
+  showEmptyState: boolean,
+  isPanelEditor: boolean
 ): string {
+  const noData = !hasData(data);
+  if (isPanelEditor && data.state === LoadingState.Loading && noData) {
+    return t('panel.panel-data-error-view.loading', 'Loading...');
+  }
+
   if (message) {
     return message;
   }
-
-  const noData = !hasData(data);
 
   if (showEmptyState) {
     return t(

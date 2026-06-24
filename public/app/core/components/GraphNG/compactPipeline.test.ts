@@ -133,6 +133,7 @@ describe('compact binary rendering pipeline', () => {
       document.createElement('div')
     );
     await flushCommit();
+    expect(plot.axes[0].filter?.(plot, [1000, 2000, 3000], 0, 0, 1000)).toEqual([1000, 2000, 3000]);
     const positions = [1000, 2000, 3000].map((value) => plot.valToPos(value, 'x'));
     expect(Math.abs(positions[1] - positions[0])).toBeCloseTo(Math.abs(positions[2] - positions[1]));
     plot.destroy();

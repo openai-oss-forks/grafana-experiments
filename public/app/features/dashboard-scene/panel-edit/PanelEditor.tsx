@@ -172,11 +172,19 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         return;
       }
 
+      const replacementData =
+        currentData && (requestIsInFlight || (requiredFormat === 'full' && currentData.compactSeries !== undefined))
+          ? {
+              ...currentData,
+              state: LoadingState.Loading,
+              compactSeries: requiredFormat === 'full' ? undefined : currentData.compactSeries,
+            }
+          : undefined;
       pendingFormat = requiredFormat;
-      if (requiredFormat === 'full' && currentData?.compactSeries !== undefined) {
-        currentRunner.setState({ data: { ...currentData, compactSeries: undefined } });
-      }
       currentRunner.cancelQuery();
+      if (replacementData) {
+        currentRunner.setState({ data: replacementData });
+      }
       currentRunner.runQueries();
     };
 
