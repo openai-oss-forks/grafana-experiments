@@ -174,14 +174,12 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
 }
 
 export function createCompactRotationPadding(rotation: number, categoriesAreHorizontal = true): Padding | undefined {
+  if (rotation === 0) {
+    return undefined;
+  }
   if (!categoriesAreHorizontal) {
     const edgePadding = Math.ceil(UPLOT_AXIS_FONT_SIZE / 2);
     return [edgePadding, 0, edgePadding, 0];
-  }
-  if (rotation === 0) {
-    const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
-    const edgePadding = Math.ceil(labelWidth / 2);
-    return [0, edgePadding, 0, edgePadding];
   }
   const radians = (Math.abs(rotation) * Math.PI) / 180;
   const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;

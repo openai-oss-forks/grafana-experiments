@@ -1,13 +1,72 @@
-import { AxisPlacement } from '@grafana/schema';
+import { AxisPlacement, LegendDisplayMode } from '@grafana/schema';
+import { type VizLegendItemSource } from '@grafana/ui';
 
 import { CompactNativeRenderPlan } from '../GraphNG/compactNativePlan';
 
 import {
   getCompactLegendAxis,
+  getCompactLegendIdentity,
   getCompactLegendSortValue,
+  materializeCompactLegendItems,
   normalizeCompactLegendCalcs,
   toggleCompactLegendSeries,
 } from './CompactPlotLegend';
+
+it('does not read a legend item when the compact source is empty', () => {
+  const getItem = jest.fn();
+  const source = {
+    length: 0,
+    getItem,
+    getItemKey: jest.fn(),
+    getItemsForYAxis: () => ({ length: 0 }),
+  } as unknown as VizLegendItemSource<number>;
+
+  expect(getCompactLegendIdentity(source, LegendDisplayMode.List, 'bottom')).toBe(
+    JSON.stringify([LegendDisplayMode.List, 'bottom', 0, [0, 0], []])
+  );
+  expect(getItem).not.toHaveBeenCalled();
+});
+
+it('uses the standard list items when the compact legend can preserve the established layout', () => {
+  const source = {
+    length: 240,
+    getItem: () => ({ label: 'shared-name', yAxis: 1 }),
+    getItemKey: (index: number) => index,
+    getDisplayValues: (index: number) => [{ numeric: index, text: `value-${index}` }],
+  } as VizLegendItemSource<number>;
+
+  const items = materializeCompactLegendItems(source, LegendDisplayMode.List, 'bottom');
+  expect(items).toHaveLength(240);
+  expect(items?.[0].getItemKey?.()).toBe('0');
+  expect(items?.[1].getItemKey?.()).toBe('1');
+  expect(items?.[1].getDisplayValues?.()).toEqual([{ numeric: 1, text: 'value-1' }]);
+  expect(materializeCompactLegendItems({ ...source, length: 501 }, LegendDisplayMode.List, 'bottom')).toHaveLength(500);
+  expect(
+    materializeCompactLegendItems({ ...source, length: 501 }, LegendDisplayMode.List, 'bottom', 1_000)
+  ).toHaveLength(501);
+  expect(materializeCompactLegendItems(source, LegendDisplayMode.Table, 'bottom')).toBeUndefined();
+});
+
+it('materializes a bounded batch from both bottom-axis groups', () => {
+  const makeAxisSource = (axis: 1 | 2) =>
+    ({
+      length: 501,
+      getItem: (index: number) => ({ label: `${axis}-${index}`, yAxis: axis }),
+      getItemKey: (index: number) => `${axis}-${index}`,
+    }) as VizLegendItemSource<number>;
+  const axes = { 1: makeAxisSource(1), 2: makeAxisSource(2) };
+  const source = {
+    length: 1_002,
+    getItem: () => ({ label: 'unused', yAxis: 1 }),
+    getItemKey: (index: number) => index,
+    getItemsForYAxis: (axis: 1 | 2) => axes[axis],
+  } as VizLegendItemSource<number>;
+
+  const items = materializeCompactLegendItems(source, LegendDisplayMode.List, 'bottom');
+  expect(items).toHaveLength(1_000);
+  expect(items?.[0].label).toBe('1-0');
+  expect(items?.[500].label).toBe('2-0');
+});
 
 it('keeps remapped horizontal-bar value axes in the matching legend group', () => {
   expect(getCompactLegendAxis(AxisPlacement.Left)).toBe(1);

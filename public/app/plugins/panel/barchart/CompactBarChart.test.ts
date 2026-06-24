@@ -87,14 +87,8 @@ describe('compact standalone Bar chart', () => {
 
   it('reserves plot-edge space whenever tick labels are rotated', () => {
     const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
-    const edgePadding = Math.ceil(labelWidth / 2);
-    expect(createCompactRotationPadding(0)).toEqual([0, edgePadding, 0, edgePadding]);
-    expect(createCompactRotationPadding(0, false)).toEqual([
-      Math.ceil(UPLOT_AXIS_FONT_SIZE / 2),
-      0,
-      Math.ceil(UPLOT_AXIS_FONT_SIZE / 2),
-      0,
-    ]);
+    expect(createCompactRotationPadding(0)).toBeUndefined();
+    expect(createCompactRotationPadding(0, false)).toBeUndefined();
     const crossPadding = Math.ceil((Math.sin(Math.PI / 4) * UPLOT_AXIS_FONT_SIZE) / 2);
     expect(createCompactRotationPadding(45)).toEqual([
       UPLOT_AXIS_FONT_SIZE,

@@ -1,9 +1,10 @@
 import { css } from '@emotion/css';
-import { type MouseEvent, useCallback, useMemo, useState } from 'react';
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { DisplayValue, fieldReducers, isReducerID } from '@grafana/data';
-import { AxisPlacement, VizLegendOptions } from '@grafana/schema';
-import { useStyles2, VizLayout, VizLegend, VizLegendItem, VizLegendItemSource } from '@grafana/ui';
+import { Trans } from '@grafana/i18n';
+import { AxisPlacement, LegendDisplayMode, type LegendPlacement, VizLegendOptions } from '@grafana/schema';
+import { Button, useStyles2, VizLayout, VizLegend, VizLegendItem, VizLegendItemSource } from '@grafana/ui';
 import { getCompactRenderController, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { CompactNativeRenderPlan, CompactNativeSeriesFlag } from '../GraphNG/compactNativePlan';
@@ -12,6 +13,8 @@ interface CompactPlotLegendProps extends VizLegendOptions {
   config: UPlotConfigBuilder;
   plan: CompactNativeRenderPlan;
 }
+
+const MATERIALIZED_LIST_LEGEND_BATCH_SIZE = 500;
 
 export function CompactPlotLegend({
   config,
@@ -37,6 +40,29 @@ export function CompactPlotLegend({
     [plan]
   );
   const source = useMemo(() => createLegendSource(config, plan, normalizedCalcs), [config, normalizedCalcs, plan]);
+  const legendIdentity = useMemo(
+    () => getCompactLegendIdentity(source, displayMode, placement),
+    [displayMode, placement, source]
+  );
+  const [materializedListState, setMaterializedListState] = useState({
+    identity: legendIdentity,
+    limit: MATERIALIZED_LIST_LEGEND_BATCH_SIZE,
+  });
+  const materializedListLimit =
+    materializedListState.identity === legendIdentity
+      ? materializedListState.limit
+      : MATERIALIZED_LIST_LEGEND_BATCH_SIZE;
+  const items = materializeCompactLegendItems(source, displayMode, placement, materializedListLimit);
+  const materializeNextBatch = useCallback(() => {
+    setMaterializedListState((state) => ({
+      identity: legendIdentity,
+      limit: Math.min(
+        source.length,
+        (state.identity === legendIdentity ? state.limit : MATERIALIZED_LIST_LEGEND_BATCH_SIZE) +
+          MATERIALIZED_LIST_LEGEND_BATCH_SIZE
+      ),
+    }));
+  }, [legendIdentity, source.length]);
   if (source.length === 0) {
     return null;
   }
@@ -45,8 +71,8 @@ export function CompactPlotLegend({
     <VizLayout.Legend placement={placement} {...legendProps}>
       <VizLegend
         placement={placement}
-        items={[]}
-        itemSource={source}
+        items={items ?? []}
+        itemSource={items ? undefined : source}
         displayMode={displayMode}
         onSeriesVisibilityChange={onSeriesVisibilityChange}
         sortBy={legendProps.sortBy}
@@ -58,7 +84,82 @@ export function CompactPlotLegend({
           return { title: reducer.name, description: reducer.description };
         })}
       />
+      {items && items.length < source.length && (
+        <LegendListBatchSentinel remaining={source.length - items.length} onVisible={materializeNextBatch} />
+      )}
     </VizLayout.Legend>
+  );
+}
+
+export function materializeCompactLegendItems(
+  source: VizLegendItemSource<number>,
+  displayMode: LegendDisplayMode,
+  placement: LegendPlacement,
+  limit = MATERIALIZED_LIST_LEGEND_BATCH_SIZE
+): Array<VizLegendItem<number>> | undefined {
+  if (displayMode !== LegendDisplayMode.List) {
+    return undefined;
+  }
+  const sources =
+    placement === 'bottom' && source.getItemsForYAxis
+      ? [source.getItemsForYAxis(1), source.getItemsForYAxis(2)]
+      : [source];
+  return sources.flatMap((axisSource) => materializeLegendSource(axisSource, limit));
+}
+
+function materializeLegendSource(source: VizLegendItemSource<number>, limit: number) {
+  return Array.from({ length: Math.min(source.length, limit) }, (_, index) => {
+    const item = source.getItem(index);
+    return {
+      ...item,
+      getItemKey: () => String(source.getItemKey(index)),
+      getDisplayValues: source.getDisplayValues ? () => source.getDisplayValues!(index) : item.getDisplayValues,
+    };
+  });
+}
+
+export function getCompactLegendIdentity(
+  source: VizLegendItemSource<number>,
+  displayMode: LegendDisplayMode,
+  placement: LegendPlacement
+) {
+  const indexes = [...new Set([0, Math.floor(source.length / 2), source.length - 1])].filter(
+    (index) => index >= 0 && index < source.length
+  );
+  const samples = indexes.map((index) => {
+    const item = source.getItem(index);
+    return [String(source.getItemKey(index)), item.label, item.yAxis];
+  });
+  const axisLengths =
+    displayMode === LegendDisplayMode.List && placement === 'bottom' && source.getItemsForYAxis
+      ? [source.getItemsForYAxis(1).length, source.getItemsForYAxis(2).length]
+      : undefined;
+  return JSON.stringify([displayMode, placement, source.length, axisLengths, samples]);
+}
+
+function LegendListBatchSentinel({ remaining, onVisible }: { remaining: number; onVisible: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || typeof IntersectionObserver === 'undefined') {
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        onVisible();
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [onVisible]);
+  return (
+    <div ref={ref}>
+      <Button size="sm" variant="secondary" onClick={onVisible}>
+        <Trans i18nKey="time-series.compact-plot-legend.load-more" values={{ remaining }}>
+          Load more legend series ({'{{remaining}}'} remaining)
+        </Trans>
+      </Button>
+    </div>
   );
 }
 
@@ -199,12 +300,17 @@ function createLegendSource(
       getSortValue: (index, sortBy) => getCompactLegendSortValue(plan, calcs, indexes[index], sortBy),
     };
   };
+  let axisSources: [VizLegendItemSource<number>, VizLegendItemSource<number>] | undefined;
+  const getAxisSource = (axis: 1 | 2) => {
+    axisSources ??= [makeAxisSource(1), makeAxisSource(2)];
+    return axisSources[axis - 1];
+  };
 
   return {
     length,
     getItem,
     getItemKey: (index) => sourceAt(index),
-    getItemsForYAxis: makeAxisSource,
+    getItemsForYAxis: getAxisSource,
     getDisplayValues,
     getSortValue: (index, sortBy) => getCompactLegendSortValue(plan, calcs, sourceAt(index), sortBy),
   };
