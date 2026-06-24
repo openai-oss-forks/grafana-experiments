@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/json-iterator/go"
 	"github.com/klauspost/compress/zstd"
@@ -110,7 +111,7 @@ func streamCompactMultiBatchResponse(
 			return err
 		}
 		accumulated = mergeDataResponses(accumulated, batch)
-		frame, err := buildCompactDataResponseFrame(encoder.ctx, query, accumulated, true)
+		frame, err := buildCompactDataResponseFrame(encoder.ctx, encoder.logger.FromContext(encoder.ctx), query, accumulated, true)
 		if err != nil {
 			return err
 		}
@@ -135,7 +136,7 @@ func streamCompactMultiBatchResponse(
 		}
 		accumulated = mergeDataResponses(accumulated, batch)
 		isFinal := frame.flags&multiBatchFinalFlag != 0
-		responseFrame, err := buildCompactDataResponseFrame(encoder.ctx, query, accumulated, isFinal)
+		responseFrame, err := buildCompactDataResponseFrame(encoder.ctx, encoder.logger.FromContext(encoder.ctx), query, accumulated, isFinal)
 		if err != nil {
 			return err
 		}
@@ -159,7 +160,7 @@ func compactMultiBatchResponseHeaders(upstream http.Header) http.Header {
 	return headers
 }
 
-func buildCompactDataResponseFrame(ctx context.Context, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) (multiBatchFrame, error) {
+func buildCompactDataResponseFrame(ctx context.Context, logger log.Logger, query compactMultiBatchQuery, response backend.DataResponse, isFinal bool) (multiBatchFrame, error) {
 	if response.Error != nil {
 		return buildJSONDataResponseFrame(query, response, isFinal)
 	}
@@ -168,6 +169,13 @@ func buildCompactDataResponseFrame(ctx context.Context, query compactMultiBatchQ
 	if err != nil {
 		if !errors.Is(err, compact.ErrUnsupported) {
 			return multiBatchFrame{}, err
+		}
+		if reason := compact.UnsupportedReason(err); reason == "inconsistent_executed_query" || reason == "inconsistent_calculated_min_step" {
+			logger.Error(
+				"Compact multibatch response metadata disagreed across frames",
+				"reason", reason,
+				"refID", query.RefID,
+			)
 		}
 		return buildJSONDataResponseFrame(query, response, isFinal)
 	}

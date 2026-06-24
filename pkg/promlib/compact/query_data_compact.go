@@ -322,8 +322,12 @@ func populateCompactResultMetadata(response *compactDataResponse, frames data.Fr
 	hasDataFrame := false
 	hasNoDataFrame := false
 	var noticeSet map[compactNotice]struct{}
+	var executedQueryString string
+	var hasExecutedQueryString bool
+	var calculatedMinStep int64
+	var hasCalculatedMinStep bool
 
-	for frameIndex, frame := range frames {
+	for _, frame := range frames {
 		if frame == nil {
 			return compactQueryDataUnsupported("missing_frame")
 		}
@@ -368,25 +372,35 @@ func populateCompactResultMetadata(response *compactDataResponse, frames data.Fr
 		}
 
 		if frame.Meta.ExecutedQueryString != "" {
-			if frameIndex != 0 || response.ExecutedQueryStringID != 0 {
-				return compactQueryDataUnsupported("inconsistent_executed_query")
+			if hasExecutedQueryString {
+				if frame.Meta.ExecutedQueryString != executedQueryString {
+					return compactQueryDataUnsupported("inconsistent_executed_query")
+				}
+			} else {
+				id, err := strings.intern(frame.Meta.ExecutedQueryString)
+				if err != nil {
+					return err
+				}
+				executedQueryString = frame.Meta.ExecutedQueryString
+				hasExecutedQueryString = true
+				response.ExecutedQueryStringID = id
 			}
-			id, err := strings.intern(frame.Meta.ExecutedQueryString)
-			if err != nil {
-				return err
-			}
-			response.ExecutedQueryStringID = id
 		}
-		if calculatedMinStep, exists := custom["calculatedMinStep"]; exists {
-			if frameIndex != 0 || response.Flags&compactResultFlagCalculatedMinStep != 0 {
-				return compactQueryDataUnsupported("inconsistent_calculated_min_step")
-			}
-			value, ok := calculatedMinStep.(int64)
+		if rawCalculatedMinStep, exists := custom["calculatedMinStep"]; exists {
+			value, ok := rawCalculatedMinStep.(int64)
 			if !ok || value <= 0 {
 				return compactQueryDataUnsupported("invalid_calculated_min_step")
 			}
-			response.CalculatedMinStep = value
-			response.Flags |= compactResultFlagCalculatedMinStep
+			if hasCalculatedMinStep {
+				if value != calculatedMinStep {
+					return compactQueryDataUnsupported("inconsistent_calculated_min_step")
+				}
+			} else {
+				calculatedMinStep = value
+				hasCalculatedMinStep = true
+				response.CalculatedMinStep = value
+				response.Flags |= compactResultFlagCalculatedMinStep
+			}
 		}
 
 		if isNoDataFrame(frame) {
