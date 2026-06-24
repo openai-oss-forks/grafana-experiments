@@ -1,17 +1,30 @@
+import { render } from '@testing-library/react';
+import { createElement, type ReactElement } from 'react';
 import uPlot from 'uplot';
 
-import { CompactTimeSeriesData, FieldConfigSource, FieldMatcherID } from '@grafana/data';
-import { GraphDrawStyle, StackingMode, VisibilityMode, VizOrientation } from '@grafana/schema';
+import { CompactTimeSeriesData, FieldConfigSource, FieldMatcherID, PanelProps } from '@grafana/data';
+import { setPluginImportUtils } from '@grafana/runtime';
+import { GraphDrawStyle, StackingMode, TooltipDisplayMode, VisibilityMode, VizOrientation } from '@grafana/schema';
 import { measureText, UPLOT_AXIS_FONT_SIZE } from '@grafana/ui';
+import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
 import { formatCompactBarTimeTicks } from 'app/core/components/TimeSeries/utils';
+import { CompactTooltipPlugin } from 'app/plugins/panel/timeseries/CompactTooltipPlugin';
 
 import {
   buildCompactBarFieldConfig,
+  CompactBarChart,
   createCompactTickFilter,
   createCompactRotationPadding,
   getRenderableCompactBarSeries,
 } from './CompactBarChart';
 import { Options } from './panelcfg.gen';
+
+jest.mock('app/core/components/TimeSeries/TimeSeries', () => ({ TimeSeries: jest.fn(() => null) }));
+
+setPluginImportUtils({
+  importPanelPlugin: jest.fn(),
+  getPanelPluginFromCache: jest.fn(() => ({ fieldConfigRegistry: { list: () => [] } }) as never),
+});
 
 describe('compact standalone Bar chart', () => {
   const compactSeries = {} as CompactTimeSeriesData;
@@ -39,19 +52,55 @@ describe('compact standalone Bar chart', () => {
     expect(getRenderableCompactBarSeries(compactSeries, fieldConfig, options, true)).toBeUndefined();
   });
 
+  it('forwards plot selections to the dashboard time range', () => {
+    const onChangeTimeRange = jest.fn();
+
+    render(
+      createElement(CompactBarChart, {
+        compactSeries,
+        data: { structureRev: 1 },
+        fieldConfig: {
+          ...fieldConfig,
+          defaults: { ...fieldConfig.defaults, custom: { ...fieldConfig.defaults.custom, axisLabel: 'Timestamp' } },
+        },
+        options: { ...options, tooltip: { ...options.tooltip, mode: TooltipDisplayMode.None } },
+        timeRange: {},
+        timeZone: 'utc',
+        width: 800,
+        height: 400,
+        replaceVariables: (value: string) => value,
+        onChangeTimeRange,
+      } as unknown as PanelProps<Options> & { compactSeries: CompactTimeSeriesData })
+    );
+
+    const timeSeriesProps = (TimeSeries as unknown as jest.Mock).mock.calls.at(-1)?.[0];
+    const tooltip = timeSeriesProps.compactChildren({}, {}) as ReactElement<{ queryZoom?: unknown }>;
+    expect(tooltip.type).toBe(CompactTooltipPlugin);
+    expect(tooltip.props.queryZoom).toBe(onChangeTimeRange);
+    expect(timeSeriesProps.options.compactXAxisConfig.label).toBe('Timestamp');
+  });
+
   it('withholds compact data for an explicit or categorical X field', () => {
     const unsupported = { ...options, xField: 'category' };
     expect(getRenderableCompactBarSeries(compactSeries, fieldConfig, unsupported)).toBeUndefined();
   });
 
   it('reserves plot-edge space whenever tick labels are rotated', () => {
-    expect(createCompactRotationPadding(0)).toBeUndefined();
     const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
+    const edgePadding = Math.ceil(labelWidth / 2);
+    expect(createCompactRotationPadding(0)).toEqual([0, edgePadding, 0, edgePadding]);
+    expect(createCompactRotationPadding(0, false)).toEqual([
+      Math.ceil(UPLOT_AXIS_FONT_SIZE / 2),
+      0,
+      Math.ceil(UPLOT_AXIS_FONT_SIZE / 2),
+      0,
+    ]);
+    const crossPadding = Math.ceil((Math.sin(Math.PI / 4) * UPLOT_AXIS_FONT_SIZE) / 2);
     expect(createCompactRotationPadding(45)).toEqual([
       UPLOT_AXIS_FONT_SIZE,
-      Math.ceil(Math.cos(Math.PI / 4) * labelWidth),
+      Math.ceil(Math.cos(Math.PI / 4) * labelWidth) + crossPadding,
       Math.ceil(Math.sin(Math.PI / 4) * labelWidth),
-      0,
+      crossPadding,
     ]);
     expect(createCompactRotationPadding(-45)).toEqual(expect.arrayContaining([expect.any(Number)]));
   });

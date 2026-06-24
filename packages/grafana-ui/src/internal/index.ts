@@ -18,6 +18,7 @@ export {
   getCompactRenderController,
   installCompactRenderer,
   isCompactRenderSource,
+  transferCompactVisibilityState,
   type CompactBarRenderOptions,
   type CompactCursorSnapshot,
   type CompactRenderColumns,

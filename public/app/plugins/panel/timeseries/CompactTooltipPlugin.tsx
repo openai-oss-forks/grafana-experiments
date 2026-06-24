@@ -353,6 +353,12 @@ export function CompactTooltipPlugin({
       if (pinnedRef.current) {
         return;
       }
+      if (modeRef.current === TooltipDisplayMode.None) {
+        if (hoverRef.current != null) {
+          clearHover();
+        }
+        return;
+      }
       const point = plot.compactCursor;
       const index = plot.cursor.idx;
       const viaSync = plot.compactCursorOrigin === 'native-sync';
@@ -460,6 +466,12 @@ export function CompactTooltipPlugin({
   }, [clearTooltip, config]);
 
   useLayoutEffect(() => {
+    if (mode === TooltipDisplayMode.None) {
+      clearTooltip();
+    }
+  }, [clearTooltip, mode]);
+
+  useLayoutEffect(() => {
     sortedIndexesRef.current = undefined;
     filteredIndexesRef.current = undefined;
     pinnedSnapshotRef.current = undefined;
@@ -519,7 +531,7 @@ export function CompactTooltipPlugin({
     };
   }, [clearHover]);
 
-  if (!activeHover || (rowCount === 0 && !showFocusedSeries)) {
+  if (mode === TooltipDisplayMode.None || !activeHover || (rowCount === 0 && !showFocusedSeries)) {
     return null;
   }
 

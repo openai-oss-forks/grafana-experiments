@@ -212,28 +212,26 @@ export const TimeSeriesPanel = ({
             <EventBusPlugin config={uplotConfig} eventBus={eventBus} compact />
           )}
           <XAxisInteractionAreaPlugin config={uplotConfig} queryZoom={onChangeTimeRange} />
-          {options.tooltip.mode !== TooltipDisplayMode.None && (
-            <CompactTooltipPlugin
-              config={uplotConfig}
-              plan={plan}
-              mode={options.tooltip.mode}
-              sortOrder={options.tooltip.sort}
-              hideZeros={options.tooltip.hideZeros}
-              maxHeight={options.tooltip.maxHeight}
-              maxWidth={options.tooltip.maxWidth}
-              syncMode={cursorSync}
-              syncScope={eventsScope}
-              timeZone={timeZone}
-              queryZoom={onChangeTimeRange}
-              onAnnotationRange={
-                enableAnnotationCreation
-                  ? (range) => {
-                      setNewAnnotationRange(range);
-                    }
-                  : undefined
-              }
-            />
-          )}
+          <CompactTooltipPlugin
+            config={uplotConfig}
+            plan={plan}
+            mode={options.tooltip.mode}
+            sortOrder={options.tooltip.sort}
+            hideZeros={options.tooltip.hideZeros}
+            maxHeight={options.tooltip.maxHeight}
+            maxWidth={options.tooltip.maxWidth}
+            syncMode={cursorSync}
+            syncScope={eventsScope}
+            timeZone={timeZone}
+            queryZoom={onChangeTimeRange}
+            onAnnotationRange={
+              enableAnnotationCreation
+                ? (range) => {
+                    setNewAnnotationRange(range);
+                  }
+                : undefined
+            }
+          />
           {!isVerticallyOriented && (
             <>
               <AnnotationsPlugin2

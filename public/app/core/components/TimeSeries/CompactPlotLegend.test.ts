@@ -1,6 +1,26 @@
+import { AxisPlacement } from '@grafana/schema';
+
 import { CompactNativeRenderPlan } from '../GraphNG/compactNativePlan';
 
-import { getCompactLegendSortValue, toggleCompactLegendSeries } from './CompactPlotLegend';
+import {
+  getCompactLegendAxis,
+  getCompactLegendSortValue,
+  normalizeCompactLegendCalcs,
+  toggleCompactLegendSeries,
+} from './CompactPlotLegend';
+
+it('keeps remapped horizontal-bar value axes in the matching legend group', () => {
+  expect(getCompactLegendAxis(AxisPlacement.Left)).toBe(1);
+  expect(getCompactLegendAxis(AxisPlacement.Bottom)).toBe(1);
+  expect(getCompactLegendAxis(AxisPlacement.Right)).toBe(2);
+  expect(getCompactLegendAxis(AxisPlacement.Top)).toBe(2);
+});
+
+it('ignores malformed compact legend calculations', () => {
+  expect(normalizeCompactLegendCalcs(undefined)).toEqual([]);
+  expect(normalizeCompactLegendCalcs('min')).toEqual([]);
+  expect(normalizeCompactLegendCalcs(['min', 'not-a-reducer', 'max'])).toEqual(['min', 'max']);
+});
 
 describe('toggleCompactLegendSeries', () => {
   it('isolates and restores every series with the selected display name', () => {

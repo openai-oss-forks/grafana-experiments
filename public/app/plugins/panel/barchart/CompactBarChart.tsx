@@ -12,7 +12,7 @@ import {
   useDataLinksContext,
 } from '@grafana/data';
 import { getPluginImportUtils } from '@grafana/runtime';
-import { AxisPlacement, GraphFieldConfig, TooltipDisplayMode, VisibilityMode, VizOrientation } from '@grafana/schema';
+import { AxisPlacement, GraphFieldConfig, VisibilityMode, VizOrientation } from '@grafana/schema';
 import { measureText, UPLOT_AXIS_FONT_SIZE, useTheme2 } from '@grafana/ui';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
 import {
@@ -61,7 +61,18 @@ export function buildCompactBarFieldConfig(
 }
 
 export function CompactBarChart(props: PanelProps<Options> & { compactSeries: CompactTimeSeriesData }) {
-  const { compactSeries, data, fieldConfig, options, timeRange, timeZone, width, height, replaceVariables } = props;
+  const {
+    compactSeries,
+    data,
+    fieldConfig,
+    options,
+    timeRange,
+    timeZone,
+    width,
+    height,
+    replaceVariables,
+    onChangeTimeRange,
+  } = props;
   const theme = useTheme2();
   const { dataLinkPostProcessor } = useDataLinksContext();
   const resolvedOrientation =
@@ -109,10 +120,10 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
       orientation: compactOrientation,
       tooltip: options.tooltip,
       highlightSeriesOnHover: options.fullHighlight !== false,
-      compactPadding: createCompactRotationPadding(options.xTickLabelRotation ?? 0),
+      compactPadding: createCompactRotationPadding(options.xTickLabelRotation ?? 0, categoriesAreHorizontal),
       compactXAxisConfig: {
-        // Default axis labels apply only to numeric fields; category-label overrides use the full renderer.
         show: adaptedFieldConfig.defaults.custom?.axisPlacement !== AxisPlacement.Hidden,
+        label: adaptedFieldConfig.defaults.custom?.axisLabel,
         gap: 15,
         grid: { show: false },
         ticks: { show: false },
@@ -123,6 +134,7 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
     };
   }, [
     adaptedFieldConfig.defaults.custom?.axisPlacement,
+    adaptedFieldConfig.defaults.custom?.axisLabel,
     compactOrientation,
     options.fullHighlight,
     options.tooltip,
@@ -144,33 +156,44 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
       options={compactOptions}
       replaceVariables={replaceVariables}
       dataLinkPostProcessor={dataLinkPostProcessor}
-      compactChildren={(uplotConfig, plan) =>
-        options.tooltip.mode === TooltipDisplayMode.None ? null : (
-          <CompactTooltipPlugin
-            config={uplotConfig}
-            plan={plan}
-            mode={options.tooltip.mode}
-            sortOrder={options.tooltip.sort}
-            hideZeros={options.tooltip.hideZeros}
-            maxHeight={options.tooltip.maxHeight}
-            maxWidth={options.tooltip.maxWidth}
-            timeZone={timeZone}
-          />
-        )
-      }
+      compactChildren={(uplotConfig, plan) => (
+        <CompactTooltipPlugin
+          config={uplotConfig}
+          plan={plan}
+          mode={options.tooltip.mode}
+          sortOrder={options.tooltip.sort}
+          hideZeros={options.tooltip.hideZeros}
+          maxHeight={options.tooltip.maxHeight}
+          maxWidth={options.tooltip.maxWidth}
+          timeZone={timeZone}
+          queryZoom={onChangeTimeRange}
+        />
+      )}
     />
   );
 }
 
-export function createCompactRotationPadding(rotation: number): Padding | undefined {
+export function createCompactRotationPadding(rotation: number, categoriesAreHorizontal = true): Padding | undefined {
+  if (!categoriesAreHorizontal) {
+    const edgePadding = Math.ceil(UPLOT_AXIS_FONT_SIZE / 2);
+    return [edgePadding, 0, edgePadding, 0];
+  }
   if (rotation === 0) {
-    return undefined;
+    const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
+    const edgePadding = Math.ceil(labelWidth / 2);
+    return [0, edgePadding, 0, edgePadding];
   }
   const radians = (Math.abs(rotation) * Math.PI) / 180;
   const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
   const edgePadding = Math.ceil(Math.cos(radians) * labelWidth);
+  const crossPadding = Math.ceil((Math.sin(radians) * UPLOT_AXIS_FONT_SIZE) / 2);
   const bottomPadding = Math.ceil(Math.sin(radians) * labelWidth);
-  return [UPLOT_AXIS_FONT_SIZE, rotation > 0 ? edgePadding : 0, bottomPadding, rotation < 0 ? edgePadding : 0];
+  return [
+    UPLOT_AXIS_FONT_SIZE,
+    rotation > 0 ? edgePadding + crossPadding : crossPadding,
+    bottomPadding,
+    rotation < 0 ? edgePadding + crossPadding : crossPadding,
+  ];
 }
 
 function createCompactBarFieldConfigRegistry(): FieldConfigOptionsRegistry {

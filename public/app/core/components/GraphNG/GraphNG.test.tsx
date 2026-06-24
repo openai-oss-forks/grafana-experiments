@@ -5,7 +5,7 @@ import {
   dateTime,
   FieldConfigOptionsRegistry,
 } from '@grafana/data';
-import { UPlotConfigBuilder } from '@grafana/ui/internal';
+import { getCompactRenderController, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { GraphNGProps, GraphNGRenderer, GraphNGState } from './GraphNG';
 import { CompactFieldConfigOptions } from './compactTypes';
@@ -60,6 +60,21 @@ describe('GraphNGRenderer compact state ownership', () => {
 
     expectGraphStateCleared(renderer.state);
   });
+
+  test('publishes refreshed compact plans with the current legend visibility', () => {
+    const first = compactData();
+    const second = compactData();
+    const initialProps = graphProps(first, 100, 100);
+    const renderer = new GraphNGRenderer(initialProps);
+    installSynchronousSetState(renderer);
+    const firstPlan = renderer.state.compactPlan!;
+    getCompactRenderController(firstPlan.source).setSeriesVisibility(0, false);
+
+    updateRenderer(renderer, initialProps, graphProps(second, 100, 100));
+
+    expect(renderer.state.compactPlan?.source.columns.visibility[0]).toBe(0);
+    expect(renderer.state.compactPlan?.source.visibilityState.overrides.size).toBe(1);
+  });
 });
 
 function graphProps(compactSeries: CompactTimeSeriesData | undefined, width: number, height: number): GraphNGProps {
@@ -85,12 +100,26 @@ function graphProps(compactSeries: CompactTimeSeriesData | undefined, width: num
 }
 
 function compactData(): CompactTimeSeriesData {
+  const buffer = new ArrayBuffer(Float64Array.BYTES_PER_ELEMENT * 2);
+  new Float64Array(buffer).set([1, 2]);
   return {
     kind: 'compact-response-view',
     format: COMPACT_TIME_SERIES_FORMAT,
-    buffer: new ArrayBuffer(0),
-    axes: [],
-    series: [],
+    buffer,
+    axes: [{ start: 0, step: 1, count: 2 }],
+    series: [
+      {
+        refId: 'A',
+        valueName: 'Value',
+        axisId: 0,
+        labelRecordsOffset: 0,
+        labelCount: 0,
+        presenceByteOffset: 0,
+        presenceByteLength: 0,
+        presentCount: 2,
+        valuesByteOffset: 0,
+      },
+    ],
     metadata: {
       getLabel: () => undefined,
       forEachLabel: () => undefined,
@@ -98,11 +127,11 @@ function compactData(): CompactTimeSeriesData {
     },
     decodeStats: {
       responseBytes: 0,
-      axisCount: 0,
-      resultCount: 0,
+      axisCount: 1,
+      resultCount: 1,
       stringCount: 0,
       stringBytes: 0,
-      seriesCount: 0,
+      seriesCount: 1,
     },
   };
 }

@@ -308,7 +308,7 @@ export function prepareCompactPlotConfigBuilder(options: {
 
   builder.scaleKeys = ['x', plan.source.scales[0]?.key ?? ''];
   builder.setCursor({
-    drag: groupedBars ? { x: false, y: false } : { x: isHorizontal, y: !isHorizontal },
+    drag: { x: isHorizontal, y: !isHorizontal },
     hover: {
       prox:
         hoverProximity ??

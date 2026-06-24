@@ -124,7 +124,20 @@ describe('compact binary rendering pipeline', () => {
     expect(config.scales?.x.fwd?.(1000)).toBe(0);
     expect(config.scales?.x.fwd?.(3000)).toBe(2);
     expect(config.scales?.x.bwd?.(1.5)).toBe(2500);
-    expect(config.cursor?.drag).toMatchObject({ x: false, y: false, setScale: false });
+    expect(config.cursor?.drag).toMatchObject({ x: false, y: true, setScale: false });
+
+    const horizontalConfig = prepareCompactPlotConfigBuilder({
+      plan,
+      theme: createTheme(),
+      timeZones: ['utc'],
+      getTimeRange: () => ({
+        from: dateTime(1000),
+        to: dateTime(3000),
+        raw: { from: dateTime(1000), to: dateTime(3000) },
+      }),
+      orientation: VizOrientation.Horizontal,
+    }).getConfig();
+    expect(horizontalConfig.cursor?.drag).toMatchObject({ x: true, y: false, setScale: false });
 
     const plot = uPlot.compact(
       { width: 300, height: 200, ...config },

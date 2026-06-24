@@ -110,6 +110,18 @@ describe('CompactRenderController', () => {
     expect(controller.groupedBarSplits(minimum, maximum, 2)).toEqual([0, 4]);
   });
 
+  test('uses a precise grouped-bar time format for sparse and irregular samples', () => {
+    const single = createSource([[1]], [CompactSeriesFlag.Bars]);
+    const irregular = createSource([[1, 2, 3]], [CompactSeriesFlag.Bars]);
+    const longIrregular = createSource([new Array(66).fill(1)], [CompactSeriesFlag.Bars]);
+    irregular.xAt = (index) => [0, 100_000, 101_000][index];
+    longIrregular.xAt = (index) => (index < 65 ? index * 100_000 : 6_401_000);
+
+    expect(new CompactRenderController(single).groupedBarIncrement()).toBe(1000);
+    expect(new CompactRenderController(irregular).groupedBarIncrement()).toBe(1000);
+    expect(new CompactRenderController(longIrregular).groupedBarIncrement()).toBe(1000);
+  });
+
   test('lays out currently visible grouped bars without exposing configured-hidden series', () => {
     const source = createSource(
       [[1], [2], [3]],

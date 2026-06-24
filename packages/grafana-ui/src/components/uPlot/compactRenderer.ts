@@ -484,7 +484,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       valueAt: (seriesIndex) => this.readCursorSnapshotValue(seriesIndex),
       dataIndexAt: (seriesIndex) => this.readCursorSnapshotDataIndex(seriesIndex),
     };
-    this.applyVisibilityState(source);
+    this.visibleSeriesCount = applyCompactVisibilityState(source);
     this.initializeBarSlots();
     this.ensureStackCursorScratch();
   }
@@ -549,7 +549,20 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   }
 
   groupedBarIncrement(): number {
-    return this.source.pointCount > 1 ? Math.abs(this.source.xAt(1) - this.source.xAt(0)) : Number.POSITIVE_INFINITY;
+    const intervalCount = this.source.pointCount - 1;
+    if (intervalCount <= 0) {
+      return 1000;
+    }
+    const sampleCount = Math.min(intervalCount, 64);
+    let minimum = Number.POSITIVE_INFINITY;
+    for (let sample = 0; sample < sampleCount; sample++) {
+      const index = sampleCount === 1 ? 0 : Math.floor((sample * (intervalCount - 1)) / (sampleCount - 1));
+      const increment = Math.abs(this.source.xAt(index + 1) - this.source.xAt(index));
+      if (increment > 0) {
+        minimum = Math.min(minimum, increment);
+      }
+    }
+    return Number.isFinite(minimum) ? minimum : 1000;
   }
 
   groupedBarRange(): [number, number] {
@@ -605,7 +618,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (!isCompactRenderSource(nextSource)) {
       throw new Error('Compact renderer requires typed render columns');
     }
-    validateCompatibleSource(this.source, nextSource);
+    const visibleSeriesCount = transferCompactVisibilityState(this.source, nextSource);
     this.cancelProgressiveDraw();
     const previousSource = this.source;
     controllers.delete(previousSource);
@@ -616,8 +629,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.cursorSnapshot.source = nextSource;
     this.cursorSnapshot.seriesCount = nextSource.seriesCount;
     this.invalidateCursorSnapshot();
-    copyVisibilityState(previousSource.visibilityState, nextSource.visibilityState);
-    this.applyVisibilityState(nextSource);
+    this.visibleSeriesCount = visibleSeriesCount;
     this.initializeBarSlots();
     this.focusedSeries = -1;
     this.requestedFocusedSeries = -1;
@@ -976,38 +988,6 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     } else {
       state.overrides.set(hash, overrides);
     }
-  }
-
-  private applyVisibilityState(source: CompactRenderSource): void {
-    const state = source.visibilityState;
-    if (state.globalVisibility != null) {
-      for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
-        source.columns.visibility[seriesIndex] =
-          state.globalVisibility === 1 ? (source.barLayoutVisibility?.[seriesIndex] ?? 1) : 0;
-      }
-    }
-    if (source.seriesIdentityAt && source.seriesIdentityHashAt && state.overrides.size > 0) {
-      for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
-        const overrides = state.overrides.get(source.seriesIdentityHashAt(seriesIndex));
-        if (!overrides) {
-          continue;
-        }
-        const identity = source.seriesIdentityAt(seriesIndex);
-        const override = overrides.find((candidate) => candidate.identity === identity);
-        if (override) {
-          source.columns.visibility[seriesIndex] =
-            override.visibility === 1 ? (source.barLayoutVisibility?.[seriesIndex] ?? 1) : 0;
-        }
-      }
-    }
-    let visibleSeriesCount = 0;
-    for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
-      if (source.barLayoutVisibility?.[seriesIndex] === 0) {
-        source.columns.visibility[seriesIndex] = 0;
-      }
-      visibleSeriesCount += source.columns.visibility[seriesIndex] === 1 ? 1 : 0;
-    }
-    this.visibleSeriesCount = visibleSeriesCount;
   }
 
   private initializeBarSlots(): void {
@@ -3140,6 +3120,44 @@ function copyVisibilityState(previous: CompactVisibilityState, next: CompactVisi
       overrides.map((override) => ({ ...override }))
     );
   }
+}
+
+export function transferCompactVisibilityState(previous: CompactRenderSource, next: CompactRenderSource): number {
+  validateCompatibleSource(previous, next);
+  copyVisibilityState(previous.visibilityState, next.visibilityState);
+  return applyCompactVisibilityState(next);
+}
+
+function applyCompactVisibilityState(source: CompactRenderSource): number {
+  const state = source.visibilityState;
+  if (state.globalVisibility != null) {
+    for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
+      source.columns.visibility[seriesIndex] =
+        state.globalVisibility === 1 ? (source.barLayoutVisibility?.[seriesIndex] ?? 1) : 0;
+    }
+  }
+  if (source.seriesIdentityAt && source.seriesIdentityHashAt && state.overrides.size > 0) {
+    for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
+      const overrides = state.overrides.get(source.seriesIdentityHashAt(seriesIndex));
+      if (!overrides) {
+        continue;
+      }
+      const identity = source.seriesIdentityAt(seriesIndex);
+      const override = overrides.find((candidate) => candidate.identity === identity);
+      if (override) {
+        source.columns.visibility[seriesIndex] =
+          override.visibility === 1 ? (source.barLayoutVisibility?.[seriesIndex] ?? 1) : 0;
+      }
+    }
+  }
+  let visibleSeriesCount = 0;
+  for (let seriesIndex = 0; seriesIndex < source.seriesCount; seriesIndex++) {
+    if (source.barLayoutVisibility?.[seriesIndex] === 0) {
+      source.columns.visibility[seriesIndex] = 0;
+    }
+    visibleSeriesCount += source.columns.visibility[seriesIndex] === 1 ? 1 : 0;
+  }
+  return visibleSeriesCount;
 }
 
 function addRoundedRect(

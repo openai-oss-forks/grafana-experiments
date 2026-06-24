@@ -17,7 +17,15 @@ import {
 } from '@grafana/data';
 import { DashboardCursorSync, VizLegendOptions } from '@grafana/schema';
 import { Themeable2, VizLayout, VizLayoutLegendProps } from '@grafana/ui';
-import { AxisProps, pluginLog, Renderers, ScaleProps, UPlotChart, UPlotConfigBuilder } from '@grafana/ui/internal';
+import {
+  AxisProps,
+  pluginLog,
+  Renderers,
+  ScaleProps,
+  transferCompactVisibilityState,
+  UPlotChart,
+  UPlotConfigBuilder,
+} from '@grafana/ui/internal';
 
 import { GraphNGRendererGate } from './GraphNGRenderVisibility';
 import {
@@ -189,6 +197,9 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
       const plan = canReusePlan
         ? this.state.compactPlan!
         : createCompactNativeRenderPlan(compactSeries, compactFieldConfig);
+      if (!canReusePlan && hasSameCompactNativeTopology(plan, this.state?.compactPlan)) {
+        transferCompactVisibilityState(this.state.compactPlan!.source, plan.source);
+      }
       const config = withConfig
         ? props.prepCompactConfig(plan, this.getTimeRange, props.annotationLanes)
         : this.state?.config;

@@ -22,6 +22,7 @@ export function CompactPlotLegend({
   ...legendProps
 }: CompactPlotLegendProps) {
   const styles = useStyles2(getStyles);
+  const normalizedCalcs = useMemo(() => normalizeCompactLegendCalcs(calcs), [calcs]);
   const [, setVisibilityRevision] = useState(0);
   const onSeriesVisibilityChange = useCallback(
     (item: VizLegendItem<number>, event: MouseEvent<HTMLButtonElement>) => {
@@ -35,7 +36,7 @@ export function CompactPlotLegend({
     },
     [plan]
   );
-  const source = useMemo(() => createLegendSource(config, plan, calcs), [calcs, config, plan]);
+  const source = useMemo(() => createLegendSource(config, plan, normalizedCalcs), [config, normalizedCalcs, plan]);
   if (source.length === 0) {
     return null;
   }
@@ -52,13 +53,17 @@ export function CompactPlotLegend({
         sortDesc={legendProps.sortDesc}
         isSortable={true}
         className={displayMode === 'table' ? styles.table : undefined}
-        displayValueColumns={calcs.map((reducerId) => {
+        displayValueColumns={normalizedCalcs.map((reducerId) => {
           const reducer = fieldReducers.get(reducerId);
           return { title: reducer.name, description: reducer.description };
         })}
       />
     </VizLayout.Legend>
   );
+}
+
+export function normalizeCompactLegendCalcs(calcs: unknown): string[] {
+  return Array.isArray(calcs) ? calcs.filter(isReducerID) : [];
 }
 
 const getStyles = () => ({
@@ -143,9 +148,7 @@ function createLegendSource(
 
   const sourceAt = (index: number) => visibleIndexes[index];
   const axisFor = (seriesIndex: number) =>
-    config.getAxisPlacement(plan.source.scales[plan.source.columns.scaleIds[seriesIndex]].key) === AxisPlacement.Right
-      ? 2
-      : 1;
+    getCompactLegendAxis(config.getAxisPlacement(plan.source.scales[plan.source.columns.scaleIds[seriesIndex]].key));
   const getItem = (index: number): VizLegendItem<number> => {
     const seriesIndex = sourceAt(index);
     const style = plan.source.styles[plan.source.columns.styleIds[seriesIndex]];
@@ -205,6 +208,10 @@ function createLegendSource(
     getDisplayValues,
     getSortValue: (index, sortBy) => getCompactLegendSortValue(plan, calcs, sourceAt(index), sortBy),
   };
+}
+
+export function getCompactLegendAxis(placement: AxisPlacement): 1 | 2 {
+  return placement === AxisPlacement.Right || placement === AxisPlacement.Top ? 2 : 1;
 }
 
 function isLegendToggleable(plan: CompactNativeRenderPlan, seriesIndex: number): boolean {
