@@ -546,7 +546,7 @@ class JsonlMultiBatchAccumulator {
           break;
         case 'error':
           error = {
-            message: event.error || event.message || 'Prometheus multi-batch response returned an error event',
+            message: event.error || event.message || 'Prometheus response returned an error event',
           };
           break;
         default:
@@ -693,15 +693,10 @@ function prometheusApiErrorMessage(payload: PrometheusApiPayload): string {
   }
 
   if (payload.error && typeof payload.error === 'object') {
-    return (
-      payload.error.message ||
-      payload.error.type ||
-      payload.error.code ||
-      'Prometheus multi-batch response returned an error'
-    );
+    return payload.error.message || payload.error.type || payload.error.code || 'Prometheus response returned an error';
   }
 
-  return payload.errorType || 'Prometheus multi-batch response returned an error';
+  return payload.errorType || 'Prometheus response returned an error';
 }
 
 function dataQueryErrorFromText(text: string): DataQueryError {
@@ -1292,7 +1287,7 @@ async function readStreamText(
   }
 
   const text = new TextDecoder().decode(concatChunks(chunks)).trim();
-  return text || response.statusText || `Prometheus multi-batch request failed with status ${response.status}`;
+  return text || response.statusText || `Prometheus request failed with status ${response.status}`;
 }
 
 function chunksStartWithMagic(chunks: Uint8Array[], magic: string): boolean {
