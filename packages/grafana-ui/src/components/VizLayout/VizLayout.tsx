@@ -66,6 +66,9 @@ export const VizLayout: VizLayoutComponentType = ({ width, height, legend, child
     case 'bottom':
       containerStyle.flexDirection = 'column';
       legendStyle.maxHeight = maxHeight;
+      if (legend.props.reserveMaxHeight) {
+        legendStyle.minHeight = maxHeight;
+      }
 
       if (legendMeasure.height) {
         size = { width, height: height - legendMeasure.height };
@@ -129,6 +132,8 @@ export interface VizLayoutLegendProps {
   maxHeight?: string;
   maxWidth?: string;
   width?: number;
+  /** Reserve the bottom legend's maximum height while progressively rendered items are still arriving. */
+  reserveMaxHeight?: boolean;
 }
 
 /**

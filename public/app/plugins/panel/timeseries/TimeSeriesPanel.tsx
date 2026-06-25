@@ -11,6 +11,7 @@ import {
   useDataLinksContext,
   FieldConfigSource,
   FieldType,
+  LoadingState,
 } from '@grafana/data';
 import { config, getPluginImportUtils, PanelDataErrorView } from '@grafana/runtime';
 import { TooltipDisplayMode, VizOrientation } from '@grafana/schema';
@@ -194,6 +195,7 @@ export const TimeSeriesPanel = ({
       frames={frames ?? []}
       compactSeries={compactSeries}
       compactFieldConfig={compactFieldConfig}
+      compactStreaming={Boolean(compactSeries && data.state === LoadingState.Streaming)}
       structureRev={data.structureRev}
       timeRange={timeRange}
       timeZone={timezones}

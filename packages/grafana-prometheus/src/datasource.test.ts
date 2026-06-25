@@ -1,6 +1,6 @@
 // Core Grafana history https://github.com/grafana/grafana/blob/v11.0.0-preview/public/app/plugins/datasource/prometheus/datasource.test.ts
 import { cloneDeep } from 'lodash';
-import { lastValueFrom, Observable, of } from 'rxjs';
+import { lastValueFrom, Observable, of, Subject } from 'rxjs';
 
 import {
   AdHocVariableFilter,
@@ -28,6 +28,7 @@ import {
 } from './datasource';
 import { prometheusRegularEscape, prometheusSpecialRegexEscape } from './escaping';
 import { PrometheusLanguageProviderInterface } from './language_provider';
+import * as prometheusMultibatchStream from './prometheusMultibatchStream';
 import { CacheRequestInfo } from './querycache/QueryCache';
 import {
   createDataRequest,
@@ -572,6 +573,91 @@ describe('PrometheusDatasource', () => {
         ]);
       } finally {
         browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('coalesces concurrent compact target batches while preserving progressive updates', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      jest.useFakeTimers();
+      const streams = new Map([
+        ['A', new Subject<DataQueryResponse>()],
+        ['B', new Subject<DataQueryResponse>()],
+      ]);
+      const multiBatchSpy = jest
+        .spyOn(prometheusMultibatchStream, 'queryPrometheusMultiBatch')
+        .mockImplementation((_datasourceUid, _request, target) => streams.get(target.refId!)!);
+      const responses: DataQueryResponse[] = [];
+
+      try {
+        const completion = new Promise<void>((resolve, reject) => {
+          ds.query(
+            createDataRequest(
+              [
+                { datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'metric_a', refId: 'A' },
+                { datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'metric_b', refId: 'B' },
+              ],
+              {
+                app: CoreApp.Dashboard,
+                panelPluginId: 'timeseries',
+                preferredQueryResultFormat: 'compact-v1',
+              }
+            )
+          ).subscribe({ complete: resolve, error: reject, next: (response) => responses.push(response) });
+        });
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 16),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        streams.get('B')!.next({
+          compactSeries: compactResponseFixture('B', 16),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        expect(responses).toHaveLength(0);
+
+        jest.advanceTimersByTime(200);
+        expect(responses).toHaveLength(1);
+        expect(responses[0].state).toBe(LoadingState.Streaming);
+        expect(responses[0].compactSeries?.series).toHaveLength(2);
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 24),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        streams.get('B')!.next({
+          compactSeries: compactResponseFixture('B', 24),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        jest.advanceTimersByTime(200);
+        expect(responses).toHaveLength(2);
+        expect(responses[1].state).toBe(LoadingState.Streaming);
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 24),
+          data: [],
+          state: LoadingState.Done,
+        });
+        streams.get('B')!.next({
+          compactSeries: compactResponseFixture('B', 24),
+          data: [],
+          state: LoadingState.Done,
+        });
+        streams.get('A')!.complete();
+        streams.get('B')!.complete();
+        await completion;
+
+        expect(responses).toHaveLength(3);
+        expect(responses[2].state).toBe(LoadingState.Done);
+        expect(responses[2].compactSeries?.series).toHaveLength(2);
+      } finally {
+        multiBatchSpy.mockRestore();
+        jest.useRealTimers();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
       }
     });

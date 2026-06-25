@@ -8,6 +8,7 @@ import {
   FieldConfigSource,
   FieldType,
   identityOverrideProcessor,
+  LoadingState,
   PanelProps,
   useDataLinksContext,
 } from '@grafana/data';
@@ -147,6 +148,7 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
       frames={[]}
       compactSeries={compactSeries}
       compactFieldConfig={compactFieldConfig}
+      compactStreaming={data.state === LoadingState.Streaming}
       structureRev={data.structureRev}
       timeRange={timeRange}
       timeZone={timeZone}

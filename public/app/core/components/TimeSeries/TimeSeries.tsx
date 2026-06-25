@@ -58,11 +58,11 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
   };
 
   renderCompactLegend = (config: UPlotConfigBuilder, plan: CompactNativeRenderPlan) => {
-    const { legend } = this.props;
+    const { compactStreaming, legend } = this.props;
     if (!legend?.showLegend) {
       return null;
     }
-    return <CompactPlotLegend config={config} plan={plan} {...legend} />;
+    return <CompactPlotLegend config={config} plan={plan} reserveMaxHeight={compactStreaming} {...legend} />;
   };
 
   renderLegend = (config: UPlotConfigBuilder, frames: DataFrame[]) => {

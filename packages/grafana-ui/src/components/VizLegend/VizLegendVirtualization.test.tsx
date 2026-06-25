@@ -58,6 +58,27 @@ describe('high-cardinality visualization UI', () => {
     }
   });
 
+  test('keeps materialized bottom legends bounded so long labels can wrap', () => {
+    const items: VizLegendItem[] = [
+      { label: `left-${'x'.repeat(200)}`, yAxis: 1 },
+      { label: `right-${'x'.repeat(200)}`, yAxis: 2 },
+    ];
+
+    render(<VizLegendList items={items} placement="bottom" />);
+
+    for (const [index, item] of items.entries()) {
+      const button = screen.getByRole('button', { name: item.label });
+      const list = button.closest('ul');
+      expect(button).toHaveStyle({ overflowWrap: 'anywhere', whiteSpace: 'normal' });
+      expect(list).toHaveStyle({ maxWidth: '100%', minWidth: 0, width: 'fit-content' });
+      expect(list?.parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
+      if (index === 1) {
+        expect(list).toHaveStyle({ textAlign: 'right' });
+        expect(list?.parentElement).toHaveStyle({ flexBasis: 0, justifyContent: 'flex-end' });
+      }
+    }
+  });
+
   test('sorts indexed tables without materializing offscreen items', () => {
     const source = createItemSource(1_000);
 

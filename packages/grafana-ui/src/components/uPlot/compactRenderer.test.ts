@@ -709,11 +709,34 @@ describe('CompactRenderController', () => {
     expect(first.buffer.byteLength).toBeGreaterThan(0);
     expect(second.buffer.byteLength).toBeGreaterThan(0);
     expect(() => controller.replaceSource(first, second)).toThrow('ownership mismatch');
-    expect(() => controller.replaceSource(second, createSource([[5, 6]], [CompactSeriesFlag.Stack], 1))).toThrow(
-      'stack topology'
+    const growing = createSource(
+      [
+        [5, 6],
+        [7, 8],
+      ],
+      [CompactSeriesFlag.Stack, CompactSeriesFlag.Stack],
+      1
     );
+    expect(() => controller.replaceSource(second, growing)).not.toThrow();
+    expect(growing.seriesCount).toBe(2);
+    expect(() =>
+      controller.replaceSource(
+        growing,
+        createSource(
+          [
+            [5, 6],
+            [7, 8],
+          ],
+          [
+            CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+            CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+          ],
+          1
+        )
+      )
+    ).toThrow('percent scale usage');
 
-    controller.destroy(second);
+    controller.destroy(growing);
   });
 
   test('keeps shared response storage alive when replacing a source view', () => {

@@ -46,6 +46,7 @@ import {
   CompactSeriesFlag,
   CompactStyleRecord,
   CompactVisibilityState,
+  hasCompatibleCompactRenderSource,
   isCompactRenderSource,
 } from '@grafana/ui/internal';
 
@@ -623,6 +624,25 @@ export function hasSameCompactNativeTopology(
     isEqual(left.source.scales, right.source.scales) &&
     isEqual(left.scales, right.scales)
   );
+}
+
+/**
+ * Returns whether an existing compact plot configuration can render the next source in place.
+ * Virtual series, styles, and normal stack groups are owned by the compact renderer and may grow
+ * while a streamed response is in progress. The uPlot configuration only needs to be rebuilt when
+ * its axes, scales, percent stacking, or grouped-bar X mode changes.
+ */
+export function hasCompatibleCompactNativeConfig(
+  left: CompactNativeRenderPlan | undefined,
+  right: CompactNativeRenderPlan | undefined
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return hasCompatibleCompactRenderSource(left.source, right.source) && isEqual(left.scales, right.scales);
 }
 
 function createRenderSource(

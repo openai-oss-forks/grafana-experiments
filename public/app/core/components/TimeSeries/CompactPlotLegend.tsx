@@ -12,6 +12,7 @@ import { CompactNativeRenderPlan, CompactNativeSeriesFlag } from '../GraphNG/com
 interface CompactPlotLegendProps extends VizLegendOptions {
   config: UPlotConfigBuilder;
   plan: CompactNativeRenderPlan;
+  reserveMaxHeight?: boolean;
 }
 
 const MATERIALIZED_LIST_LEGEND_BATCH_SIZE = 500;
@@ -22,6 +23,7 @@ export function CompactPlotLegend({
   placement,
   calcs,
   displayMode,
+  reserveMaxHeight,
   ...legendProps
 }: CompactPlotLegendProps) {
   const styles = useStyles2(getStyles);
@@ -68,7 +70,7 @@ export function CompactPlotLegend({
   }
 
   return (
-    <VizLayout.Legend placement={placement} {...legendProps}>
+    <VizLayout.Legend placement={placement} reserveMaxHeight={reserveMaxHeight} {...legendProps}>
       <VizLegend
         placement={placement}
         items={items ?? []}

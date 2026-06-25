@@ -31,7 +31,7 @@ import { GraphNGRendererGate } from './GraphNGRenderVisibility';
 import {
   CompactNativeRenderPlan,
   createCompactNativeRenderPlan,
-  hasSameCompactNativeTopology,
+  hasCompatibleCompactNativeConfig,
 } from './compactNativePlan';
 import { CompactFieldConfigOptions } from './compactTypes';
 import { GraphNGLegendEvent, XYFieldMatchers } from './types';
@@ -46,6 +46,7 @@ export interface GraphNGProps extends Themeable2 {
   frames: DataFrame[];
   compactSeries?: CompactTimeSeriesData;
   compactFieldConfig?: CompactFieldConfigOptions;
+  compactStreaming?: boolean;
   structureRev?: number; // a number that will change when the frames[] structure changes
   width: number;
   height: number;
@@ -197,7 +198,7 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
       const plan = canReusePlan
         ? this.state.compactPlan!
         : createCompactNativeRenderPlan(compactSeries, compactFieldConfig);
-      if (!canReusePlan && hasSameCompactNativeTopology(plan, this.state?.compactPlan)) {
+      if (!canReusePlan && hasCompatibleCompactNativeConfig(plan, this.state?.compactPlan)) {
         transferCompactVisibilityState(this.state.compactPlan!.source, plan.source);
       }
       const config = withConfig
@@ -324,13 +325,13 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
     ) {
       let newState = this.prepState(this.props, false);
 
-      const compactTopologyChanged = !hasSameCompactNativeTopology(newState.compactPlan, this.state.compactPlan);
+      const compactConfigChanged = !hasCompatibleCompactNativeConfig(newState.compactPlan, this.state.compactPlan);
       const shouldReconfig =
         this.state.config === undefined ||
         timeZone !== prevProps.timeZone ||
         cursorSync !== prevProps.cursorSync ||
         (!compactSeries && structureRev !== prevProps.structureRev) ||
-        compactTopologyChanged ||
+        compactConfigChanged ||
         compactFieldConfig !== prevProps.compactFieldConfig ||
         (!compactSeries && !structureRev) ||
         propsChanged;

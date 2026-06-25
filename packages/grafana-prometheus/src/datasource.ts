@@ -83,6 +83,8 @@ import {
 import { utf8Support, wrapUtf8Filters } from './utf8_support';
 import { PrometheusVariableSupport } from './variables';
 
+const COMPACT_MULTI_TARGET_RENDER_INTERVAL_MS = 200;
+
 export class PrometheusDatasource
   extends DataSourceWithBackend<PromQuery, PromOptions>
   implements DataSourceWithQueryImportSupport<PromQuery>, DataSourceWithQueryExportSupport<PromQuery>
@@ -571,20 +573,10 @@ export class PrometheusDatasource
       const completedTargets = new Set<string>();
       const targetKeys = targets.map((target, index) => target.refId ?? String(index));
       const responseKey = `${request.requestId}-prometheus-multibatch`;
+      let pendingCompactResponse: DataQueryResponse | undefined;
+      let compactRenderTimer: ReturnType<typeof setTimeout> | undefined;
 
-      const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
-        latestDataByTarget.set(targetKey, response.data);
-        if (response.compactSeries) {
-          latestCompactSeriesByTarget.set(targetKey, response.compactSeries);
-        }
-        const targetError = response.error ?? response.errors?.[0];
-        if (targetError) {
-          errorsByTarget.set(targetKey, targetError);
-        }
-        if (response.state === LoadingState.Done) {
-          completedTargets.add(targetKey);
-        }
-
+      const publishCombinedResponse = (response: DataQueryResponse) => {
         const allTargetsDone = completedTargets.size === targets.length;
         const errors = targetKeys.flatMap((key) => {
           const error = errorsByTarget.get(key);
@@ -612,6 +604,42 @@ export class PrometheusDatasource
           trackQuery(combinedResponse, request, startTime);
         }
         subscriber.next(combinedResponse);
+      };
+
+      const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
+        latestDataByTarget.set(targetKey, response.data);
+        if (response.compactSeries) {
+          latestCompactSeriesByTarget.set(targetKey, response.compactSeries);
+        }
+        const targetError = response.error ?? response.errors?.[0];
+        if (targetError) {
+          errorsByTarget.set(targetKey, targetError);
+        }
+        if (response.state === LoadingState.Done) {
+          completedTargets.add(targetKey);
+        }
+
+        const allTargetsDone = completedTargets.size === targets.length;
+        if (latestCompactSeriesByTarget.size > 0 && !allTargetsDone) {
+          // Coalesce target arrivals into one cumulative panel update per interval.
+          pendingCompactResponse = response;
+          compactRenderTimer ??= setTimeout(() => {
+            compactRenderTimer = undefined;
+            const pendingResponse = pendingCompactResponse;
+            pendingCompactResponse = undefined;
+            if (pendingResponse && !subscriber.closed) {
+              publishCombinedResponse(pendingResponse);
+            }
+          }, COMPACT_MULTI_TARGET_RENDER_INTERVAL_MS);
+          return;
+        }
+
+        if (compactRenderTimer) {
+          clearTimeout(compactRenderTimer);
+          compactRenderTimer = undefined;
+        }
+        pendingCompactResponse = undefined;
+        publishCombinedResponse(response);
       };
 
       const subscriptions = targets.map((target, index) =>
@@ -642,6 +670,9 @@ export class PrometheusDatasource
       );
 
       return () => {
+        if (compactRenderTimer) {
+          clearTimeout(compactRenderTimer);
+        }
         for (const subscription of subscriptions) {
           subscription.unsubscribe();
         }

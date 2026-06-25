@@ -31,6 +31,7 @@ import { CompactSeriesFlag } from '@grafana/ui/internal';
 import {
   CompactNativeSeriesFlag,
   createCompactNativeRenderPlan,
+  hasCompatibleCompactNativeConfig,
   hasSameCompactNativeTopology,
 } from './compactNativePlan';
 import { CompactFieldConfigOptions } from './compactTypes';
@@ -278,6 +279,41 @@ describe('CompactNativeRenderPlan', () => {
 
     expect(hasSameCompactNativeTopology(equivalent, first)).toBe(true);
     expect(hasSameCompactNativeTopology(changed, first)).toBe(false);
+  });
+
+  test('keeps the plot configuration while a cumulative response adds virtual series', () => {
+    const firstSource = columnarSource([series('A', 'requests', [1, 2])]).source;
+    const nextSource = columnarSource([series('A', 'requests', [1, 2]), series('A', 'errors', [2, 1])]).source;
+    const first = createCompactNativeRenderPlan(firstSource, baseOptions);
+    const next = createCompactNativeRenderPlan(nextSource, baseOptions);
+
+    expect(hasSameCompactNativeTopology(next, first)).toBe(false);
+    expect(hasCompatibleCompactNativeConfig(next, first)).toBe(true);
+  });
+
+  test('rebuilds the plot configuration when a later response adds a value scale', () => {
+    const options: CompactFieldConfigOptions = {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.axisLabel', 'axisLabel', true),
+      ]),
+      fieldConfig: {
+        defaults: { custom: { axisLabel: 'requests' } },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'errors' },
+            properties: [{ id: 'custom.axisLabel', value: 'errors' }],
+          },
+        ],
+      },
+    };
+    const first = createCompactNativeRenderPlan(columnarSource([series('A', 'requests', [1, 2])]).source, options);
+    const next = createCompactNativeRenderPlan(
+      columnarSource([series('A', 'requests', [1, 2]), series('A', 'errors', [2, 1])]).source,
+      options
+    );
+
+    expect(hasCompatibleCompactNativeConfig(next, first)).toBe(false);
   });
 
   test('rejects malformed value matcher options at the descriptor boundary', () => {

@@ -3087,16 +3087,28 @@ function getPointStrokeWidth(style: CompactStyleRecord): number {
   return Math.max(1, (3 + seriesWidth * 2) * 0.2);
 }
 
+export function hasCompatibleCompactRenderSource(previous: CompactRenderSource, next: CompactRenderSource): boolean {
+  if (previous === next) {
+    return true;
+  }
+  if (previous.barOptions?.mode !== next.barOptions?.mode || previous.scales.length !== next.scales.length) {
+    return false;
+  }
+  for (let index = 0; index < previous.scales.length; index++) {
+    if (JSON.stringify(previous.scales[index]) !== JSON.stringify(next.scales[index])) {
+      return false;
+    }
+  }
+  return percentScaleUsageEqual(previous, next);
+}
+
 function validateCompatibleSource(previous: CompactRenderSource, next: CompactRenderSource): void {
   validateSource(next);
-  if (previous.stackGroupCount !== next.stackGroupCount) {
-    throw new Error('Compact source replacement changed stack topology');
+  if (hasCompatibleCompactRenderSource(previous, next)) {
+    return;
   }
-  if (!columnsEqual(previous.columns.stackGroupIds, next.columns.stackGroupIds)) {
-    throw new Error('Compact source replacement changed stack groups');
-  }
-  if (!stackFlagsEqual(previous.columns.flags, next.columns.flags)) {
-    throw new Error('Compact source replacement changed stack participation');
+  if (previous.barOptions?.mode !== next.barOptions?.mode) {
+    throw new Error('Compact source replacement changed grouped-bar mode');
   }
   if (previous.scales.length !== next.scales.length) {
     throw new Error('Compact source replacement changed scale topology');
@@ -3106,6 +3118,23 @@ function validateCompatibleSource(previous: CompactRenderSource, next: CompactRe
       throw new Error('Compact source replacement changed scale identity');
     }
   }
+  throw new Error('Compact source replacement changed percent scale usage');
+}
+
+function percentScaleUsageEqual(previous: CompactRenderSource, next: CompactRenderSource): boolean {
+  const previousPercentScales = new Uint8Array(previous.scales.length);
+  const nextPercentScales = new Uint8Array(next.scales.length);
+  for (let index = 0; index < previous.seriesCount; index++) {
+    if ((previous.columns.flags[index] & CompactSeriesFlag.PercentStack) !== 0) {
+      previousPercentScales[previous.columns.scaleIds[index]] = 1;
+    }
+  }
+  for (let index = 0; index < next.seriesCount; index++) {
+    if ((next.columns.flags[index] & CompactSeriesFlag.PercentStack) !== 0) {
+      nextPercentScales[next.columns.scaleIds[index]] = 1;
+    }
+  }
+  return columnsEqual(previousPercentScales, nextPercentScales);
 }
 
 function copyVisibilityState(previous: CompactVisibilityState, next: CompactVisibilityState): void {
@@ -3285,19 +3314,6 @@ function columnsEqual(left: CompactIndexColumn | undefined, right: CompactIndexC
   }
   for (let index = 0; index < left.length; index++) {
     if (left[index] !== right[index]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function stackFlagsEqual(left: CompactIndexColumn, right: CompactIndexColumn): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  const mask = CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
-  for (let index = 0; index < left.length; index++) {
-    if ((left[index] & mask) !== (right[index] & mask)) {
       return false;
     }
   }

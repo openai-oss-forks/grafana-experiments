@@ -16,6 +16,7 @@ export {
   CompactSeriesFlag,
   getCompactHoverStageProbe,
   getCompactRenderController,
+  hasCompatibleCompactRenderSource,
   installCompactRenderer,
   isCompactRenderSource,
   transferCompactVisibilityState,
