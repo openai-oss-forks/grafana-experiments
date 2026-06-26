@@ -665,6 +665,31 @@ describe('CompactNativeRenderPlan', () => {
     expect(getSeries).not.toHaveBeenCalled();
   });
 
+  test('applies a per-query line override over the default TimeSeries bar style', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2, 3]), series('B', 'errors', [4, 5, 6])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+      ]),
+      fieldConfig: {
+        defaults: { custom: { drawStyle: GraphDrawStyle.Bars } },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byFrameRefID, options: 'B' },
+            properties: [{ id: 'custom.drawStyle', value: GraphDrawStyle.Line }],
+          },
+        ],
+      },
+    });
+
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Bars).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.DrawLine).toBe(0);
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.Bars).toBe(0);
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.DrawLine).toBeTruthy();
+  });
+
   test.each([
     {
       name: 'percent',

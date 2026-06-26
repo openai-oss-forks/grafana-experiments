@@ -44,6 +44,7 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
     const compactXAxisConfig = options?.compactXAxisConfig;
     const compactValueAxisConfig = options?.compactValueAxisConfig;
     const compactPadding = options?.compactPadding;
+    const groupedBarTickSpacing = options?.compactGroupedBarTickSpacing;
 
     return prepareCompactPlotConfigBuilder({
       plan,
@@ -55,6 +56,7 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
       xAxisConfig: { ...getXAxisConfig(annotationLanes), ...compactXAxisConfig },
       valueAxisConfig: compactValueAxisConfig,
       padding: compactPadding,
+      groupedBarTickSpacing,
     });
   };
 

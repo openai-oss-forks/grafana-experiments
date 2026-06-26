@@ -116,11 +116,12 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
   const compactOptions = useMemo(() => {
     const categoriesAreHorizontal = compactOrientation === VizOrientation.Horizontal;
     const tickLabelRotation = -(options.xTickLabelRotation ?? 0);
-    const tickFilter = createCompactTickFilter(options.xTickLabelSpacing ?? 0);
+    const tickLabelSpacing = options.xTickLabelSpacing ?? 0;
     return {
       orientation: compactOrientation,
       tooltip: options.tooltip,
       highlightSeriesOnHover: options.fullHighlight !== false,
+      compactGroupedBarTickSpacing: categoriesAreHorizontal ? tickLabelSpacing : 0,
       compactPadding: createCompactRotationPadding(options.xTickLabelRotation ?? 0, categoriesAreHorizontal),
       compactXAxisConfig: {
         show: adaptedFieldConfig.defaults.custom?.axisPlacement !== AxisPlacement.Hidden,
@@ -129,9 +130,10 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
         grid: { show: false },
         ticks: { show: false },
         tickLabelRotation: categoriesAreHorizontal ? tickLabelRotation : 0,
-        filter: categoriesAreHorizontal ? tickFilter : undefined,
       },
-      compactValueAxisConfig: categoriesAreHorizontal ? undefined : { tickLabelRotation, filter: tickFilter },
+      compactValueAxisConfig: categoriesAreHorizontal
+        ? undefined
+        : { tickLabelRotation, filter: createCompactTickFilter(tickLabelSpacing) },
     };
   }, [
     adaptedFieldConfig.defaults.custom?.axisPlacement,
@@ -197,6 +199,24 @@ export function createCompactRotationPadding(rotation: number, categoriesAreHori
   ];
 }
 
+export function createCompactTickFilter(spacing: number): Axis.Filter | undefined {
+  if (spacing === 0) {
+    return undefined;
+  }
+  return (plot, splits, axisIndex) => {
+    const scale = plot.scales[plot.axes[axisIndex].scale ?? 'x'];
+    const maximumCount = Math.max(1, Math.abs(Math.floor(plot.bbox.width / uPlot.pxRatio / spacing)));
+    const skip = splits.length <= maximumCount ? 1 : Math.ceil(splits.length / maximumCount);
+    const last = splits.length - 1;
+    const filtered = splits.map((value, index) => {
+      const anchoredIndex = spacing > 0 ? index : last - index;
+      return anchoredIndex % skip === 0 ? value : null;
+    });
+    const direction = (scale.dir ?? 1) * (scale.ori === 1 ? -1 : 1);
+    return direction === 1 ? filtered : filtered.reverse();
+  };
+}
+
 function createCompactBarFieldConfigRegistry(): FieldConfigOptionsRegistry {
   const plugin = getPluginImportUtils().getPanelPluginFromCache('barchart');
   if (!plugin) {
@@ -220,22 +240,5 @@ function createGraphProperty(path: (typeof COMPACT_GRAPH_PROPERTIES)[number]): F
     override: CompactFieldConfigEditor,
     process: identityOverrideProcessor,
     shouldApply: (field) => field.type === FieldType.number,
-  };
-}
-
-export function createCompactTickFilter(spacing: number): Axis.Filter | undefined {
-  if (spacing === 0) {
-    return undefined;
-  }
-  return (plot, splits, axisIndex) => {
-    const scale = plot.scales[plot.axes[axisIndex].scale ?? 'x'];
-    const dimension = (scale.ori === 1 ? plot.bbox.height : plot.bbox.width) / uPlot.pxRatio;
-    const maxTicks = Math.max(1, Math.floor(dimension / Math.abs(spacing)));
-    const skip = splits.length <= maxTicks ? 1 : Math.ceil(splits.length / maxTicks);
-    const last = splits.length - 1;
-    return splits.map((value, index) => {
-      const anchoredIndex = spacing > 0 ? index : last - index;
-      return anchoredIndex % skip === 0 ? value : null;
-    });
   };
 }

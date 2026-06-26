@@ -7,14 +7,13 @@ import { setPluginImportUtils } from '@grafana/runtime';
 import { GraphDrawStyle, StackingMode, TooltipDisplayMode, VisibilityMode, VizOrientation } from '@grafana/schema';
 import { measureText, UPLOT_AXIS_FONT_SIZE } from '@grafana/ui';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
-import { formatCompactBarTimeTicks } from 'app/core/components/TimeSeries/utils';
 import { CompactTooltipPlugin } from 'app/plugins/panel/timeseries/CompactTooltipPlugin';
 
 import {
   buildCompactBarFieldConfig,
   CompactBarChart,
-  createCompactTickFilter,
   createCompactRotationPadding,
+  createCompactTickFilter,
   getRenderableCompactBarSeries,
 } from './CompactBarChart';
 import { Options } from './panelcfg.gen';
@@ -78,6 +77,27 @@ describe('compact standalone Bar chart', () => {
     expect(tooltip.type).toBe(CompactTooltipPlugin);
     expect(tooltip.props.queryZoom).toBe(onChangeTimeRange);
     expect(timeSeriesProps.options.compactXAxisConfig.label).toBe('Timestamp');
+    expect(timeSeriesProps.options.compactGroupedBarTickSpacing).toBe(0);
+  });
+
+  it('keeps horizontal Bar chart label spacing on the horizontal value axis', () => {
+    render(
+      createElement(CompactBarChart, {
+        compactSeries,
+        data: { structureRev: 1 },
+        fieldConfig,
+        options: { ...options, orientation: VizOrientation.Horizontal, xTickLabelSpacing: 100 },
+        timeRange: {},
+        timeZone: 'utc',
+        width: 800,
+        height: 400,
+        replaceVariables: (value: string) => value,
+      } as unknown as PanelProps<Options> & { compactSeries: CompactTimeSeriesData })
+    );
+
+    const timeSeriesProps = (TimeSeries as unknown as jest.Mock).mock.calls.at(-1)?.[0];
+    expect(timeSeriesProps.options.compactGroupedBarTickSpacing).toBe(0);
+    expect(timeSeriesProps.options.compactValueAxisConfig.filter).toEqual(expect.any(Function));
   });
 
   it('withholds compact data for an explicit or categorical X field', () => {
@@ -99,25 +119,17 @@ describe('compact standalone Bar chart', () => {
     expect(createCompactRotationPadding(-45)).toEqual(expect.arrayContaining([expect.any(Number)]));
   });
 
-  it('keeps filtered time ticks hidden for positive and negative label spacing', () => {
-    const splits = [1_718_644_800_000, 1_718_644_860_000, 1_718_644_920_000, 1_718_644_980_000, 1_718_645_040_000];
+  it('matches legacy horizontal-axis spacing and negative anchoring', () => {
+    const splits = [0, 1, 2, 3, 4];
     const plot = {
-      axes: [{ scale: 'x' }],
-      bbox: { width: 200 * uPlot.pxRatio, height: 100 * uPlot.pxRatio },
-      scales: { x: { ori: 0 } },
+      axes: [{ scale: 'y' }],
+      bbox: { width: 200 * uPlot.pxRatio, height: 1000 * uPlot.pxRatio },
+      scales: { y: { ori: 0, dir: 1 } },
     } as unknown as uPlot;
 
     expect(createCompactTickFilter(0)).toBeUndefined();
-    const positive = createCompactTickFilter(100)!(plot, splits, 0, 0, 0);
-    const negative = createCompactTickFilter(-100)!(plot, splits, 0, 0, 0);
-
-    expect(positive).toEqual([splits[0], null, null, splits[3], null]);
-    expect(negative).toEqual([null, splits[1], null, null, splits[4]]);
-    for (const filtered of [positive, negative]) {
-      const labels = formatCompactBarTimeTicks(filtered, 'utc', 60_000);
-      expect(labels.filter((label) => label != null)).not.toContain('Invalid date');
-      expect(labels).toEqual(filtered.map((value) => (value == null ? null : expect.any(String))));
-    }
+    expect(createCompactTickFilter(100)!(plot, splits, 0, 0, 0)).toEqual([splits[0], null, null, splits[3], null]);
+    expect(createCompactTickFilter(-100)!(plot, splits, 0, 0, 0)).toEqual([null, splits[1], null, null, splits[4]]);
   });
 
   it('adapts panel-level bar settings without mutating the saved field configuration', () => {

@@ -368,7 +368,7 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  			}
  
  			// closest pt values
-@@ -5478,6 +5618,23 @@ function uPlot(opts, data, then) {
+@@ -5478,6 +5618,30 @@ function uPlot(opts, data, then) {
  				}
  			}
  
@@ -386,6 +386,13 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
 +					_ptFill = compactCursor.fill;
 +					_ptStroke = compactCursor.stroke;
 +					_centered = compactCursor.centered ?? true;
++				}
++				if (cursorOnePt && cursorPts[0] != null) {
++					let point = cursorPts[0];
++					let rectangular = compactCursor?.hasPoint && compactCursor.centered === false;
++					point.dataset.compactBorderWidth ??= point.style.borderWidth;
++					point.style.borderRadius = rectangular ? '0' : '';
++					point.style.borderWidth = rectangular ? '0' : point.dataset.compactBorderWidth;
 +				}
 +			}
 +
@@ -944,7 +951,7 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  			}
  
  			// closest pt values
-@@ -5476,6 +5616,23 @@ function uPlot(opts, data, then) {
+@@ -5476,6 +5616,30 @@ function uPlot(opts, data, then) {
  				}
  			}
  
@@ -962,6 +969,13 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
 +					_ptFill = compactCursor.fill;
 +					_ptStroke = compactCursor.stroke;
 +					_centered = compactCursor.centered ?? true;
++				}
++				if (cursorOnePt && cursorPts[0] != null) {
++					let point = cursorPts[0];
++					let rectangular = compactCursor?.hasPoint && compactCursor.centered === false;
++					point.dataset.compactBorderWidth ??= point.style.borderWidth;
++					point.style.borderRadius = rectangular ? '0' : '';
++					point.style.borderWidth = rectangular ? '0' : point.dataset.compactBorderWidth;
 +				}
 +			}
 +

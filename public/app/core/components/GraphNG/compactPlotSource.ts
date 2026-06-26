@@ -58,6 +58,8 @@ export interface CompactPlotSource {
   prepareBufferScan(seriesIndex: number, from: number, target: CompactBufferScan): boolean;
   extent(seriesIndex: number, from: number, to: number, mode: CompactScaleMode): [number | null, number | null];
   nearestPresent(seriesIndex: number, index: number, bias: -1 | 0 | 1): number | null;
+  /** Tests the open interval between neighboring rendered vertices; endpoint rendering is handled by the caller. */
+  isDirectSegmentConnected(seriesIndex: number, from: number, to: number): boolean;
 }
 
 export function createCompactPlotSource(
@@ -78,6 +80,7 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
   private readonly spanNulls: Float64Array;
   private readonly insertNulls: Float64Array;
   private readonly rankCheckpoints = new Map<number, Uint32Array>();
+  private readonly rankCursors = new Map<number, { index: number; rank: number }>();
   private readonly constantIndexes = new Map<number, number | null>();
 
   constructor(
@@ -336,6 +339,34 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
         : right;
   }
 
+  isDirectSegmentConnected(seriesIndex: number, from: number, to: number): boolean {
+    this.assertSeriesIndex(seriesIndex);
+    this.assertInclusiveRange(from, to);
+    if (to - from <= 1 || this.getTransform(seriesIndex) === TRANSFORM_CONSTANT) {
+      return true;
+    }
+
+    const axis = this.getAxis(seriesIndex);
+    const fromTimestamp = this.xAt(from);
+    const toTimestamp = this.xAt(to);
+    const firstInteriorLocal = Math.max(0, Math.floor((fromTimestamp - axis.start) / axis.step) + 1);
+    const lastInteriorLocal = Math.min(axis.count - 1, Math.ceil((toTimestamp - axis.start) / axis.step) - 1);
+    const hasInteriorLocal = firstInteriorLocal <= lastInteriorLocal;
+    if (hasInteriorLocal) {
+      const probeValue = this.readConfiguredLocalValue(seriesIndex, firstInteriorLocal);
+      return (
+        probeValue != null ||
+        this.applyMissingRenderSemantics(seriesIndex, axis, probeValue, axis.start + firstInteriorLocal * axis.step) !==
+          null
+      );
+    }
+
+    return (
+      this.applyMissingRenderSemantics(seriesIndex, axis, undefined, this.xAt(from + 1)) !== null &&
+      this.applyMissingRenderSemantics(seriesIndex, axis, undefined, this.xAt(to - 1)) !== null
+    );
+  }
+
   private findPresentGlobalIndex(
     seriesIndex: number,
     axis: CompactTimeSeriesAxis,
@@ -359,17 +390,18 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
   }
 
   private findPresentLocalIndex(seriesIndex: number, start: number, direction: -1 | 1): number | null {
+    const axisCount = this.getAxis(seriesIndex).count;
+    if ((direction < 0 && start < 0) || (direction > 0 && start >= axisCount)) {
+      return null;
+    }
+    const clampedStart = Math.max(0, Math.min(axisCount - 1, start));
     const presenceByteLength = this.getPresenceByteLength(seriesIndex);
     const noValue = this.noValues[this.optionIds[seriesIndex]];
     if (!Number.isNaN(noValue)) {
-      return start;
+      return clampedStart;
     }
     if (presenceByteLength === 0) {
-      for (
-        let localIndex = start;
-        localIndex >= 0 && localIndex < this.getAxis(seriesIndex).count;
-        localIndex += direction
-      ) {
+      for (let localIndex = clampedStart; localIndex >= 0 && localIndex < axisCount; localIndex += direction) {
         if (this.readConfiguredLocalValue(seriesIndex, localIndex) != null) {
           return localIndex;
         }
@@ -377,8 +409,31 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
       return null;
     }
 
-    const axisCount = this.getAxis(seriesIndex).count;
+    if (axisCount < MIN_RANK_CHECKPOINT_POINTS) {
+      return this.findPresentLocalIndexByBitmap(seriesIndex, clampedStart, direction, axisCount);
+    }
+
+    let ordinal =
+      direction < 0 ? this.rankBefore(seriesIndex, clampedStart + 1) - 1 : this.rankBefore(seriesIndex, clampedStart);
+    const presentCount = this.getPresentCount(seriesIndex);
+    while (ordinal >= 0 && ordinal < presentCount) {
+      const candidate = this.selectPresentLocalIndex(seriesIndex, ordinal);
+      if (this.readConfiguredPackedValue(seriesIndex, ordinal) != null) {
+        return candidate;
+      }
+      ordinal += direction;
+    }
+    return null;
+  }
+
+  private findPresentLocalIndexByBitmap(
+    seriesIndex: number,
+    start: number,
+    direction: -1 | 1,
+    axisCount: number
+  ): number | null {
     const byteOffset = this.getPresenceByteOffset(seriesIndex);
+    let packedIndex = direction < 0 ? this.rankBefore(seriesIndex, start + 1) - 1 : this.rankBefore(seriesIndex, start);
     let localIndex = start;
     while (localIndex >= 0 && localIndex < axisCount) {
       const byteIndex = localIndex >> 3;
@@ -387,9 +442,13 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
         const byteStart = byteIndex << 3;
         const byteEnd = Math.min(axisCount, byteStart + 8);
         for (let candidate = localIndex; candidate >= byteStart && candidate < byteEnd; candidate += direction) {
-          if ((byte & (1 << (candidate & 7))) !== 0 && this.readConfiguredLocalValue(seriesIndex, candidate) != null) {
+          if ((byte & (1 << (candidate & 7))) === 0) {
+            continue;
+          }
+          if (this.readConfiguredPackedValue(seriesIndex, packedIndex) != null) {
             return candidate;
           }
+          packedIndex += direction;
         }
       }
       localIndex = direction < 0 ? (byteIndex << 3) - 1 : (byteIndex + 1) << 3;
@@ -504,6 +563,15 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
     if (value != null) {
       return value;
     }
+    return this.applyMissingRenderSemantics(seriesIndex, axis, value, timestamp);
+  }
+
+  private applyMissingRenderSemantics(
+    seriesIndex: number,
+    axis: CompactTimeSeriesAxis,
+    value: null | undefined,
+    timestamp: number
+  ): CompactPlotValue {
     const spanNulls = this.getSpanNulls(seriesIndex);
     if (spanNulls === SPAN_NULLS_ALWAYS) {
       return undefined;
@@ -549,11 +617,14 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
     hasPreviousValue: boolean,
     hasNextValue: boolean
   ): boolean {
+    if (spanNulls === -1) {
+      return false;
+    }
     const delta = nextTimestamp - previousTimestamp;
     return (
       delta <= insertThreshold ||
       spanNulls === SPAN_NULLS_ALWAYS ||
-      (hasPreviousValue && hasNextValue && Number.isFinite(spanNulls) && spanNulls !== -1 && delta < spanNulls)
+      (hasPreviousValue && hasNextValue && Number.isFinite(spanNulls) && delta < spanNulls)
     );
   }
 
@@ -573,12 +644,8 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
     start: number,
     direction: -1 | 1
   ): number | null {
-    for (let localIndex = start; localIndex >= 0 && localIndex < axis.count; localIndex += direction) {
-      if (this.readConfiguredLocalValue(seriesIndex, localIndex) != null) {
-        return axis.start + axis.step * localIndex;
-      }
-    }
-    return null;
+    const localIndex = this.findPresentLocalIndex(seriesIndex, start, direction);
+    return localIndex == null ? null : axis.start + axis.step * localIndex;
   }
 
   private readConfiguredLocalValue(seriesIndex: number, localIndex: number): number | null {
@@ -659,6 +726,14 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
     return Number.isFinite(value) ? value : null;
   }
 
+  private readConfiguredPackedValue(seriesIndex: number, packedIndex: number): number | null {
+    const value = this.view.getFloat64(
+      this.getValuesByteOffset(seriesIndex) + packedIndex * Float64Array.BYTES_PER_ELEMENT,
+      true
+    );
+    return this.applyValueOptions(Number.isFinite(value) ? value : null, seriesIndex);
+  }
+
   private isPresent(seriesIndex: number, localIndex: number): boolean {
     const byteLength = this.getPresenceByteLength(seriesIndex);
     return (
@@ -672,19 +747,68 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
       return localIndex;
     }
     const axis = this.getAxis(seriesIndex);
+    if (axis.count < MIN_RANK_CHECKPOINT_POINTS) {
+      const cursor = this.rankCursors.get(seriesIndex);
+      let rank: number;
+      if (cursor == null) {
+        rank = this.countPresent(seriesIndex, 0, localIndex);
+      } else if (localIndex >= cursor.index) {
+        rank = cursor.rank + this.countPresent(seriesIndex, cursor.index, localIndex);
+      } else {
+        rank = cursor.rank - this.countPresent(seriesIndex, localIndex, cursor.index);
+      }
+      this.rankCursors.set(seriesIndex, { index: localIndex, rank });
+      return rank;
+    }
     let from = 0;
     let rank = 0;
-    if (axis.count >= MIN_RANK_CHECKPOINT_POINTS && localIndex >= RANK_CHECKPOINT_STRIDE) {
-      let checkpoints = this.rankCheckpoints.get(seriesIndex);
-      if (!checkpoints) {
-        checkpoints = this.buildRankCheckpoints(seriesIndex, axis.count);
-        this.rankCheckpoints.set(seriesIndex, checkpoints);
-      }
+    if (localIndex >= RANK_CHECKPOINT_STRIDE) {
+      const checkpoints = this.getRankCheckpoints(seriesIndex, axis.count);
       const block = Math.floor(localIndex / RANK_CHECKPOINT_STRIDE);
       rank = checkpoints[block];
       from = block * RANK_CHECKPOINT_STRIDE;
     }
     return rank + this.countPresent(seriesIndex, from, localIndex);
+  }
+
+  private selectPresentLocalIndex(seriesIndex: number, ordinal: number): number {
+    const axisCount = this.getAxis(seriesIndex).count;
+    let from = 0;
+    let rank = 0;
+    if (axisCount >= MIN_RANK_CHECKPOINT_POINTS) {
+      const checkpoints = this.getRankCheckpoints(seriesIndex, axisCount);
+      let low = 0;
+      let high = checkpoints.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (checkpoints[middle] <= ordinal) {
+          low = middle;
+        } else {
+          high = middle - 1;
+        }
+      }
+      from = low * RANK_CHECKPOINT_STRIDE;
+      rank = checkpoints[low];
+    }
+    for (let index = from; index < axisCount; index++) {
+      if (!this.isPresent(seriesIndex, index)) {
+        continue;
+      }
+      if (rank === ordinal) {
+        return index;
+      }
+      rank++;
+    }
+    throw new RangeError(`Compact present-value ordinal ${ordinal} is out of range`);
+  }
+
+  private getRankCheckpoints(seriesIndex: number, pointCount: number): Uint32Array {
+    let checkpoints = this.rankCheckpoints.get(seriesIndex);
+    if (!checkpoints) {
+      checkpoints = this.buildRankCheckpoints(seriesIndex, pointCount);
+      this.rankCheckpoints.set(seriesIndex, checkpoints);
+    }
+    return checkpoints;
   }
 
   private buildRankCheckpoints(seriesIndex: number, pointCount: number): Uint32Array {
@@ -752,6 +876,13 @@ class BufferBackedCompactPlotSource implements CompactPlotSource {
       return this.data.series.columns.presenceByteLengths[this.data.series.resolveColumnIndex(seriesIndex)];
     }
     return this.data.series[seriesIndex].presenceByteLength;
+  }
+
+  private getPresentCount(seriesIndex: number): number {
+    if (isColumnarSeries(this.data.series)) {
+      return this.data.series.columns.presentCounts[this.data.series.resolveColumnIndex(seriesIndex)];
+    }
+    return this.data.series[seriesIndex].presentCount;
   }
 
   private getValuesByteOffset(seriesIndex: number): number {

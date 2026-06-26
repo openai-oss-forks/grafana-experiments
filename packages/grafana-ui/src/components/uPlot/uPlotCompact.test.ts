@@ -198,6 +198,7 @@ describe('uPlot compact X host', () => {
     expect(marker?.style.background).toBe('rgb(12, 34, 56)');
     expect(marker?.style.borderColor).toBe('rgba(12, 34, 56, 0.5)');
     expect(marker?.style.borderWidth).toBe('2.5px');
+    expect(marker?.style.borderRadius).toBe('');
 
     useBarRectangle = true;
     Reflect.set(receiverPlot.cursor, 'event', new MouseEvent('mousemove'));
@@ -210,6 +211,13 @@ describe('uPlot compact X host', () => {
     );
     expect(marker?.style.marginLeft).toBe('0px');
     expect(marker?.style.marginTop).toBe('0px');
+    expect(marker?.style.borderRadius).toBe('0');
+    expect(marker?.style.borderWidth).toBe('0px');
+
+    useBarRectangle = false;
+    receiverPlot.setCursor({ left: 120, top: 30 }, true, false, 'native-sync');
+    expect(marker?.style.borderRadius).toBe('');
+    expect(marker?.style.borderWidth).toBe('2.5px');
 
     receiverController.updateCursor.mockReturnValue(null);
     sourcePlot.setCursor({ left: 120, top: 50 }, true, true);

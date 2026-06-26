@@ -70,6 +70,33 @@ interface CompactRect {
   height: number;
 }
 
+interface CompactBarGeometry extends CompactRect {
+  readonly outerBandStart: number;
+  readonly outerBarSize: number;
+  readonly outerValueStart: number;
+  readonly outerValueSize: number;
+  readonly valuePosition: number;
+  readonly basePosition: number;
+  readonly horizontalGroups: boolean;
+  readonly strokeWidth: number;
+  readonly groupedStrokeSuppressed: boolean;
+}
+
+interface CompactAreaSample {
+  readonly index: number;
+  readonly groupPosition: number;
+  readonly top: number;
+  readonly base: number;
+}
+
+interface CompactGroupedBarSplitOptions {
+  maximumCount?: number;
+  anchorEnd?: boolean;
+  reverse?: boolean;
+}
+
+type CompactAreaPoint = Pick<CompactAreaSample, 'groupPosition' | 'top'>;
+
 export interface CompactScaleRecord {
   readonly key: string;
   readonly mode?: CompactPlotScaleMode;
@@ -183,6 +210,8 @@ const enum CursorValueState {
 }
 
 const enum CursorTargetPriority {
+  PreciseGeometry,
+  BarBody,
   NearbyGeometry,
   AreaFill,
   DistantGeometry,
@@ -207,11 +236,13 @@ const enum ScanOperation {
 const controllers = new WeakMap<CompactRenderSource, CompactRenderController>();
 const PROGRESSIVE_SAMPLE_THRESHOLD = 1_000_000;
 const PROGRESSIVE_POINT_BUDGET = 32_000;
+const MAX_GROUPED_BAR_SPLITS = 2_048;
 const CURSOR_STACK_CACHE_SIZE = 4;
 const BAR_VALUE_MIN_FONT_SIZE = 8;
 const BAR_VALUE_MAX_FONT_SIZE = 30;
 const BAR_VALUE_FIT_RATIO = 0.65;
 const retainPixel = (value: number) => value;
+const interpolate = (from: number, to: number, fraction: number) => from + (to - from) * fraction;
 const hoverStageProbe = getCompactHoverStageProbe();
 
 function normalizeBarCadence(value: number): number {
@@ -374,8 +405,17 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private cursorSnapshotDataIndexes: Int32Array | null = null;
   private cursorSnapshotIndex = -1;
   private cursorSnapshotMouseX = Number.NaN;
+  private cursorSnapshotBarBodyPresent = false;
+  private cursorSnapshotBarSeriesIndex = -1;
+  private cursorSnapshotBarDataIndex = -1;
   private cursorTargetPriority = CursorTargetPriority.DistantGeometry;
-  private cursorTargetLineDistance = Number.POSITIVE_INFINITY;
+  private cursorTargetDistance = Number.POSITIVE_INFINITY;
+  private cursorBarBodyPresent = false;
+  private cursorBarSeriesIndex = -1;
+  private cursorBarDataIndex = -1;
+  private readonly cursorAreaVertexCache = new Map<number, number | null>();
+  private readonly cursorStackPresenceCache = new Map<number, boolean>();
+  private readonly cursorAreaSamples: CompactAreaSample[] = [];
   private readonly cursorSnapshot: MutableCompactCursorSnapshot;
   private gradientCache: Array<CanvasGradient | undefined> = [];
   private stackFrom = 0;
@@ -416,7 +456,6 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private barStrokeWidth = 0;
   private barPixelRound = retainPixel;
   private barBaselineRound = retainPixel;
-  private groupedBarConfiguredStrokeWidth = 0;
   private groupedBarStrokeSuppressed = false;
   private groupedBarAutoValueFontSize: number | null = null;
   private barWidthSamples: Array<CompactBarWidthSample | null> = [];
@@ -624,7 +663,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     return [this.groupedBarValueAt(minimumIndex), this.groupedBarValueAt(maximumIndex)];
   }
 
-  groupedBarSplits(minimum: number, maximum: number, maximumCount: number): number[] {
+  groupedBarSplits(minimum: number, maximum: number, options: CompactGroupedBarSplitOptions = {}): number[] {
     const pointCount = this.source.pointCount;
     if (pointCount === 0) {
       return [];
@@ -634,19 +673,18 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (from > to) {
       return [];
     }
-    const count = to - from + 1;
-    const limit = Number.isFinite(maximumCount) ? Math.max(1, Math.floor(maximumCount)) : count;
-    const splitCount = Math.min(count, limit);
-    if (splitCount === 1) {
-      return [this.source.xAt(from)];
-    }
-
+    const visibleCount = to - from + 1;
+    const requestedMaximum =
+      options.maximumCount == null ? MAX_GROUPED_BAR_SPLITS : Math.max(1, Math.floor(options.maximumCount));
+    const maximumCount = Math.min(visibleCount, MAX_GROUPED_BAR_SPLITS, requestedMaximum);
+    const skip = visibleCount < maximumCount ? 1 : Math.ceil(visibleCount / maximumCount);
+    const firstOffset = options.anchorEnd ? (visibleCount - 1) % skip : 0;
+    const splitCount = Math.floor((visibleCount - 1 - firstOffset) / skip) + 1;
     const splits = new Array<number>(splitCount);
     for (let split = 0; split < splitCount; split++) {
-      const index = from + Math.round((split * (count - 1)) / (splitCount - 1));
-      splits[split] = this.source.xAt(index);
+      splits[split] = this.source.xAt(from + firstOffset + split * skip);
     }
-    return splits;
+    return options.reverse ? splits.reverse() : splits;
   }
 
   replaceSource(oldSource: uPlot.CompactPlotSource, nextSource: uPlot.CompactPlotSource): void {
@@ -866,7 +904,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         (flags & CompactSeriesFlag.PathMask) !== CompactSeriesFlag.Linear ||
         (flags & CompactSeriesFlag.DrawLine) === 0 ||
         (flags & (CompactSeriesFlag.Points | CompactSeriesFlag.Stack | CompactSeriesFlag.Bars)) !== 0 ||
-        ((flags & CompactSeriesFlag.AutoPoints) !== 0 && this.shouldShowAutoPoints(style, from, to)) ||
+        ((flags & CompactSeriesFlag.AutoPoints) !== 0 && this.shouldShowAutoPoints(this.plot!, style, from, to)) ||
         style.areaFill != null ||
         style.areaGradient != null ||
         (style.lineDash?.length ?? 0) !== 0 ||
@@ -955,9 +993,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         this.removeFocusOverlay();
       }
       if (redraw) {
-        if (this.source.barOptions?.mode === 'grouped') {
-          this.initializeBarSlots();
-        }
+        this.initializeBarSlots();
         this.invalidateBarWidthSamples();
       }
       if (
@@ -1084,7 +1120,12 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     state.fill = '';
     state.stroke = '';
     this.cursorTargetPriority = CursorTargetPriority.DistantGeometry;
-    this.cursorTargetLineDistance = Number.POSITIVE_INFINITY;
+    this.cursorTargetDistance = Number.POSITIVE_INFINITY;
+    this.cursorBarBodyPresent = false;
+    this.cursorBarSeriesIndex = -1;
+    this.cursorBarDataIndex = -1;
+    this.cursorAreaVertexCache.clear();
+    this.cursorStackPresenceCache.clear();
 
     if (index == null || index < 0 || index >= this.source.pointCount) {
       return null;
@@ -1094,14 +1135,23 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     if (this.source.stackGroupCount > 0) {
       this.cursorStackIndexes.fill(-1);
     }
+    if (this.visibleBarSlotCount > 0) {
+      this.selectCursorBarsFromSource(plot, index, mouseY);
+      if (this.cursorBarBodyPresent && !state.centered) {
+        this.cursorBarSeriesIndex = state.seriesIndex;
+        this.cursorBarDataIndex = state.dataIndex;
+      }
+      if (this.source.stackGroupCount > 0) {
+        this.cursorStackIndexes.fill(-1);
+      }
+    }
     const needsSnapshot = origin !== 'native-sync' && this.source.cursorMode === 'multi';
     if (needsSnapshot) {
       this.ensureCursorSnapshotScratch();
       if (!this.isCursorSnapshotCurrent(index, plot)) {
-        this.populateCursorSnapshot(index, plot, mouseY);
-      } else {
-        this.selectCursorPointFromSnapshot(plot, index, mouseY);
+        this.populateCursorSnapshot(index, plot);
       }
+      this.selectCursorPointFromSnapshot(plot, index, mouseY);
     } else if (this.cursorSnapshotValues.length > 0 && this.isCursorSnapshotCurrent(index, plot)) {
       this.selectCursorPointFromSnapshot(plot, index, mouseY);
     } else {
@@ -1135,10 +1185,17 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       if (!this.isVisible(seriesIndex)) {
         continue;
       }
+      const flags = this.source.columns.flags[seriesIndex];
+      if ((flags & CompactSeriesFlag.Bars) !== 0) {
+        if ((flags & (CompactSeriesFlag.Points | CompactSeriesFlag.AutoPoints)) !== 0) {
+          this.considerCursorBarCandidates(plot, seriesIndex, index, mouseY, false);
+        }
+        continue;
+      }
       let dataIndex = index;
       let value = this.source.yAt(seriesIndex, dataIndex);
       if (value == null) {
-        const nearest = this.nearestPresentAtCursor(plot, seriesIndex, index);
+        const nearest = this.nearestCursorDataIndex(plot, seriesIndex, index);
         if (nearest == null) {
           continue;
         }
@@ -1154,10 +1211,74 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       if (!this.isVisible(seriesIndex)) {
         continue;
       }
-      const dataIndex = this.readCursorSnapshotDataIndex(seriesIndex);
-      const value =
+      const flags = this.source.columns.flags[seriesIndex];
+      if ((flags & CompactSeriesFlag.Bars) !== 0) {
+        if ((flags & (CompactSeriesFlag.Points | CompactSeriesFlag.AutoPoints)) !== 0) {
+          this.considerCursorBarCandidates(plot, seriesIndex, index, mouseY, false);
+        }
+        continue;
+      }
+      let dataIndex = this.readCursorSnapshotDataIndex(seriesIndex);
+      let value =
         dataIndex === index ? this.readCursorSnapshotValue(seriesIndex) : this.source.yAt(seriesIndex, dataIndex);
+      if (value == null) {
+        const focusIndex = this.nearestCursorDataIndex(plot, seriesIndex, index);
+        if (focusIndex != null) {
+          dataIndex = focusIndex;
+          value = this.source.yAt(seriesIndex, focusIndex);
+        }
+      }
       this.considerCursorPoint(plot, seriesIndex, index, dataIndex, value, mouseY);
+    }
+  }
+
+  private selectCursorBarsFromSource(plot: uPlot, index: number, mouseY: number): void {
+    for (let seriesIndex = 0; seriesIndex < this.source.seriesCount; seriesIndex++) {
+      if (this.isVisible(seriesIndex) && (this.source.columns.flags[seriesIndex] & CompactSeriesFlag.Bars) !== 0) {
+        this.considerCursorBarCandidates(plot, seriesIndex, index, mouseY);
+      }
+    }
+  }
+
+  private considerCursorBarCandidates(
+    plot: uPlot,
+    seriesIndex: number,
+    cursorIndex: number,
+    mouseY: number,
+    includeBarBody = true
+  ): void {
+    const source = this.source;
+    const currentValue = source.yAt(seriesIndex, cursorIndex);
+    if (currentValue != null) {
+      this.considerCursorPoint(plot, seriesIndex, cursorIndex, cursorIndex, currentValue, mouseY, includeBarBody);
+    }
+
+    const leftStart = currentValue == null ? cursorIndex : cursorIndex - 1;
+    const left = leftStart >= 0 ? source.nearestPresent(seriesIndex, leftStart, -1) : null;
+    if (left != null && left !== cursorIndex) {
+      this.considerCursorPoint(
+        plot,
+        seriesIndex,
+        cursorIndex,
+        left,
+        source.yAt(seriesIndex, left),
+        mouseY,
+        includeBarBody
+      );
+    }
+
+    const rightStart = currentValue == null ? cursorIndex : cursorIndex + 1;
+    const right = rightStart < source.pointCount ? source.nearestPresent(seriesIndex, rightStart, 1) : null;
+    if (right != null && right !== cursorIndex && right !== left) {
+      this.considerCursorPoint(
+        plot,
+        seriesIndex,
+        cursorIndex,
+        right,
+        source.yAt(seriesIndex, right),
+        mouseY,
+        includeBarBody
+      );
     }
   }
 
@@ -1167,71 +1288,136 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     cursorIndex: number,
     dataIndex: number,
     rawValue: CompactPlotValue,
-    mouseY: number
+    mouseY: number,
+    includeBarBody = true
   ): void {
     if (rawValue == null) {
       return;
     }
 
     const flags = this.source.columns.flags[seriesIndex];
-    const groupedBar = this.source.barOptions?.mode === 'grouped' && (flags & CompactSeriesFlag.Bars) !== 0;
-    if (!groupedBar && !this.isWithinCursorProximity(plot, seriesIndex, cursorIndex, dataIndex)) {
+    const style = this.getStyle(seriesIndex);
+    const hasBarFlag = (flags & CompactSeriesFlag.Bars) !== 0;
+    const bar = includeBarBody && hasBarFlag && this.hasVisibleBarBody(style);
+    const areaFill = !hasBarFlag && this.hasAreaFill(flags, style);
+    const lineStroke =
+      !hasBarFlag && (flags & CompactSeriesFlag.DrawLine) !== 0 && (style.lineWidth ?? 1) > 0 && (style.alpha ?? 1) > 0;
+    const linePathHit = lineStroke && this.cursorBarBodyPresent;
+    const visiblePointMarkers =
+      (this.cursorBarBodyPresent || hasBarFlag) &&
+      this.hasVisiblePointMarkers(plot, flags, style, this.focusVisibleFrom, this.focusVisibleTo);
+    if (hasBarFlag && !bar && !visiblePointMarkers) {
+      return;
+    }
+    const withinGroupProximity = this.isWithinCursorProximity(plot, seriesIndex, cursorIndex, dataIndex);
+    if (!bar && !areaFill && !linePathHit && !withinGroupProximity) {
       return;
     }
     this.currentCursorStackBase = 0;
     const value = this.stackCursorValue(seriesIndex, dataIndex, rawValue);
+    const stackBase = this.currentCursorStackBase;
     const scaleKey = this.getScaleKey(seriesIndex);
     const top = plot.valToPos(value, scaleKey);
-    const style = this.getStyle(seriesIndex);
-    const barRect = groupedBar ? this.getCursorBarRect(plot, seriesIndex, dataIndex, value, scaleKey) : null;
-    if (
-      groupedBar &&
-      (!barRect || !rectContains(barRect, this.requireCursorGroupPosition(plot), mouseY, plot.scales.x.ori === 1))
-    ) {
+    let barRect = bar ? this.getCursorBarRect(plot, seriesIndex, dataIndex, value, scaleKey, style) : null;
+    if (barRect && !rectContains(barRect, this.requireCursorGroupPosition(plot), mouseY, plot.scales.x.ori === 1)) {
+      barRect = null;
+    }
+    this.cursorBarBodyPresent ||= barRect != null;
+    if (bar && this.source.barOptions?.mode === 'grouped' && !barRect) {
+      return;
+    }
+    const pathBand =
+      areaFill || linePathHit
+        ? this.getCursorAreaBand(
+            plot,
+            seriesIndex,
+            cursorIndex,
+            { index: dataIndex, value, base: stackBase },
+            flags,
+            style,
+            scaleKey
+          )
+        : null;
+    const areaBand = areaFill ? pathBand : null;
+    if (!barRect && !withinGroupProximity && !pathBand) {
       return;
     }
     const focus = plot.focus;
-    const lineDistance = barRect
-      ? 0
-      : Math.abs(focus.dist?.(plot, seriesIndex + 1, dataIndex, top, mouseY) ?? top - mouseY);
+    const pathTop = pathBand?.top ?? top;
+    const lineDistance = Math.abs(focus.dist?.(plot, seriesIndex + 1, dataIndex, pathTop, mouseY) ?? pathTop - mouseY);
     const bias = focus.bias ?? 0;
     if (bias !== 0) {
       const mouseValue = plot.posToVal(mouseY, scaleKey);
-      const valueSign = value >= 0 ? 1 : -1;
+      const focusValue = pathBand ? plot.posToVal(pathBand.top, scaleKey) : value;
+      const valueSign = focusValue >= 0 ? 1 : -1;
       const mouseSign = mouseValue >= 0 ? 1 : -1;
       const matchesBias =
         valueSign === mouseSign &&
         (mouseSign === 1
           ? bias === 1
-            ? value >= mouseValue
-            : value <= mouseValue
+            ? focusValue >= mouseValue
+            : focusValue <= mouseValue
           : bias === 1
-            ? value <= mouseValue
-            : value >= mouseValue);
+            ? focusValue <= mouseValue
+            : focusValue >= mouseValue);
       if (!matchesBias) {
         return;
       }
     }
     const areaFillTarget =
-      barRect == null && dataIndex === cursorIndex && this.isAreaFillTarget(plot, flags, style, scaleKey, top, mouseY);
+      barRect == null &&
+      areaBand != null &&
+      mouseY >= Math.min(areaBand.top, areaBand.base) &&
+      mouseY <= Math.max(areaBand.top, areaBand.base);
+    const preciseLineTarget =
+      barRect == null &&
+      linePathHit &&
+      (pathBand != null || withinGroupProximity) &&
+      lineDistance <= Math.max(0, style.lineWidth ?? 1) / 2;
+    const pointRadius = Math.max(0, style.pointSize ?? 3 + Math.max(1, style.lineWidth ?? 1) * 2) / 2;
+    const pointGeometryDistance = visiblePointMarkers
+      ? Math.hypot(this.requireCursorGroupPosition(plot) - plot.valToPos(this.source.xAt(dataIndex), 'x'), top - mouseY)
+      : Number.POSITIVE_INFINITY;
+    const precisePointTarget = barRect == null && visiblePointMarkers && pointGeometryDistance <= pointRadius;
+    const targetDistance = barRect
+      ? 0
+      : preciseLineTarget && precisePointTarget
+        ? Math.min(lineDistance, pointGeometryDistance)
+        : precisePointTarget
+          ? pointGeometryDistance
+          : lineDistance;
     const targetPriority =
-      lineDistance <= focus.prox
-        ? CursorTargetPriority.NearbyGeometry
-        : areaFillTarget
-          ? CursorTargetPriority.AreaFill
-          : CursorTargetPriority.DistantGeometry;
+      preciseLineTarget || precisePointTarget
+        ? CursorTargetPriority.PreciseGeometry
+        : barRect
+          ? CursorTargetPriority.BarBody
+          : (withinGroupProximity || pathBand != null) && lineDistance <= focus.prox
+            ? CursorTargetPriority.NearbyGeometry
+            : areaFillTarget
+              ? CursorTargetPriority.AreaFill
+              : CursorTargetPriority.DistantGeometry;
     const betterTarget =
       targetPriority < this.cursorTargetPriority ||
-      (targetPriority === this.cursorTargetPriority && lineDistance < this.cursorTargetLineDistance);
+      (targetPriority === this.cursorTargetPriority &&
+        (targetDistance < this.cursorTargetDistance ||
+          (targetDistance === this.cursorTargetDistance &&
+            (targetPriority === CursorTargetPriority.BarBody
+              ? seriesIndex > this.cursorState.seriesIndex
+              : this.cursorState.seriesIndex < 0 || seriesIndex < this.cursorState.seriesIndex))));
     if (!betterTarget) {
       return;
     }
 
     this.cursorTargetPriority = targetPriority;
-    this.cursorTargetLineDistance = lineDistance;
+    this.cursorTargetDistance = targetDistance;
     this.cursorState.seriesIndex = seriesIndex;
     this.cursorState.dataIndex = dataIndex;
-    this.cursorState.distance = targetPriority === CursorTargetPriority.AreaFill ? 0 : lineDistance;
+    this.cursorState.distance =
+      barRect != null ||
+      targetPriority === CursorTargetPriority.PreciseGeometry ||
+      targetPriority === CursorTargetPriority.AreaFill
+        ? 0
+        : targetDistance;
     const groupPosition = plot.valToPos(this.source.xAt(dataIndex), 'x');
     if (plot.scales.x.ori === 1) {
       this.cursorState.left = top;
@@ -1258,28 +1444,240 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
   }
 
-  private isAreaFillTarget(
+  private hasAreaFill(flags: number, style: CompactStyleRecord): boolean {
+    return (
+      (flags & CompactSeriesFlag.DrawLine) !== 0 &&
+      (style.areaFill != null || style.areaGradient != null) &&
+      (style.alpha ?? 1) > 0
+    );
+  }
+
+  private hasVisibleBarBody(style: CompactStyleRecord): boolean {
+    return (
+      (style.alpha ?? 1) > 0 && ((style.lineWidth ?? 1) > 0 || style.areaFill != null || style.areaGradient != null)
+    );
+  }
+
+  private getCursorAreaBand(
     plot: uPlot,
+    seriesIndex: number,
+    cursorIndex: number,
+    current: { index: number; value: number; base: number },
     flags: number,
     style: CompactStyleRecord,
-    scaleKey: string,
-    valuePosition: number,
-    cursorPosition: number
-  ): boolean {
-    if (
-      (flags & CompactSeriesFlag.DrawLine) === 0 ||
-      (style.areaFill == null && style.areaGradient == null) ||
-      (style.alpha ?? 1) <= 0
-    ) {
+    scaleKey: string
+  ): { top: number; base: number } | null {
+    const cursorGroupPosition = this.requireCursorGroupPosition(plot);
+    const cursorGroupValue = plot.posToVal(cursorGroupPosition, 'x');
+    const segment = this.findConnectedAreaSegment(seriesIndex, cursorIndex, cursorGroupValue, flags, style);
+    if (!segment) {
+      return null;
+    }
+    this.cursorAreaSamples.length = 0;
+    const left = this.getCursorAreaSample(seriesIndex, segment[0], current, flags, plot, scaleKey);
+    const right = this.getCursorAreaSample(seriesIndex, segment[1], current, flags, plot, scaleKey);
+    if (!left || !right || left.groupPosition === right.groupPosition) {
+      return null;
+    }
+    const fraction = Math.max(
+      0,
+      Math.min(1, (cursorGroupPosition - left.groupPosition) / (right.groupPosition - left.groupPosition))
+    );
+    const pathMode = flags & CompactSeriesFlag.PathMask;
+    const topPosition =
+      pathMode === CompactSeriesFlag.StepBefore
+        ? right.top
+        : pathMode === CompactSeriesFlag.StepAfter
+          ? left.top
+          : pathMode === CompactSeriesFlag.Spline
+            ? this.getSplineCursorPosition(
+                plot,
+                seriesIndex,
+                cursorGroupPosition,
+                left,
+                right,
+                current,
+                flags,
+                style,
+                scaleKey
+              )
+            : interpolate(left.top, right.top, fraction);
+    const baselinePosition =
+      (flags & CompactSeriesFlag.Stack) === 0
+        ? left.base
+        : pathMode === CompactSeriesFlag.StepBefore
+          ? right.base
+          : pathMode === CompactSeriesFlag.StepAfter
+            ? left.base
+            : interpolate(left.base, right.base, fraction);
+    return { top: topPosition, base: baselinePosition };
+  }
+
+  private findConnectedAreaSegment(
+    seriesIndex: number,
+    cursorIndex: number,
+    cursorValue: number,
+    flags: number,
+    style: CompactStyleRecord
+  ): readonly [number, number] | null {
+    const pointCount = this.source.pointCount;
+    const pivotTimestamp = this.source.xAt(cursorIndex);
+    const leftStart = pivotTimestamp <= cursorValue ? cursorIndex : cursorIndex - 1;
+    const rightStart = pivotTimestamp >= cursorValue ? cursorIndex : cursorIndex + 1;
+    const left = leftStart >= 0 ? this.nearestAreaVertex(seriesIndex, leftStart, -1, flags) : null;
+    const right = rightStart < pointCount ? this.nearestAreaVertex(seriesIndex, rightStart, 1, flags) : null;
+    if (left == null || right == null) {
+      return null;
+    }
+    if (left !== right) {
+      return this.isAreaSegmentConnected(seriesIndex, left, right, style) ? [left, right] : null;
+    }
+
+    const next = right + 1 < pointCount ? this.nearestAreaVertex(seriesIndex, right + 1, 1, flags) : null;
+    if (next != null && this.isAreaSegmentConnected(seriesIndex, right, next, style)) {
+      return [right, next];
+    }
+    const previous = left > 0 ? this.nearestAreaVertex(seriesIndex, left - 1, -1, flags) : null;
+    return previous != null && this.isAreaSegmentConnected(seriesIndex, previous, left, style)
+      ? [previous, left]
+      : null;
+  }
+
+  private nearestAreaVertex(seriesIndex: number, index: number, bias: -1 | 1, flags: number): number | null {
+    if ((flags & CompactSeriesFlag.Stack) === 0) {
+      return this.source.nearestPresent(seriesIndex, index, bias);
+    }
+    const group = this.getStackGroup(seriesIndex);
+    const cacheKey = (group * this.source.pointCount + index) * 2 + (bias > 0 ? 1 : 0);
+    if (this.cursorAreaVertexCache.has(cacheKey)) {
+      return this.cursorAreaVertexCache.get(cacheKey)!;
+    }
+    let nearest: number | null = null;
+    for (let candidate = 0; candidate < this.source.seriesCount; candidate++) {
+      if (!this.isVisible(candidate) || this.getStackGroup(candidate) !== group) {
+        continue;
+      }
+      const present = this.source.nearestPresent(candidate, index, bias);
+      if (present != null && (nearest == null || (bias < 0 ? present > nearest : present < nearest))) {
+        nearest = present;
+      }
+    }
+    this.cursorAreaVertexCache.set(cacheKey, nearest);
+    return nearest;
+  }
+
+  private isAreaSegmentConnected(seriesIndex: number, from: number, to: number, style: CompactStyleRecord): boolean {
+    if (this.shouldDisconnectBetween(style, this.source.xAt(from), this.source.xAt(to))) {
       return false;
     }
-    const baseline =
-      (flags & CompactSeriesFlag.Stack) !== 0 ? this.currentCursorStackBase : this.getFillBaselineValue(plot, scaleKey);
-    const baselinePosition = plot.valToPos(baseline, scaleKey);
-    return (
-      cursorPosition >= Math.min(valuePosition, baselinePosition) &&
-      cursorPosition <= Math.max(valuePosition, baselinePosition)
-    );
+    if (this.source.isDirectSegmentConnected) {
+      return this.source.isDirectSegmentConnected(seriesIndex, from, to);
+    }
+    for (let index = from + 1; index < to; index++) {
+      if (this.source.yAt(seriesIndex, index) === null) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private hasStackValueAt(seriesIndex: number, index: number): boolean {
+    const group = this.getStackGroup(seriesIndex);
+    const cacheKey = group * this.source.pointCount + index;
+    const cached = this.cursorStackPresenceCache.get(cacheKey);
+    if (cached != null) {
+      return cached;
+    }
+    for (let candidate = 0; candidate < this.source.seriesCount; candidate++) {
+      if (
+        this.isVisible(candidate) &&
+        this.getStackGroup(candidate) === group &&
+        this.source.yAt(candidate, index) != null
+      ) {
+        this.cursorStackPresenceCache.set(cacheKey, true);
+        return true;
+      }
+    }
+    this.cursorStackPresenceCache.set(cacheKey, false);
+    return false;
+  }
+
+  private getCursorAreaSample(
+    seriesIndex: number,
+    index: number,
+    current: { index: number; value: number; base: number },
+    flags: number,
+    plot: uPlot,
+    scaleKey: string
+  ): CompactAreaSample | null {
+    const cached = this.cursorAreaSamples.find((sample) => sample.index === index);
+    if (cached) {
+      return cached;
+    }
+    let value: number;
+    let base: number;
+    if (index === current.index) {
+      value = current.value;
+      base = current.base;
+    } else {
+      const rawValue = this.source.yAt(seriesIndex, index);
+      if (
+        typeof rawValue !== 'number' &&
+        ((flags & CompactSeriesFlag.Stack) === 0 || !this.hasStackValueAt(seriesIndex, index))
+      ) {
+        return null;
+      }
+      value = this.stackCursorValue(seriesIndex, index, typeof rawValue === 'number' ? rawValue : 0);
+      base = this.currentCursorStackBase;
+    }
+    const sample = {
+      index,
+      groupPosition: plot.valToPos(this.source.xAt(index), 'x'),
+      top: plot.valToPos(value, scaleKey),
+      base: plot.valToPos(
+        (flags & CompactSeriesFlag.Stack) !== 0 ? base : this.getFillBaselineValue(plot, scaleKey),
+        scaleKey
+      ),
+    };
+    this.cursorAreaSamples.push(sample);
+    return sample;
+  }
+
+  private getSplineCursorPosition(
+    plot: uPlot,
+    seriesIndex: number,
+    cursorPosition: number,
+    left: CompactAreaSample,
+    right: CompactAreaSample,
+    current: { index: number; value: number; base: number },
+    flags: number,
+    style: CompactStyleRecord,
+    scaleKey: string
+  ): number {
+    const midpoint = midpointSample(left, right);
+    const fraction = (cursorPosition - left.groupPosition) / (right.groupPosition - left.groupPosition);
+    if (fraction <= 0.5) {
+      const previousIndex = left.index > 0 ? this.nearestAreaVertex(seriesIndex, left.index - 1, -1, flags) : null;
+      const previous =
+        previousIndex != null && this.isAreaSegmentConnected(seriesIndex, previousIndex, left.index, style)
+          ? this.getCursorAreaSample(seriesIndex, previousIndex, current, flags, plot, scaleKey)
+          : null;
+      return quadraticValueAtPosition(previous ? midpointSample(previous, left) : left, left, midpoint, cursorPosition);
+    }
+
+    const nextIndex =
+      right.index + 1 < this.source.pointCount ? this.nearestAreaVertex(seriesIndex, right.index + 1, 1, flags) : null;
+    const next =
+      nextIndex != null && this.isAreaSegmentConnected(seriesIndex, right.index, nextIndex, style)
+        ? this.getCursorAreaSample(seriesIndex, nextIndex, current, flags, plot, scaleKey)
+        : null;
+    return next
+      ? quadraticValueAtPosition(midpoint, right, midpointSample(right, next), cursorPosition)
+      : interpolate(
+          midpoint.top,
+          right.top,
+          (cursorPosition - midpoint.groupPosition) / (right.groupPosition - midpoint.groupPosition)
+        );
   }
 
   private getCursorBarRect(
@@ -1287,52 +1685,111 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     seriesIndex: number,
     dataIndex: number,
     value: number,
-    scaleKey: string
+    scaleKey: string,
+    style: CompactStyleRecord
   ): CompactRect | null {
+    const grouped = this.source.barOptions?.mode === 'grouped';
     const previousFlags = this.flags;
+    const previousPlot = this.plot;
+    const previousSeriesIndex = this.seriesIndex;
+    const previousScaleKey = this.scaleKey;
     const previousSlot = this.barSlot;
     const previousSlotCount = this.barSlotCount;
+    const previousBarColumnWidth = this.barColumnWidth;
+    const previousBarWidth = this.barWidth;
+    const previousBarShift = this.barShift;
+    const previousBarStrokeWidth = this.barStrokeWidth;
+    const previousBarPixelRound = this.barPixelRound;
+    const previousBarBaselineRound = this.barBaselineRound;
     const flags = this.source.columns.flags[seriesIndex];
-    const slot = this.getConfiguredBarSlot(seriesIndex);
+    this.plot = plot;
+    this.seriesIndex = seriesIndex;
+    this.scaleKey = scaleKey;
     this.flags = flags;
-    this.barSlot = slot.index;
-    this.barSlotCount = slot.count;
-    const band = this.getBarBandForPlot(plot, dataIndex, this.source.xAt(dataIndex), false);
-    const placement = this.getGroupedBarPlacement(band.center, band.size, 1);
-    this.flags = previousFlags;
-    this.barSlot = previousSlot;
-    this.barSlotCount = previousSlotCount;
-
-    const valuePosition = plot.valToPos(value, scaleKey);
-    const basePosition = plot.valToPos(this.currentCursorStackBase, scaleKey);
-    const valueStart = Math.min(valuePosition, basePosition);
-    const valueSize = Math.abs(valuePosition - basePosition);
-    if (placement.size <= 0 || valueSize <= 0) {
-      return null;
-    }
-
-    const groupsAreHorizontal = plot.scales.x.ori !== 1;
-    const fullHighlight = this.source.barOptions?.fullHighlight && (flags & CompactSeriesFlag.Stack) === 0;
-    if (groupsAreHorizontal) {
-      return {
-        left: placement.start,
-        top: fullHighlight ? 0 : valueStart,
-        width: placement.size,
-        height: fullHighlight ? plot.bbox.height / uPlot.pxRatio : valueSize,
+    try {
+      if (grouped) {
+        this.selectGroupedBarSlot(seriesIndex, flags);
+      } else {
+        this.prepareTimeSeriesBarGeometry(seriesIndex, style);
+      }
+      const geometry = this.getBarGeometry(
+        plot,
+        dataIndex,
+        this.source.xAt(dataIndex),
+        value,
+        this.currentCursorStackBase,
+        style
+      );
+      if (!geometry) {
+        return null;
+      }
+      const pixelRatio = uPlot.pxRatio;
+      const rect = {
+        left: (geometry.left - plot.bbox.left) / pixelRatio,
+        top: (geometry.top - plot.bbox.top) / pixelRatio,
+        width: geometry.width / pixelRatio,
+        height: geometry.height / pixelRatio,
       };
+      const fullHighlight = grouped && this.source.barOptions?.fullHighlight && (flags & CompactSeriesFlag.Stack) === 0;
+      if (!fullHighlight) {
+        const strokeExpansion = geometry.strokeWidth / (2 * pixelRatio);
+        if (strokeExpansion > 0) {
+          const right = Math.min(plot.bbox.width / pixelRatio, rect.left + rect.width + strokeExpansion);
+          const bottom = Math.min(plot.bbox.height / pixelRatio, rect.top + rect.height + strokeExpansion);
+          rect.left = Math.max(0, rect.left - strokeExpansion);
+          rect.top = Math.max(0, rect.top - strokeExpansion);
+          rect.width = right - rect.left;
+          rect.height = bottom - rect.top;
+        }
+        const minimumThickness = Math.max(uPlot.pxRatio, geometry.strokeWidth) / pixelRatio;
+        if (rect.width === 0) {
+          rect.left -= minimumThickness / 2;
+          rect.width = minimumThickness;
+        }
+        if (rect.height === 0) {
+          rect.top -= minimumThickness / 2;
+          rect.height = minimumThickness;
+        }
+        return rect;
+      }
+      if (geometry.horizontalGroups) {
+        return {
+          left: (geometry.outerBandStart - plot.bbox.left) / pixelRatio,
+          top: 0,
+          width: geometry.outerBarSize / pixelRatio,
+          height: plot.bbox.height / pixelRatio,
+        };
+      }
+      return {
+        left: 0,
+        top: (geometry.outerBandStart - plot.bbox.top) / pixelRatio,
+        width: plot.bbox.width / pixelRatio,
+        height: geometry.outerBarSize / pixelRatio,
+      };
+    } finally {
+      this.flags = previousFlags;
+      this.plot = previousPlot;
+      this.seriesIndex = previousSeriesIndex;
+      this.scaleKey = previousScaleKey;
+      this.barSlot = previousSlot;
+      this.barSlotCount = previousSlotCount;
+      this.barColumnWidth = previousBarColumnWidth;
+      this.barWidth = previousBarWidth;
+      this.barShift = previousBarShift;
+      this.barStrokeWidth = previousBarStrokeWidth;
+      this.barPixelRound = previousBarPixelRound;
+      this.barBaselineRound = previousBarBaselineRound;
     }
-    return {
-      left: fullHighlight ? 0 : valueStart,
-      top: placement.start,
-      width: fullHighlight ? plot.bbox.width / uPlot.pxRatio : valueSize,
-      height: placement.size,
-    };
   }
 
   private isCursorSnapshotCurrent(index: number, plot?: uPlot): boolean {
     const cursorPosition = plot ? this.getCursorGroupPosition(plot) : undefined;
     return (
-      this.cursorSnapshotIndex === index && (cursorPosition == null || cursorPosition === this.cursorSnapshotMouseX)
+      this.cursorSnapshotIndex === index &&
+      this.cursorSnapshotBarBodyPresent === this.cursorBarBodyPresent &&
+      this.cursorSnapshotBarSeriesIndex === this.cursorBarSeriesIndex &&
+      this.cursorSnapshotBarDataIndex === this.cursorBarDataIndex &&
+      (cursorPosition == null || cursorPosition === this.cursorSnapshotMouseX)
     );
   }
 
@@ -1459,9 +1916,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         lineTo = this.source.nearestPresent(series, to, 1) ?? to;
       }
     }
-    const hasPoints =
-      (flags & CompactSeriesFlag.Points) !== 0 ||
-      ((flags & CompactSeriesFlag.AutoPoints) !== 0 && this.shouldShowAutoPoints(style, visibleFrom, visibleTo));
+    const hasPoints = this.hasVisiblePointMarkers(this.plot!, flags, style, visibleFrom, visibleTo);
     ctx.save();
     ctx.globalAlpha = style.alpha ?? 1;
     ctx.strokeStyle = style.stroke;
@@ -1589,8 +2044,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const ctx = this.context!;
     ctx.setLineDash([]);
     ctx.lineCap = 'butt';
-    this.groupedBarConfiguredStrokeWidth = grouped ? Math.round(Math.max(0, style.lineWidth ?? 1) * uPlot.pxRatio) : 0;
-    ctx.lineWidth = grouped ? this.groupedBarConfiguredStrokeWidth : this.barStrokeWidth;
+    if (!grouped) {
+      ctx.lineWidth = this.barStrokeWidth;
+    }
     const showValue = this.source.barOptions?.showValue ?? (style.showValues ? 'always' : 'never');
     this.batchBarPath = !grouped && style.areaGradient == null && showValue === 'never';
     this.hasPath = false;
@@ -1924,29 +2380,28 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     );
   }
 
-  private visitBar(index: number, rawValue: CompactPlotValue, timestamp: number): void {
-    if (rawValue == null) {
-      return;
-    }
-
-    const style = this.getStyle(this.seriesIndex);
-    const value = this.renderValue(index, rawValue, false);
-    const base = this.currentStackBase;
-    const scaleKey = this.scaleKey;
+  private getBarGeometry(
+    plot: uPlot,
+    index: number,
+    timestamp: number,
+    value: number,
+    base: number,
+    style: CompactStyleRecord
+  ): CompactBarGeometry | null {
     const grouped = this.source.barOptions?.mode === 'grouped';
-    let valuePosition = this.plot!.valToPos(value, scaleKey, true);
-    let basePosition = this.plot!.valToPos(base, scaleKey, true);
+    let valuePosition = plot.valToPos(value, this.scaleKey, true);
+    let basePosition = plot.valToPos(base, this.scaleKey, true);
     let bandStart: number;
     let barSize: number;
     let groupedBandSize = 0;
     if (grouped) {
-      const { center, size: bandSize } = this.getBarBandForPlot(this.plot!, index, timestamp, true);
+      const { center, size: bandSize } = this.getBarBandForPlot(plot, index, timestamp, true);
       groupedBandSize = bandSize;
       ({ start: bandStart, size: barSize } = this.getGroupedBarPlacement(center, bandSize));
     } else {
       valuePosition = this.barPixelRound(valuePosition);
       basePosition = this.barBaselineRound(basePosition);
-      bandStart = this.barPixelRound(this.plot!.valToPos(timestamp, 'x', true) - this.barShift);
+      bandStart = this.barPixelRound(plot.valToPos(timestamp, 'x', true) - this.barShift);
       barSize = this.barWidth;
     }
     const outerBandStart = bandStart;
@@ -1954,11 +2409,14 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const outerValueStart = Math.min(valuePosition, basePosition);
     const outerValueSize = Math.abs(valuePosition - basePosition);
     const valueAtStart = valuePosition <= basePosition;
-    let strokeWidth = grouped ? this.groupedBarConfiguredStrokeWidth : this.barStrokeWidth;
+    const configuredStrokeWidth = grouped
+      ? Math.round(Math.max(0, style.lineWidth ?? 1) * uPlot.pxRatio)
+      : this.barStrokeWidth;
+    let strokeWidth = configuredStrokeWidth;
     if (grouped && strokeWidth >= barSize / 2) {
       strokeWidth = 0;
     }
-    this.groupedBarStrokeSuppressed = grouped && this.groupedBarConfiguredStrokeWidth > 0 && strokeWidth === 0;
+    const groupedStrokeSuppressed = grouped && configuredStrokeWidth > 0 && strokeWidth === 0;
     if (grouped && strokeWidth > 0) {
       if (barSize < groupedBandSize) {
         bandStart += strokeWidth / 2;
@@ -1968,23 +2426,71 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       const pathEnd = pathStart + Math.max(0, outerValueSize - strokeWidth);
       valuePosition = valueAtStart ? pathStart : pathEnd;
       basePosition = valueAtStart ? pathEnd : pathStart;
-      this.context!.lineWidth = strokeWidth;
     }
     const strokeInset = grouped ? 0 : Math.floor(strokeWidth / 2);
     const valueStart = grouped ? Math.min(valuePosition, basePosition) : outerValueStart + strokeInset;
     const valueSize = grouped ? Math.abs(valuePosition - basePosition) : Math.max(0, outerValueSize - strokeWidth);
-    const xScale = this.plot!.scales.x;
+    const xScale = plot.scales.x;
     const horizontalGroups = xScale?.ori !== 1;
-    const x = horizontalGroups ? bandStart : valueStart;
-    const y = horizontalGroups ? valueStart : bandStart;
+    const left = horizontalGroups ? bandStart : valueStart;
+    const top = horizontalGroups ? valueStart : bandStart;
     const width = horizontalGroups ? barSize : valueSize;
     const height = horizontalGroups ? valueSize : barSize;
 
     if ((grouped && (width < 0 || height < 0)) || (!grouped && (width <= 0 || height <= 0))) {
+      return null;
+    }
+
+    return {
+      left,
+      top,
+      width,
+      height,
+      outerBandStart,
+      outerBarSize,
+      outerValueStart,
+      outerValueSize,
+      valuePosition,
+      basePosition,
+      horizontalGroups,
+      strokeWidth,
+      groupedStrokeSuppressed,
+    };
+  }
+
+  private visitBar(index: number, rawValue: CompactPlotValue, timestamp: number): void {
+    if (rawValue == null) {
       return;
     }
 
+    const style = this.getStyle(this.seriesIndex);
+    const value = this.renderValue(index, rawValue, false);
+    const grouped = this.source.barOptions?.mode === 'grouped';
+    const geometry = this.getBarGeometry(this.plot!, index, timestamp, value, this.currentStackBase, style);
+    if (!geometry) {
+      return;
+    }
+    const {
+      left: x,
+      top: y,
+      width,
+      height,
+      outerBandStart,
+      outerBarSize,
+      outerValueStart,
+      outerValueSize,
+      valuePosition,
+      basePosition,
+      horizontalGroups,
+      strokeWidth,
+      groupedStrokeSuppressed,
+    } = geometry;
+    this.groupedBarStrokeSuppressed = groupedStrokeSuppressed;
+
     const ctx = this.context!;
+    if (grouped && strokeWidth > 0) {
+      ctx.lineWidth = strokeWidth;
+    }
     const radius = this.barRoundOuterEdge
       ? Math.min((this.source.barOptions?.barRadius ?? 0) * Math.min(width, height), Math.min(width, height) / 2)
       : 0;
@@ -2658,11 +3164,18 @@ export class CompactRenderController implements uPlot.CompactRenderController {
 
   private shouldDisconnect(timestamp: number): boolean {
     const style = this.getStyle(this.seriesIndex);
-    const threshold = style.disconnectThreshold;
-    if (threshold == null || !Number.isFinite(this.previousTimestamp)) {
+    if (!Number.isFinite(this.previousTimestamp)) {
       return false;
     }
-    const delta = timestamp - this.previousTimestamp;
+    return this.shouldDisconnectBetween(style, this.previousTimestamp, timestamp);
+  }
+
+  private shouldDisconnectBetween(style: CompactStyleRecord, previousTimestamp: number, timestamp: number): boolean {
+    const threshold = style.disconnectThreshold;
+    if (threshold == null) {
+      return false;
+    }
+    const delta = timestamp - previousTimestamp;
     if (delta <= threshold) {
       return false;
     }
@@ -2670,9 +3183,23 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     return spanThreshold == null || spanThreshold === -1 || delta >= spanThreshold;
   }
 
-  private shouldShowAutoPoints(style: CompactStyleRecord, from: number, to: number): boolean {
-    const x0 = this.plot!.valToPos(this.source.xAt(from), 'x', true);
-    const x1 = this.plot!.valToPos(this.source.xAt(to), 'x', true);
+  private hasVisiblePointMarkers(
+    plot: uPlot,
+    flags: number,
+    style: CompactStyleRecord,
+    from: number,
+    to: number
+  ): boolean {
+    return (
+      (style.alpha ?? 1) > 0 &&
+      ((flags & CompactSeriesFlag.Points) !== 0 ||
+        ((flags & CompactSeriesFlag.AutoPoints) !== 0 && this.shouldShowAutoPoints(plot, style, from, to)))
+    );
+  }
+
+  private shouldShowAutoPoints(plot: uPlot, style: CompactStyleRecord, from: number, to: number): boolean {
+    const x0 = plot.valToPos(this.source.xAt(from), 'x', true);
+    const x1 = plot.valToPos(this.source.xAt(to), 'x', true);
     const pointSpace = style.pointSpace ?? (3 + Math.max(1, style.lineWidth ?? 1) * 2) * 2;
     return to - from <= Math.abs(x1 - x0) / (pointSpace * uPlot.pxRatio);
   }
@@ -2973,7 +3500,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
   }
 
-  private populateCursorSnapshot(index: number, plot?: uPlot, mouseY?: number): void {
+  private populateCursorSnapshot(index: number, plot?: uPlot): void {
     const source = this.source;
     const startedAt = hoverStageProbe ? performance.now() : 0;
     let valueReads = 0;
@@ -2986,7 +3513,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       const previousState = this.cursorSnapshotStates[seriesIndex];
       const previousValue = this.cursorSnapshotValues[seriesIndex];
       const previousDataIndex = existingDataIndexes?.[seriesIndex] ?? previousIndex;
-      let dataIndex = index;
+      let dataIndex =
+        seriesIndex === this.cursorBarSeriesIndex && this.cursorBarDataIndex >= 0 ? this.cursorBarDataIndex : index;
       const value = source.cursorValueAt(seriesIndex, dataIndex);
       valueReads++;
       if (value == null) {
@@ -3019,10 +3547,6 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         this.cursorSnapshotValues[seriesIndex] = value;
       }
       this.cursorSnapshotStates[seriesIndex] = state;
-      if (mouseY !== undefined && plot != null && this.isVisible(seriesIndex)) {
-        const resolvedValue = dataIndex === index ? value : source.yAt(seriesIndex, dataIndex);
-        this.considerCursorPoint(plot, seriesIndex, index, dataIndex, resolvedValue, mouseY);
-      }
       if (
         !changed &&
         (state !== previousState ||
@@ -3035,6 +3559,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
 
     this.cursorSnapshotIndex = index;
     this.cursorSnapshotMouseX = plot ? (this.getCursorGroupPosition(plot) ?? Number.NaN) : Number.NaN;
+    this.cursorSnapshotBarBodyPresent = this.cursorBarBodyPresent;
+    this.cursorSnapshotBarSeriesIndex = this.cursorBarSeriesIndex;
+    this.cursorSnapshotBarDataIndex = this.cursorBarDataIndex;
     this.cursorSnapshot.cursorIndex = index;
     this.cursorSnapshot.timestamp = source.xAt(index);
     if (changed) {
@@ -3068,6 +3595,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private invalidateCursorSnapshot(): void {
     this.cursorSnapshotIndex = -1;
     this.cursorSnapshotMouseX = Number.NaN;
+    this.cursorSnapshotBarBodyPresent = false;
+    this.cursorSnapshotBarSeriesIndex = -1;
+    this.cursorSnapshotBarDataIndex = -1;
     this.cursorSnapshot.cursorIndex = -1;
     this.cursorSnapshot.timestamp = Number.NaN;
   }
@@ -3096,6 +3626,20 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       return this.isWithinCursorProximity(plot, seriesIndex, index, left) ? left : null;
     }
     return this.isWithinCursorProximity(plot, seriesIndex, index, right) ? right : null;
+  }
+
+  private nearestCursorDataIndex(plot: uPlot, seriesIndex: number, index: number): number | null {
+    const flags = this.source.columns.flags[seriesIndex];
+    const style = this.getStyle(seriesIndex);
+    const pathGeometry =
+      this.hasAreaFill(flags, style) ||
+      (this.cursorBarBodyPresent &&
+        (flags & CompactSeriesFlag.DrawLine) !== 0 &&
+        (style.lineWidth ?? 1) > 0 &&
+        (style.alpha ?? 1) > 0);
+    return pathGeometry
+      ? this.source.nearestPresent(seriesIndex, index, 0)
+      : this.nearestPresentAtCursor(plot, seriesIndex, index);
   }
 
   private isWithinCursorProximity(plot: uPlot, seriesIndex: number, hoveredIndex: number, dataIndex: number): boolean {
@@ -3332,6 +3876,39 @@ function rectContains(
   const x = groupAxisVertical ? valuePosition : groupPosition;
   const y = groupAxisVertical ? groupPosition : valuePosition;
   return x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
+}
+
+function midpointSample(left: CompactAreaPoint, right: CompactAreaPoint): CompactAreaPoint {
+  return {
+    groupPosition: (left.groupPosition + right.groupPosition) / 2,
+    top: (left.top + right.top) / 2,
+  };
+}
+
+function quadraticValueAtPosition(
+  start: CompactAreaPoint,
+  control: CompactAreaPoint,
+  end: CompactAreaPoint,
+  position: number
+): number {
+  const increasing = end.groupPosition >= start.groupPosition;
+  let lower = 0;
+  let upper = 1;
+  for (let iteration = 0; iteration < 20; iteration++) {
+    const fraction = (lower + upper) / 2;
+    const groupPosition = quadraticValue(start.groupPosition, control.groupPosition, end.groupPosition, fraction);
+    if (groupPosition < position === increasing) {
+      lower = fraction;
+    } else {
+      upper = fraction;
+    }
+  }
+  return quadraticValue(start.top, control.top, end.top, (lower + upper) / 2);
+}
+
+function quadraticValue(start: number, control: number, end: number, fraction: number): number {
+  const remaining = 1 - fraction;
+  return remaining * remaining * start + 2 * remaining * fraction * control + fraction * fraction * end;
 }
 
 function validateSource(source: CompactRenderSource): void {

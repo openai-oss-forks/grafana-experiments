@@ -54,6 +54,8 @@ export interface CompactPlotSource {
     mode?: CompactPlotScaleMode
   ): [min: number | null, max: number | null];
   nearestPresent(seriesIndex: number, index: number, bias: -1 | 0 | 1): number | null;
+  /** Tests the open interval between neighboring rendered vertices; endpoint rendering is handled by the caller. */
+  isDirectSegmentConnected?(seriesIndex: number, from: number, to: number): boolean;
 }
 
 export type PlotData = AlignedData | FacetedData | CompactPlotSource;

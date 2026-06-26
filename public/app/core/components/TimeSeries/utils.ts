@@ -159,6 +159,7 @@ export function prepareCompactPlotConfigBuilder(options: {
   xAxisConfig?: Partial<AxisProps>;
   valueAxisConfig?: Partial<AxisProps>;
   padding?: Padding;
+  groupedBarTickSpacing?: number;
 }) {
   const {
     plan,
@@ -170,6 +171,7 @@ export function prepareCompactPlotConfigBuilder(options: {
     xAxisConfig,
     valueAxisConfig,
     padding,
+    groupedBarTickSpacing = 0,
   } = options;
   const isHorizontal = orientation !== VizOrientation.Vertical;
   const groupedBars = plan.source.barOptions?.mode === 'grouped';
@@ -214,9 +216,19 @@ export function prepareCompactPlotConfigBuilder(options: {
       theme,
       grid: { show: timeZone === timeZones[0] },
       splits: groupedBars
-        ? (plot, _axisIndex, minimum, maximum, _increment, space) => {
-            const dimension = (plot.scales.x.ori === 1 ? plot.bbox.height : plot.bbox.width) / uPlot.pxRatio;
-            return compactController.groupedBarSplits(minimum, maximum, dimension / Math.max(1, space));
+        ? (plot, _axisIndex, minimum, maximum) => {
+            if (groupedBarTickSpacing === 0) {
+              return compactController.groupedBarSplits(minimum, maximum);
+            }
+            const scale = plot.scales.x;
+            const dimension = plot.bbox.width / uPlot.pxRatio;
+            const maximumCount = Math.max(1, Math.abs(Math.floor(dimension / groupedBarTickSpacing)));
+            const direction = (scale.dir ?? 1) * (scale.ori === 1 ? -1 : 1);
+            return compactController.groupedBarSplits(minimum, maximum, {
+              maximumCount,
+              anchorEnd: groupedBarTickSpacing < 0,
+              reverse: direction !== 1,
+            });
           }
         : undefined,
       formatValue: groupedBars
