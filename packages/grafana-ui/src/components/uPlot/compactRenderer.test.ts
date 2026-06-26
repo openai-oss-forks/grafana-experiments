@@ -870,6 +870,66 @@ describe('CompactRenderController', () => {
     expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
   });
 
+  test.each([
+    {
+      name: 'solid',
+      values: [
+        [500, 500],
+        [1800, 1800],
+      ],
+      flags: [CompactSeriesFlag.DrawLine, CompactSeriesFlag.DrawLine],
+      stackGroupCount: 0,
+      fill: { areaFill: 'rgba(0, 0, 255, 0.2)' },
+    },
+    {
+      name: 'gradient',
+      values: [
+        [500, 500],
+        [1800, 1800],
+      ],
+      flags: [CompactSeriesFlag.DrawLine, CompactSeriesFlag.DrawLine],
+      stackGroupCount: 0,
+      fill: { areaGradient: ['rgba(0, 0, 255, 0.2)', 'rgba(0, 0, 255, 0)'] as const },
+    },
+    {
+      name: 'stacked',
+      values: [
+        [500, 500],
+        [1300, 1300],
+      ],
+      flags: [
+        CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+        CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+      ],
+      stackGroupCount: 1,
+      fill: { areaFill: 'rgba(0, 0, 255, 0.2)' },
+    },
+  ])('treats a $name area fill as a focus target while keeping the cursor point on the line', (testCase) => {
+    const source = createSource(testCase.values, testCase.flags, testCase.stackGroupCount, 'series', 'single', {
+      stroke: '#00f',
+      cursorStroke: '#0000ff80',
+      lineWidth: 1,
+      ...testCase.fill,
+    });
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 1200, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 1,
+      dataIndex: 1,
+      distance: 0,
+      top: 1800,
+    });
+    expect(controller.updateCursor(plot, 1, 520, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      dataIndex: 1,
+      distance: 20,
+      top: 500,
+    });
+  });
+
   test('uses the nearest present sample when cursor focus lands on a series gap', () => {
     const source = createSource([[1, null, 3]], [CompactSeriesFlag.Linear]);
     const controller = new CompactRenderController(source);

@@ -182,6 +182,12 @@ const enum CursorValueState {
   Number,
 }
 
+const enum CursorTargetPriority {
+  NearbyGeometry,
+  AreaFill,
+  DistantGeometry,
+}
+
 const enum ScanOperation {
   None,
   Area,
@@ -368,6 +374,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private cursorSnapshotDataIndexes: Int32Array | null = null;
   private cursorSnapshotIndex = -1;
   private cursorSnapshotMouseX = Number.NaN;
+  private cursorTargetPriority = CursorTargetPriority.DistantGeometry;
+  private cursorTargetLineDistance = Number.POSITIVE_INFINITY;
   private readonly cursorSnapshot: MutableCompactCursorSnapshot;
   private gradientCache: Array<CanvasGradient | undefined> = [];
   private stackFrom = 0;
@@ -1075,6 +1083,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     state.centered = true;
     state.fill = '';
     state.stroke = '';
+    this.cursorTargetPriority = CursorTargetPriority.DistantGeometry;
+    this.cursorTargetLineDistance = Number.POSITIVE_INFINITY;
 
     if (index == null || index < 0 || index >= this.source.pointCount) {
       return null;
@@ -1181,7 +1191,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       return;
     }
     const focus = plot.focus;
-    const distance = barRect
+    const lineDistance = barRect
       ? 0
       : Math.abs(focus.dist?.(plot, seriesIndex + 1, dataIndex, top, mouseY) ?? top - mouseY);
     const bias = focus.bias ?? 0;
@@ -1202,13 +1212,26 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         return;
       }
     }
-    if (!(distance < this.cursorState.distance)) {
+    const areaFillTarget =
+      barRect == null && dataIndex === cursorIndex && this.isAreaFillTarget(plot, flags, style, scaleKey, top, mouseY);
+    const targetPriority =
+      lineDistance <= focus.prox
+        ? CursorTargetPriority.NearbyGeometry
+        : areaFillTarget
+          ? CursorTargetPriority.AreaFill
+          : CursorTargetPriority.DistantGeometry;
+    const betterTarget =
+      targetPriority < this.cursorTargetPriority ||
+      (targetPriority === this.cursorTargetPriority && lineDistance < this.cursorTargetLineDistance);
+    if (!betterTarget) {
       return;
     }
 
+    this.cursorTargetPriority = targetPriority;
+    this.cursorTargetLineDistance = lineDistance;
     this.cursorState.seriesIndex = seriesIndex;
     this.cursorState.dataIndex = dataIndex;
-    this.cursorState.distance = distance;
+    this.cursorState.distance = targetPriority === CursorTargetPriority.AreaFill ? 0 : lineDistance;
     const groupPosition = plot.valToPos(this.source.xAt(dataIndex), 'x');
     if (plot.scales.x.ori === 1) {
       this.cursorState.left = top;
@@ -1233,6 +1256,30 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       this.cursorState.fill = 'rgba(255, 255, 255, 0.4)';
       this.cursorState.stroke = 'transparent';
     }
+  }
+
+  private isAreaFillTarget(
+    plot: uPlot,
+    flags: number,
+    style: CompactStyleRecord,
+    scaleKey: string,
+    valuePosition: number,
+    cursorPosition: number
+  ): boolean {
+    if (
+      (flags & CompactSeriesFlag.DrawLine) === 0 ||
+      (style.areaFill == null && style.areaGradient == null) ||
+      (style.alpha ?? 1) <= 0
+    ) {
+      return false;
+    }
+    const baseline =
+      (flags & CompactSeriesFlag.Stack) !== 0 ? this.currentCursorStackBase : this.getFillBaselineValue(plot, scaleKey);
+    const baselinePosition = plot.valToPos(baseline, scaleKey);
+    return (
+      cursorPosition >= Math.min(valuePosition, baselinePosition) &&
+      cursorPosition <= Math.max(valuePosition, baselinePosition)
+    );
   }
 
   private getCursorBarRect(
@@ -2680,9 +2727,12 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   }
 
   private getFillBaselineY(): number {
-    const scale = this.plot!.scales[this.scaleKey];
-    const baseline = scale?.distr === 3 ? (scale.dir === 1 ? scale.min : scale.max) : 0;
-    return this.plot!.valToPos(baseline ?? 0, this.scaleKey, true);
+    return this.plot!.valToPos(this.getFillBaselineValue(this.plot!, this.scaleKey), this.scaleKey, true);
+  }
+
+  private getFillBaselineValue(plot: uPlot, scaleKey: string): number {
+    const scale = plot.scales[scaleKey];
+    return scale?.distr === 3 ? ((scale.dir === 1 ? scale.min : scale.max) ?? 0) : 0;
   }
 
   private visitPointMarker(index: number, rawValue: CompactPlotValue, timestamp: number): void {
