@@ -2,12 +2,14 @@ package resource
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -199,6 +201,7 @@ func TestExecuteCompactMultiBatchStreamDoesNotForwardBrowserOnlyHeaders(t *testi
 		Body:   []byte("query=up&start=0&end=120&step=60"),
 		Headers: map[string][]string{
 			"Accept":                              {preferredMultiBatchContentType + "; version=1, " + multiBatchContentType + "; version=1, application/jsonl"},
+			"Accept-Encoding":                     {"gzip, deflate, br, zstd"},
 			"Content-Type":                        {"application/x-www-form-urlencoded"},
 			"X-Grafana-Query-Format":              {"compact-v1"},
 			"X-OQP-Source":                        {"grafana-prometheus"},
@@ -227,6 +230,7 @@ func TestExecuteCompactMultiBatchStreamDoesNotForwardBrowserOnlyHeaders(t *testi
 	require.Equal(t, "compact-v1", req.GetHTTPHeaders().Get("X-Grafana-Query-Format"))
 	require.Equal(t, "A", req.GetHTTPHeaders().Get(compactMultiBatchRefIDHeader))
 	require.Equal(t, preferredMultiBatchContentType+"; version=1, "+multiBatchContentType+"; version=1, application/jsonl", forwarded.Get("Accept"))
+	require.Empty(t, forwarded.Get("Accept-Encoding"))
 	require.Equal(t, "application/x-www-form-urlencoded", forwarded.Get("Content-Type"))
 	require.Equal(t, "grafana-prometheus", forwarded.Get("X-Oqp-Source"))
 	require.Equal(t, "keep", forwarded.Get("X-Grafana-Prometheus-Unrelated-Test"))
@@ -236,12 +240,96 @@ func TestExecuteCompactMultiBatchStreamDoesNotForwardBrowserOnlyHeaders(t *testi
 	require.Empty(t, forwarded.Get(compactMultiBatchUTCOffsetHeader))
 }
 
+func TestExecuteCompactMultiBatchStreamUsesGoManagedGzipForPlainJSONFallback(t *testing.T) {
+	payload := []byte("{\"status\":\"success\",\"data\":{\"resultType\":\"matrix\",\"result\":[{\"metric\":{\"job\":\"api\"},\"values\":[[0,\"1\"]]}]}}")
+	var upstreamAcceptEncoding string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		upstreamAcceptEncoding = req.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(upstreamAcceptEncoding, "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			writer := gzip.NewWriter(w)
+			_, err := writer.Write(payload)
+			require.NoError(t, err)
+			require.NoError(t, writer.Close())
+			return
+		}
+
+		_, err := w.Write(payload)
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	res, err := New(
+		server.Client(),
+		backend.DataSourceInstanceSettings{URL: server.URL, JSONData: []byte("{}")},
+		log.DefaultLogger,
+	)
+	require.NoError(t, err)
+
+	req := compactMultiBatchRequest()
+	req.Headers["Accept-Encoding"] = []string{"gzip, deflate, br, zstd"}
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
+
+	preamble := receiveResponse(t, sender.responses)
+	final := receiveResponse(t, sender.responses)
+	require.Equal(t, "gzip", upstreamAcceptEncoding)
+	require.Equal(t, "MBRH", string(preamble.Body[:4]))
+	require.Equal(t, "MBBF", string(final.Body[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), final.Body[5])
+	require.Equal(t, byte(multiBatchFinalFlag), final.Body[6]&multiBatchFinalFlag)
+	require.Equal(t, "GQD1", string(final.Body[multiBatchFrameHeaderSize:multiBatchFrameHeaderSize+4]))
+}
+
+func TestExecuteStreamUsesGoManagedGzipWithoutMultiBatchAccept(t *testing.T) {
+	payload := []byte("{\"status\":\"success\",\"data\":{\"resultType\":\"matrix\",\"result\":[]}}")
+	var upstreamAcceptEncoding string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		upstreamAcceptEncoding = req.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(upstreamAcceptEncoding, "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			writer := gzip.NewWriter(w)
+			_, err := writer.Write(payload)
+			require.NoError(t, err)
+			require.NoError(t, writer.Close())
+			return
+		}
+
+		_, err := w.Write(payload)
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	res, err := New(
+		server.Client(),
+		backend.DataSourceInstanceSettings{URL: server.URL, JSONData: []byte("{}")},
+		log.DefaultLogger,
+	)
+	require.NoError(t, err)
+
+	req := nonCompactMultiBatchRequest()
+	req.Headers["Accept"] = []string{"application/json, text/plain, */*"}
+	req.Headers["Accept-Encoding"] = []string{"gzip, deflate, br, zstd"}
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 1)}
+	require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
+
+	response := receiveResponse(t, sender.responses)
+	require.Equal(t, "gzip", upstreamAcceptEncoding)
+	require.Equal(t, "application/json", http.Header(response.Headers).Get("Content-Type"))
+	require.Equal(t, payload, response.Body)
+}
+
 func TestExecuteMultiBatchStreamPassesThroughJSONLBeforeFinalArrives(t *testing.T) {
 	reader, writer := io.Pipe()
 	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{preferredMultiBatchContentType + "; version=1"}},
-		Body:       reader,
+		Header: http.Header{
+			"Content-Type":     []string{preferredMultiBatchContentType + "; version=1"},
+			"Content-Encoding": []string{"gzip"},
+		},
+		Body: reader,
 	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
 	require.NoError(t, err)
 
@@ -267,6 +355,7 @@ func TestExecuteMultiBatchStreamPassesThroughJSONLBeforeFinalArrives(t *testing.
 
 	partial := receiveResponse(t, sender.responses)
 	require.Equal(t, preferredMultiBatchContentType+"; version=1", partial.Headers["Content-Type"][0])
+	require.Empty(t, http.Header(partial.Headers).Get("Content-Encoding"))
 	require.GreaterOrEqual(t, len(partial.Body), 24)
 	require.Equal(t, "MBRH", string(partial.Body[:4]))
 	require.Equal(t, "MBBF", string(partial.Body[12:16]))

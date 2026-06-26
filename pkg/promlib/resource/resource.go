@@ -29,6 +29,7 @@ const preferredMultiBatchContentType = "application/com.openai.prometheus.multib
 const multiBatchPluginErrorMessage = "An error occurred within the plugin"
 
 var browserOnlyResourceHeaders = []string{
+	"Accept-Encoding",
 	compact.Header,
 	compactMultiBatchRefIDHeader,
 	compactMultiBatchLegendFormatHeader,
@@ -190,6 +191,7 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 
 	headers := resp.Header.Clone()
 	headers.Del("Content-Length")
+	headers.Del("Content-Encoding")
 	headers.Del("X-Grafana-Cache")
 	headers.Set("Cache-Control", "no-store")
 	encoder := newMultiBatchResponseEncoder(
