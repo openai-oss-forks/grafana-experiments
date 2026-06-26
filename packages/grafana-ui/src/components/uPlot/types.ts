@@ -70,6 +70,10 @@ export interface PlotProps {
   children?: React.ReactNode;
   // Reference to uPlot instance
   plotRef?: (u: uPlot | null) => void;
+  /** Retain the last completed compact canvas while a replacement frame is drawn. */
+  holdPreviousCompactFrame?: boolean;
+  /** Called after the current compact source has completed a visible-frame draw. */
+  onCompactFrameReady?: (source: CompactPlotSource, config: UPlotConfigBuilder, width: number, height: number) => void;
 }
 
 export abstract class PlotConfigBuilder<P, T> {

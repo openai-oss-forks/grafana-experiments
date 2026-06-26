@@ -208,6 +208,24 @@ describe('CompactPlotSource', () => {
     expect(plot.extent(0, 768, 1024, 'all')).toEqual([1536, 2046]);
   });
 
+  test('uses the shared-axis path for distinct axis ids with identical geometry', () => {
+    const source = compactSource(
+      [
+        { start: 100, step: 10, count: 3 },
+        { start: 100, step: 10, count: 3 },
+      ],
+      [
+        { axisId: 0, values: [1, 2, 3] },
+        { axisId: 1, values: [4, 5, 6] },
+      ]
+    );
+    const plot = createCompactPlotSource(source);
+
+    expect(Array.from({ length: plot.pointCount }, (_, index) => plot.xAt(index))).toEqual([100, 110, 120]);
+    expect(plot.prepareBufferScan(0, 0, emptyBufferScan())).toBe(true);
+    expect(plot.prepareBufferScan(1, 0, emptyBufferScan())).toBe(true);
+  });
+
   test('finds distant packed endpoints without probing aligned values', () => {
     const count = 100_000;
     const source = compactSource(

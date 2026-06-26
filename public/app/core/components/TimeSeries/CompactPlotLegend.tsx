@@ -12,7 +12,6 @@ import { CompactNativeRenderPlan, CompactNativeSeriesFlag } from '../GraphNG/com
 interface CompactPlotLegendProps extends VizLegendOptions {
   config: UPlotConfigBuilder;
   plan: CompactNativeRenderPlan;
-  reserveMaxHeight?: boolean;
 }
 
 const MATERIALIZED_LIST_LEGEND_BATCH_SIZE = 500;
@@ -23,7 +22,6 @@ export function CompactPlotLegend({
   placement,
   calcs,
   displayMode,
-  reserveMaxHeight,
   ...legendProps
 }: CompactPlotLegendProps) {
   const styles = useStyles2(getStyles);
@@ -65,29 +63,29 @@ export function CompactPlotLegend({
       ),
     }));
   }, [legendIdentity, source.length]);
-  if (source.length === 0) {
-    return null;
-  }
-
   return (
-    <VizLayout.Legend placement={placement} reserveMaxHeight={reserveMaxHeight} {...legendProps}>
-      <VizLegend
-        placement={placement}
-        items={items ?? []}
-        itemSource={items ? undefined : source}
-        displayMode={displayMode}
-        onSeriesVisibilityChange={onSeriesVisibilityChange}
-        sortBy={legendProps.sortBy}
-        sortDesc={legendProps.sortDesc}
-        isSortable={true}
-        className={displayMode === 'table' ? styles.table : undefined}
-        displayValueColumns={normalizedCalcs.map((reducerId) => {
-          const reducer = fieldReducers.get(reducerId);
-          return { title: reducer.name, description: reducer.description };
-        })}
-      />
-      {items && items.length < source.length && (
-        <LegendListBatchSentinel remaining={source.length - items.length} onVisible={materializeNextBatch} />
+    <VizLayout.Legend placement={placement} {...legendProps}>
+      {source.length > 0 && (
+        <>
+          <VizLegend
+            placement={placement}
+            items={items ?? []}
+            itemSource={items ? undefined : source}
+            displayMode={displayMode}
+            onSeriesVisibilityChange={onSeriesVisibilityChange}
+            sortBy={legendProps.sortBy}
+            sortDesc={legendProps.sortDesc}
+            isSortable={true}
+            className={displayMode === 'table' ? styles.table : undefined}
+            displayValueColumns={normalizedCalcs.map((reducerId) => {
+              const reducer = fieldReducers.get(reducerId);
+              return { title: reducer.name, description: reducer.description };
+            })}
+          />
+          {items && items.length < source.length && (
+            <LegendListBatchSentinel remaining={source.length - items.length} onVisible={materializeNextBatch} />
+          )}
+        </>
       )}
     </VizLayout.Legend>
   );

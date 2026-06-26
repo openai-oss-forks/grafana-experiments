@@ -794,7 +794,13 @@ class CompactAxisAlignment {
   ) {
     this.positionScratch = Array.from({ length: 4 }, () => new Uint32Array(axisIds.length));
     this.checkpointStride = 0;
-    this.isShared = axisIds.length <= 1;
+    const firstAxis = axisIds.length > 0 ? this.getAxis(axisIds[0]) : undefined;
+    this.isShared =
+      firstAxis == null ||
+      axisIds.every((axisId) => {
+        const axis = this.getAxis(axisId);
+        return axis.start === firstAxis.start && axis.step === firstAxis.step && axis.count === firstAxis.count;
+      });
     if (axisIds.length === 0) {
       this.pointCount = 0;
       return;

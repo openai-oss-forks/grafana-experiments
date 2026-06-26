@@ -577,10 +577,9 @@ describe('PrometheusDatasource', () => {
       }
     });
 
-    it('coalesces concurrent compact target batches while preserving progressive updates', async () => {
+    it('publishes each cumulative target revision for render-session scheduling', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
-      jest.useFakeTimers();
       const streams = new Map([
         ['A', new Subject<DataQueryResponse>()],
         ['B', new Subject<DataQueryResponse>()],
@@ -617,12 +616,10 @@ describe('PrometheusDatasource', () => {
           data: [],
           state: LoadingState.Streaming,
         });
-        expect(responses).toHaveLength(0);
-
-        jest.advanceTimersByTime(200);
-        expect(responses).toHaveLength(1);
+        expect(responses).toHaveLength(2);
         expect(responses[0].state).toBe(LoadingState.Streaming);
-        expect(responses[0].compactSeries?.series).toHaveLength(2);
+        expect(responses[0].compactSeries?.series).toHaveLength(1);
+        expect(responses[1].compactSeries?.series).toHaveLength(2);
 
         streams.get('A')!.next({
           compactSeries: compactResponseFixture('A', 24),
@@ -634,9 +631,8 @@ describe('PrometheusDatasource', () => {
           data: [],
           state: LoadingState.Streaming,
         });
-        jest.advanceTimersByTime(200);
-        expect(responses).toHaveLength(2);
-        expect(responses[1].state).toBe(LoadingState.Streaming);
+        expect(responses).toHaveLength(4);
+        expect(responses[3].state).toBe(LoadingState.Streaming);
 
         streams.get('A')!.next({
           compactSeries: compactResponseFixture('A', 24),
@@ -652,12 +648,11 @@ describe('PrometheusDatasource', () => {
         streams.get('B')!.complete();
         await completion;
 
-        expect(responses).toHaveLength(3);
-        expect(responses[2].state).toBe(LoadingState.Done);
-        expect(responses[2].compactSeries?.series).toHaveLength(2);
+        expect(responses).toHaveLength(6);
+        expect(responses[5].state).toBe(LoadingState.Done);
+        expect(responses[5].compactSeries?.series).toHaveLength(2);
       } finally {
         multiBatchSpy.mockRestore();
-        jest.useRealTimers();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
       }
     });

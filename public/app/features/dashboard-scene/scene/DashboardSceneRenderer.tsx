@@ -13,6 +13,7 @@ import { DashboardEditPaneSplitter } from '../edit-pane/DashboardEditPaneSplitte
 import { DashboardScene } from './DashboardScene';
 import { PanelSearchLayout } from './PanelSearchLayout';
 import { SoloPanelContextProvider, useDefineSoloPanelContext } from './SoloPanelContext';
+import { PanelLifecycleProvider } from './layouts-shared/PanelLifecycleCoordinator';
 
 export function DashboardSceneRenderer({ model }: SceneComponentProps<DashboardScene>) {
   const {
@@ -96,7 +97,7 @@ export function DashboardSceneRenderer({ model }: SceneComponentProps<DashboardS
   }
 
   return (
-    <>
+    <PanelLifecycleProvider>
       {layoutOrchestrator && <layoutOrchestrator.Component model={layoutOrchestrator} />}
       <Page navModel={navModel} pageNav={pageNav} layout={PageLayoutType.Custom}>
         {editPanel && <editPanel.Component model={editPanel} />}
@@ -110,6 +111,6 @@ export function DashboardSceneRenderer({ model }: SceneComponentProps<DashboardS
         )}
         {overlay && <overlay.Component model={overlay} />}
       </Page>
-    </>
+    </PanelLifecycleProvider>
   );
 }

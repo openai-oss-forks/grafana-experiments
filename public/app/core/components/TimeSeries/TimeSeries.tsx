@@ -1,6 +1,7 @@
 import { Component } from 'react';
 
 import { DataFrame, TimeRange } from '@grafana/data';
+import { VizLegendOptions } from '@grafana/schema';
 import { withTheme2 } from '@grafana/ui';
 import { hasVisibleLegendSeries, PlotLegend, UPlotConfigBuilder } from '@grafana/ui/internal';
 
@@ -57,12 +58,11 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
     });
   };
 
-  renderCompactLegend = (config: UPlotConfigBuilder, plan: CompactNativeRenderPlan) => {
-    const { compactStreaming, legend } = this.props;
+  renderCompactLegend = (config: UPlotConfigBuilder, plan: CompactNativeRenderPlan, legend: VizLegendOptions) => {
     if (!legend?.showLegend) {
       return null;
     }
-    return <CompactPlotLegend config={config} plan={plan} reserveMaxHeight={compactStreaming} {...legend} />;
+    return <CompactPlotLegend config={config} plan={plan} {...legend} />;
   };
 
   renderLegend = (config: UPlotConfigBuilder, frames: DataFrame[]) => {

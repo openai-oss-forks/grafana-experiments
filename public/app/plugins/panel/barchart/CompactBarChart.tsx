@@ -149,6 +149,7 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
       compactSeries={compactSeries}
       compactFieldConfig={compactFieldConfig}
       compactStreaming={data.state === LoadingState.Streaming}
+      compactRequestKey={data.request?.requestId}
       structureRev={data.structureRev}
       timeRange={timeRange}
       timeZone={timeZone}

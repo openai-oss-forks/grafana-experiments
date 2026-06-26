@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import createMockRaf from 'mock-raf';
 import uPlot from 'uplot';
 
@@ -17,6 +17,9 @@ const setCompactDataMock = jest.fn();
 const setSizeMock = jest.fn();
 const initializeMock = jest.fn();
 const destroyMock = jest.fn();
+let compactDrawHooks: Array<(plot: uPlot) => void> = [];
+let compactPlot: uPlot;
+let drawCompactOnSetSize = false;
 
 jest.mock('uplot', () => {
   const mock = Object.assign(
@@ -29,11 +32,27 @@ jest.mock('uplot', () => {
       };
     }),
     {
-      compact: jest.fn(() => ({
-        setCompactData: setCompactDataMock,
-        setSize: setSizeMock,
-        destroy: destroyMock,
-      })),
+      compact: jest.fn((options, source) => {
+        compactDrawHooks = options.hooks?.draw ?? [];
+        compactPlot = {
+          compactSource: source,
+          width: options.width,
+          height: options.height,
+          setCompactData: (nextSource: uPlot.CompactPlotSource) => {
+            setCompactDataMock(nextSource);
+            compactPlot.compactSource = nextSource;
+          },
+          setSize: (size: { width: number; height: number }) => {
+            if (drawCompactOnSetSize) {
+              compactDrawHooks.forEach((hook) => hook(compactPlot));
+            }
+            setSizeMock(size);
+            Object.assign(compactPlot, size);
+          },
+          destroy: destroyMock,
+        } as unknown as uPlot;
+        return compactPlot;
+      }),
     }
   );
   return mock;
@@ -74,6 +93,8 @@ describe('UPlotChart', () => {
     setSizeMock.mockClear();
     initializeMock.mockClear();
     destroyMock.mockClear();
+    compactDrawHooks = [];
+    drawCompactOnSetSize = false;
     jest.mocked(uPlot.compact).mockClear();
 
     jest.spyOn(window, 'requestAnimationFrame').mockImplementation(mockRaf.raf);
@@ -148,6 +169,65 @@ describe('UPlotChart', () => {
       expect(uPlot.compact).toHaveBeenCalledTimes(1);
       expect(setCompactDataMock).toHaveBeenCalledWith(second);
       expect(setDataMock).not.toHaveBeenCalled();
+    });
+
+    it('reports when a compact plot draw is complete', async () => {
+      const { config } = mockData();
+      const data = mockCompactSource([10, 20, 5]);
+      const onCompactFrameReady = jest.fn();
+      render(
+        <UPlotChart data={data} config={config} width={100} height={100} onCompactFrameReady={onCompactFrameReady} />
+      );
+
+      act(() => compactDrawHooks.forEach((hook) => hook(compactPlot)));
+      await Promise.resolve();
+      expect(onCompactFrameReady).toHaveBeenCalledWith(data, config, 100, 100);
+    });
+
+    it('keeps a completed compact canvas visible until a held replacement is ready', () => {
+      const { config } = mockData();
+      const first = mockCompactSource([10, 20, 5]);
+      const second = mockCompactSource([11, 21, 6]);
+      const drawImage = jest.fn();
+      const getContext = jest
+        .spyOn(HTMLCanvasElement.prototype, 'getContext')
+        .mockReturnValue({ drawImage } as unknown as CanvasRenderingContext2D);
+      const view = render(<UPlotChart data={first} config={config} width={100} height={100} />);
+      const plotContainer = screen.getByTestId('uplot-main-div');
+      const completedCanvas = document.createElement('canvas');
+      completedCanvas.width = 100;
+      completedCanvas.height = 100;
+      plotContainer.appendChild(completedCanvas);
+
+      view.rerender(<UPlotChart data={second} config={config} width={100} height={100} holdPreviousCompactFrame />);
+
+      expect(drawImage).toHaveBeenCalledWith(completedCanvas, 0, 0);
+      expect(plotContainer).toHaveStyle({ visibility: 'hidden' });
+      expect(plotContainer.parentElement?.querySelectorAll('canvas')).toHaveLength(2);
+
+      view.rerender(<UPlotChart data={second} config={config} width={100} height={100} />);
+      expect(plotContainer).toHaveStyle({ visibility: 'visible' });
+      expect(plotContainer.parentElement?.querySelectorAll('canvas')).toHaveLength(1);
+      getContext.mockRestore();
+    });
+
+    it('does not report an old-source size draw as completion of replacement data', async () => {
+      const { config } = mockData();
+      const first = mockCompactSource([10, 20, 5]);
+      const second = mockCompactSource([11, 21, 6]);
+      const onCompactFrameReady = jest.fn();
+      const view = render(
+        <UPlotChart data={first} config={config} width={100} height={100} onCompactFrameReady={onCompactFrameReady} />
+      );
+      drawCompactOnSetSize = true;
+
+      view.rerender(
+        <UPlotChart data={second} config={config} width={200} height={200} onCompactFrameReady={onCompactFrameReady} />
+      );
+      await Promise.resolve();
+
+      expect(onCompactFrameReady).not.toHaveBeenCalled();
+      expect(setCompactDataMock).toHaveBeenCalledWith(second);
     });
   });
 
@@ -250,6 +330,17 @@ describe('UPlotChart', () => {
       expect(destroyMock).toBeCalledTimes(0);
       expect(uPlot).toBeCalledTimes(1);
       expect(setSizeMock).toBeCalledTimes(1);
+    });
+
+    it('does not redraw when fractional dimensions floor to the current plot size', () => {
+      const { config } = mockData();
+      const data = mockCompactSource([10, 20, 5]);
+      const { rerender } = render(<UPlotChart data={data} config={config} width={100} height={100} />);
+
+      rerender(<UPlotChart data={data} config={config} width={100.5} height={100.75} />);
+
+      expect(setSizeMock).not.toHaveBeenCalled();
+      expect(setCompactDataMock).not.toHaveBeenCalled();
     });
 
     it('preserves legacy update ordering when dimensions and data change together', () => {

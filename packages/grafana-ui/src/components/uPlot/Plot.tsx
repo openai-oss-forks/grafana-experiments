@@ -8,7 +8,10 @@ import { pluginLog } from './utils';
 import 'uplot/dist/uPlot.min.css';
 
 function sameDims(prevProps: PlotProps, nextProps: PlotProps) {
-  return nextProps.width === prevProps.width && nextProps.height === prevProps.height;
+  return (
+    Math.floor(nextProps.width) === Math.floor(prevProps.width) &&
+    Math.floor(nextProps.height) === Math.floor(prevProps.height)
+  );
 }
 
 function sameData(prevProps: PlotProps, nextProps: PlotProps) {
@@ -34,16 +37,22 @@ type UPlotChartState = {
   plot: uPlot | null;
 };
 
+interface CompactCanvasSnapshot {
+  canvas: HTMLCanvasElement;
+}
+
 /**
  * @internal
  * uPlot abstraction responsible for plot initialisation, setup and refresh
  * Receives a data frame that is x-axis aligned, as of https://github.com/leeoniya/uPlot/tree/master/docs#data-format
  * Exposes context for uPlot instance access
  */
-export class UPlotChart extends Component<PlotProps, UPlotChartState> {
+export class UPlotChart extends Component<PlotProps, UPlotChartState, CompactCanvasSnapshot | null> {
+  chartRoot = createRef<HTMLDivElement>();
   plotContainer = createRef<HTMLDivElement>();
   plotCanvasBBox = createRef<DOMRect>();
   plotInstance: uPlot | null = null;
+  snapshotCanvas: HTMLCanvasElement | null = null;
 
   constructor(props: PlotProps) {
     super(props);
@@ -77,10 +86,17 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
       });
     }
 
+    const baseConfig = this.props.config.getConfig();
     const config: Options = {
       width: Math.floor(this.props.width),
       height: Math.floor(this.props.height),
-      ...this.props.config.getConfig(),
+      ...baseConfig,
+      hooks: compactData
+        ? {
+            ...baseConfig.hooks,
+            draw: [...(baseConfig.hooks?.draw ?? []), this.onCompactDraw],
+          }
+        : baseConfig.hooks,
     };
 
     pluginLog('UPlot', false, 'Reinitializing plot', config);
@@ -111,13 +127,32 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
   }
 
   componentWillUnmount() {
+    this.clearCompactSnapshot();
     this.destroyPlot();
   }
 
-  componentDidUpdate(prevProps: PlotProps) {
+  getSnapshotBeforeUpdate(prevProps: PlotProps): CompactCanvasSnapshot | null {
+    if (
+      this.snapshotCanvas ||
+      !isCompactPlotSource(this.props.data) ||
+      !this.props.holdPreviousCompactFrame ||
+      (prevProps.holdPreviousCompactFrame && sameData(prevProps, this.props) && sameConfig(prevProps, this.props))
+    ) {
+      return null;
+    }
+    return this.createCompactSnapshot();
+  }
+
+  componentDidUpdate(prevProps: PlotProps, _prevState: UPlotChartState, compactSnapshot: CompactCanvasSnapshot | null) {
+    if (compactSnapshot) {
+      this.mountCompactSnapshot(compactSnapshot);
+    }
     const compactData = isCompactPlotSource(this.props.data);
     const previousCompactData = isCompactPlotSource(prevProps.data);
     if (compactData || previousCompactData) {
+      if (!compactData || !this.props.holdPreviousCompactFrame) {
+        this.clearCompactSnapshot();
+      }
       if (compactData && !hasRenderableDimensions(this.props)) {
         if (this.plotInstance) {
           this.destroyPlot();
@@ -163,10 +198,86 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState> {
 
   render() {
     return (
-      <div style={{ position: 'relative' }}>
+      <div ref={this.chartRoot} style={{ position: 'relative' }}>
         <div ref={this.plotContainer} data-testid="uplot-main-div" />
         {this.props.children}
       </div>
     );
+  }
+
+  private onCompactDraw = (drawnPlot: uPlot) => {
+    const source = this.props.data;
+    if (!isCompactPlotSource(source) || drawnPlot.compactSource !== source) {
+      return;
+    }
+    const config = this.props.config;
+    const width = drawnPlot.width;
+    const height = drawnPlot.height;
+    queueMicrotask(() => {
+      if (
+        this.plotInstance === drawnPlot &&
+        drawnPlot.compactSource === source &&
+        this.props.data === source &&
+        this.props.config === config &&
+        Math.floor(this.props.width) === width &&
+        Math.floor(this.props.height) === height &&
+        this.plotInstance
+      ) {
+        this.props.onCompactFrameReady?.(source, config, width, height);
+      }
+    });
+  };
+
+  private createCompactSnapshot(): CompactCanvasSnapshot | null {
+    const chartRoot = this.chartRoot.current;
+    const plotContainer = this.plotContainer.current;
+    const source = plotContainer?.querySelector('canvas');
+    if (!chartRoot || !plotContainer || !source) {
+      return null;
+    }
+    const snapshot = document.createElement('canvas');
+    const context = snapshot.getContext('2d');
+    if (!context) {
+      return null;
+    }
+    const sourceRect = source.getBoundingClientRect();
+    const rootRect = chartRoot.getBoundingClientRect();
+    snapshot.width = source.width;
+    snapshot.height = source.height;
+    snapshot.style.position = 'absolute';
+    snapshot.dataset.compactFrameSnapshot = 'true';
+    snapshot.style.pointerEvents = 'none';
+    snapshot.style.zIndex = '1';
+    snapshot.style.left = `${sourceRect.left - rootRect.left}px`;
+    snapshot.style.top = `${sourceRect.top - rootRect.top}px`;
+    snapshot.style.width = `${sourceRect.width}px`;
+    snapshot.style.height = `${sourceRect.height}px`;
+    context.drawImage(source, 0, 0);
+    return { canvas: snapshot };
+  }
+
+  private mountCompactSnapshot({ canvas }: CompactCanvasSnapshot) {
+    const target = this.chartRoot.current;
+    const plotContainer = this.plotContainer.current;
+    if (!target || !plotContainer) {
+      canvas.width = 0;
+      canvas.height = 0;
+      return;
+    }
+    target.appendChild(canvas);
+    plotContainer.style.visibility = 'hidden';
+    this.snapshotCanvas = canvas;
+  }
+
+  private clearCompactSnapshot() {
+    if (this.snapshotCanvas) {
+      this.snapshotCanvas.width = 0;
+      this.snapshotCanvas.height = 0;
+      this.snapshotCanvas.remove();
+      this.snapshotCanvas = null;
+    }
+    if (this.plotContainer.current) {
+      this.plotContainer.current.style.visibility = 'visible';
+    }
   }
 }

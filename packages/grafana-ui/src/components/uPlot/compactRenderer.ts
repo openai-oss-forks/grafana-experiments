@@ -301,6 +301,36 @@ export function getCompactRenderController(source: CompactRenderSource): Compact
   return controller;
 }
 
+/** Returns true when a source can use the renderer's asynchronous chunked draw path. */
+export function mayDrawCompactSourceProgressively(source: CompactRenderSource): boolean {
+  if (source.stackGroupCount !== 0) {
+    return false;
+  }
+
+  let visibleSeriesCount = 0;
+  for (let series = 0; series < source.seriesCount; series++) {
+    if (source.columns.visibility[series] !== 1) {
+      continue;
+    }
+    visibleSeriesCount++;
+    const flags = source.columns.flags[series];
+    const style = source.styles[source.columns.styleIds[series]];
+    if (
+      (flags & CompactSeriesFlag.PathMask) !== CompactSeriesFlag.Linear ||
+      (flags & CompactSeriesFlag.DrawLine) === 0 ||
+      (flags & (CompactSeriesFlag.Points | CompactSeriesFlag.Stack | CompactSeriesFlag.Bars)) !== 0 ||
+      style.areaFill != null ||
+      style.areaGradient != null ||
+      (style.lineDash?.length ?? 0) !== 0 ||
+      (style.alpha ?? 1) !== 1 ||
+      style.showValues === true
+    ) {
+      return false;
+    }
+  }
+  return visibleSeriesCount * source.pointCount >= PROGRESSIVE_SAMPLE_THRESHOLD;
+}
+
 /**
  * uPlot integration point for binary-native rendering. All retained state is constant-sized or keyed by
  * unique scales/styles/stack groups rather than by samples or series.

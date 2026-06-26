@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Component } from 'react';
-import { AlignedData } from 'uplot';
+import uPlot, { AlignedData } from 'uplot';
 
 import {
   DataFrame,
@@ -15,10 +15,11 @@ import {
   TimeRange,
   TimeZone,
 } from '@grafana/data';
-import { DashboardCursorSync, VizLegendOptions } from '@grafana/schema';
+import { DashboardCursorSync, LegendPlacement, VizLegendOptions } from '@grafana/schema';
 import { Themeable2, VizLayout, VizLayoutLegendProps } from '@grafana/ui';
 import {
   AxisProps,
+  mayDrawCompactSourceProgressively,
   pluginLog,
   Renderers,
   ScaleProps,
@@ -47,6 +48,7 @@ export interface GraphNGProps extends Themeable2 {
   compactSeries?: CompactTimeSeriesData;
   compactFieldConfig?: CompactFieldConfigOptions;
   compactStreaming?: boolean;
+  compactRequestKey?: string;
   structureRev?: number; // a number that will change when the frames[] structure changes
   width: number;
   height: number;
@@ -76,7 +78,8 @@ export interface GraphNGProps extends Themeable2 {
   renderLegend: (config: UPlotConfigBuilder, frames: DataFrame[]) => React.ReactElement<VizLayoutLegendProps> | null;
   renderCompactLegend?: (
     config: UPlotConfigBuilder,
-    plan: CompactNativeRenderPlan
+    plan: CompactNativeRenderPlan,
+    legend: VizLegendOptions
   ) => React.ReactElement<VizLayoutLegendProps> | null;
   replaceVariables: InterpolateFunction;
   dataLinkPostProcessor?: DataLinkPostProcessor;
@@ -130,6 +133,23 @@ export interface GraphNGState {
   config?: UPlotConfigBuilder;
   compactPlan?: CompactNativeRenderPlan;
   compactFieldConfig?: CompactFieldConfigOptions;
+  compactLegend?: VizLegendOptions;
+  compactSessionKey?: string;
+  compactLayoutKey?: string;
+  presentedCompactPlan?: CompactNativeRenderPlan;
+  presentedCompactConfig?: UPlotConfigBuilder;
+  presentedCompactLegend?: VizLegendOptions;
+  presentedCompactSessionKey?: string;
+  presentedCompactLayoutKey?: string;
+  presentedCompactWidth?: number;
+  presentedCompactHeight?: number;
+  presentedCompactContainerWidth?: number;
+  presentedCompactContainerHeight?: number;
+  presentedCompactPlacement?: LegendPlacement;
+  stagedCompactLayoutKey?: string;
+  stagedCompactWidth?: number;
+  stagedCompactHeight?: number;
+  holdPreviousCompactFrame: boolean;
 }
 
 function emptyGraphState(): GraphNGState {
@@ -140,6 +160,23 @@ function emptyGraphState(): GraphNGState {
     config: undefined,
     compactPlan: undefined,
     compactFieldConfig: undefined,
+    compactLegend: undefined,
+    compactSessionKey: undefined,
+    compactLayoutKey: undefined,
+    presentedCompactPlan: undefined,
+    presentedCompactConfig: undefined,
+    presentedCompactLegend: undefined,
+    presentedCompactSessionKey: undefined,
+    presentedCompactLayoutKey: undefined,
+    presentedCompactWidth: undefined,
+    presentedCompactHeight: undefined,
+    presentedCompactContainerWidth: undefined,
+    presentedCompactContainerHeight: undefined,
+    presentedCompactPlacement: undefined,
+    stagedCompactLayoutKey: undefined,
+    stagedCompactWidth: undefined,
+    stagedCompactHeight: undefined,
+    holdPreviousCompactFrame: false,
   };
 }
 
@@ -147,6 +184,21 @@ const defaultMatchers = {
   x: fieldMatchers.get(FieldMatcherID.firstTimeField).get({}),
   y: fieldMatchers.get(FieldMatcherID.byTypes).get(new Set([FieldType.number, FieldType.enum])),
 };
+
+function CompactLayoutSizeReporter({
+  layoutKey,
+  width,
+  height,
+  onSize,
+}: {
+  layoutKey: string;
+  width: number;
+  height: number;
+  onSize: (layoutKey: string, width: number, height: number) => void;
+}) {
+  React.useLayoutEffect(() => onSize(layoutKey, width, height), [height, layoutKey, onSize, width]);
+  return null;
+}
 
 /**
  * "Time as X" core component, expects ascending x
@@ -160,6 +212,9 @@ export function GraphNG(props: GraphNGProps) {
 }
 
 export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
+  private compactRevisionFrame?: number;
+  private stagedLayoutReleaseFrame?: number;
+
   constructor(props: GraphNGProps) {
     super(props);
     const state = this.prepState(props);
@@ -212,6 +267,23 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
         config,
         compactPlan: plan,
         compactFieldConfig,
+        compactLegend: props.legend,
+        compactSessionKey: this.getCompactSessionKey(props),
+        compactLayoutKey: this.getCompactLayoutKey(props),
+        presentedCompactPlan: this.state?.presentedCompactPlan,
+        presentedCompactConfig: this.state?.presentedCompactConfig,
+        presentedCompactLegend: this.state?.presentedCompactLegend,
+        presentedCompactSessionKey: this.state?.presentedCompactSessionKey,
+        presentedCompactLayoutKey: this.state?.presentedCompactLayoutKey,
+        presentedCompactWidth: this.state?.presentedCompactWidth,
+        presentedCompactHeight: this.state?.presentedCompactHeight,
+        presentedCompactContainerWidth: this.state?.presentedCompactContainerWidth,
+        presentedCompactContainerHeight: this.state?.presentedCompactContainerHeight,
+        presentedCompactPlacement: this.state?.presentedCompactPlacement,
+        stagedCompactLayoutKey: this.state?.stagedCompactLayoutKey,
+        stagedCompactWidth: this.state?.stagedCompactWidth,
+        stagedCompactHeight: this.state?.stagedCompactHeight,
+        holdPreviousCompactFrame: this.state?.holdPreviousCompactFrame ?? false,
       };
     }
 
@@ -298,6 +370,23 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
         config,
         compactPlan: undefined,
         compactFieldConfig: undefined,
+        compactLegend: undefined,
+        compactSessionKey: undefined,
+        compactLayoutKey: undefined,
+        presentedCompactPlan: undefined,
+        presentedCompactConfig: undefined,
+        presentedCompactLegend: undefined,
+        presentedCompactSessionKey: undefined,
+        presentedCompactLayoutKey: undefined,
+        presentedCompactWidth: undefined,
+        presentedCompactHeight: undefined,
+        presentedCompactContainerWidth: undefined,
+        presentedCompactContainerHeight: undefined,
+        presentedCompactPlacement: undefined,
+        stagedCompactLayoutKey: undefined,
+        stagedCompactWidth: undefined,
+        stagedCompactHeight: undefined,
+        holdPreviousCompactFrame: false,
       };
 
       pluginLog('GraphNG', false, 'data prepared', state.alignedData);
@@ -308,16 +397,47 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
   }
 
   componentDidUpdate(prevProps: GraphNGProps) {
-    const { frames, compactSeries, compactFieldConfig, structureRev, timeZone, cursorSync, propsToDiff } = this.props;
+    this.scheduleStagedLayoutRelease();
+    const {
+      frames,
+      compactSeries,
+      compactFieldConfig,
+      compactRequestKey,
+      compactStreaming,
+      structureRev,
+      timeZone,
+      cursorSync,
+      propsToDiff,
+    } = this.props;
 
     const propsChanged = !sameProps(prevProps, this.props, propsToDiff);
     const compactInputChanged =
       compactSeries !== prevProps.compactSeries || compactFieldConfig !== prevProps.compactFieldConfig;
+    const compactRequestChanged = compactRequestKey !== prevProps.compactRequestKey;
+    const compactStreamingChanged = compactStreaming !== prevProps.compactStreaming;
     const legacyFramesChanged = !compactSeries && frames !== prevProps.frames;
+
+    const pureStreamingCompactRevision =
+      compactInputChanged &&
+      compactSeries != null &&
+      this.props.compactStreaming === true &&
+      compactFieldConfig === prevProps.compactFieldConfig &&
+      !propsChanged &&
+      timeZone === prevProps.timeZone &&
+      cursorSync === prevProps.cursorSync;
+
+    if (pureStreamingCompactRevision) {
+      this.scheduleCompactRevision();
+      return;
+    }
+
+    this.cancelScheduledCompactRevision();
 
     if (
       legacyFramesChanged ||
       compactInputChanged ||
+      compactRequestChanged ||
+      compactStreamingChanged ||
       propsChanged ||
       timeZone !== prevProps.timeZone ||
       cursorSync !== prevProps.cursorSync ||
@@ -369,27 +489,121 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
         }
       }
 
+      if (newState.compactPlan && newState.config) {
+        newState = this.prepareCompactPresentation(newState);
+      }
+
       this.setState(newState);
     }
   }
 
+  componentWillUnmount() {
+    this.cancelScheduledCompactRevision();
+    this.cancelStagedLayoutRelease();
+  }
+
   render() {
-    const { width, height, children, compactChildren, renderLegend, renderCompactLegend } = this.props;
-    const { config, alignedData, compactPlan } = this.state;
+    const { width, height, children, compactChildren, renderLegend, renderCompactLegend, legend } = this.props;
+    const {
+      config,
+      alignedData,
+      compactPlan,
+      compactLegend,
+      compactSessionKey,
+      compactLayoutKey,
+      presentedCompactPlan,
+      presentedCompactConfig,
+      presentedCompactLegend,
+      presentedCompactSessionKey,
+      presentedCompactLayoutKey,
+      stagedCompactLayoutKey,
+      stagedCompactWidth,
+      stagedCompactHeight,
+      holdPreviousCompactFrame,
+    } = this.state;
 
     if (!config) {
       return null;
     }
 
     if (compactPlan) {
+      const visiblePlan = presentedCompactPlan ?? compactPlan;
+      const visibleConfig = presentedCompactConfig ?? config;
+      const currentLegendOptions = compactLegend ?? legend;
+      const visibleLegendOptions = presentedCompactLegend ?? currentLegendOptions;
+      const visibleSessionKey = presentedCompactLayoutKey ?? presentedCompactSessionKey ?? compactSessionKey ?? '';
+      const legendSessionKey = `${visibleSessionKey}:${JSON.stringify(visibleLegendOptions)}`;
+      const hasCompletedFrame = presentedCompactPlan != null && presentedCompactConfig != null;
+      const requiresStagedLayout =
+        holdPreviousCompactFrame && compactLayoutKey !== presentedCompactLayoutKey && compactLayoutKey != null;
+      const hasStagedLayout =
+        !requiresStagedLayout ||
+        (stagedCompactLayoutKey === compactLayoutKey && stagedCompactWidth != null && stagedCompactHeight != null);
+      const plotPlan = requiresStagedLayout && !hasStagedLayout ? visiblePlan : compactPlan;
+      const plotConfig = requiresStagedLayout && !hasStagedLayout ? visibleConfig : config;
+      const stagedWidth = stagedCompactLayoutKey === compactLayoutKey ? stagedCompactWidth : undefined;
+      const stagedHeight = stagedCompactLayoutKey === compactLayoutKey ? stagedCompactHeight : undefined;
+      const currentLegend = renderCompactLegend?.(config, compactPlan, currentLegendOptions) ?? null;
       return (
-        <VizLayout width={width} height={height} legend={renderCompactLegend?.(config, compactPlan) ?? null}>
-          {(vizWidth: number, vizHeight: number) => (
-            <UPlotChart config={config} data={compactPlan.source} width={vizWidth} height={vizHeight}>
-              {compactChildren ? compactChildren(config, compactPlan) : null}
-            </UPlotChart>
+        <div
+          aria-busy={holdPreviousCompactFrame || !hasCompletedFrame}
+          aria-hidden={!hasCompletedFrame}
+          style={{
+            opacity: hasCompletedFrame ? 1 : 0,
+            pointerEvents: !hasCompletedFrame || holdPreviousCompactFrame ? 'none' : undefined,
+            position: 'relative',
+            width,
+            height,
+          }}
+        >
+          <VizLayout
+            width={width}
+            height={height}
+            legend={renderCompactLegend?.(visibleConfig, visiblePlan, visibleLegendOptions) ?? null}
+            lockLegendSize
+            legendSizeKey={legendSessionKey}
+            mountBeforeLegendMeasure
+            stableLegendSlot
+          >
+            {(vizWidth: number, vizHeight: number) => (
+              <UPlotChart
+                config={plotConfig}
+                data={plotPlan.source}
+                holdPreviousCompactFrame={holdPreviousCompactFrame}
+                onCompactFrameReady={this.onCompactFrameReady}
+                width={stagedWidth ?? vizWidth}
+                height={stagedHeight ?? vizHeight}
+              >
+                {compactChildren ? compactChildren(plotConfig, plotPlan) : null}
+              </UPlotChart>
+            )}
+          </VizLayout>
+          {requiresStagedLayout && !hasStagedLayout && (
+            <div
+              aria-hidden="true"
+              style={{ position: 'absolute', inset: 0, visibility: 'hidden', pointerEvents: 'none' }}
+            >
+              <VizLayout
+                width={width}
+                height={height}
+                legend={currentLegend}
+                lockLegendSize
+                legendSizeKey={compactLayoutKey}
+                mountBeforeLegendMeasure={compactPlan.source.seriesCount === 0}
+                stableLegendSlot
+              >
+                {(stagedWidth: number, stagedHeight: number) => (
+                  <CompactLayoutSizeReporter
+                    layoutKey={compactLayoutKey}
+                    width={stagedWidth}
+                    height={stagedHeight}
+                    onSize={this.onStagedCompactLayout}
+                  />
+                )}
+              </VizLayout>
+            </div>
           )}
-        </VizLayout>
+        </div>
       );
     }
 
@@ -423,5 +637,326 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
       throw new Error('GraphNG does not support faceted uPlot data');
     }
     return data;
+  }
+
+  private scheduleCompactRevision() {
+    if (this.compactRevisionFrame !== undefined) {
+      return;
+    }
+    this.compactRevisionFrame = window.requestAnimationFrame(() => {
+      this.compactRevisionFrame = undefined;
+      const compactSeries = this.props.compactSeries;
+      if (!compactSeries) {
+        return;
+      }
+      const newState = this.prepState(this.props, false);
+      if (!newState.compactPlan) {
+        return;
+      }
+      const compactConfigChanged = !hasCompatibleCompactNativeConfig(newState.compactPlan, this.state.compactPlan);
+      if (compactConfigChanged || !newState.config) {
+        if (!this.props.prepCompactConfig) {
+          throw new Error('Compact GraphNG rendering requires descriptor-native plot configuration');
+        }
+        newState.config = this.props.prepCompactConfig(
+          newState.compactPlan,
+          this.getTimeRange,
+          this.props.annotationLanes
+        );
+      }
+      const presentationState = this.prepareCompactPresentation(newState);
+      this.setState(presentationState);
+    });
+  }
+
+  private cancelScheduledCompactRevision() {
+    if (this.compactRevisionFrame !== undefined) {
+      window.cancelAnimationFrame(this.compactRevisionFrame);
+      this.compactRevisionFrame = undefined;
+    }
+  }
+
+  private getCompactSessionKey(props: GraphNGProps): string {
+    return props.compactRequestKey ?? `${props.timeRange.from.valueOf()}:${props.timeRange.to.valueOf()}`;
+  }
+
+  private getCompactGeometryKey(props: GraphNGProps): string {
+    const { legend } = props;
+    const topologyState = props.compactSeries?.series.length ? 'nonempty' : 'empty';
+    const fieldConfig = JSON.stringify(props.compactFieldConfig?.fieldConfig ?? null);
+    return `${this.getCompactSessionKey(props)}:${topologyState}:${JSON.stringify(legend)}:${fieldConfig}`;
+  }
+
+  private getCompactLayoutKey(props: GraphNGProps): string {
+    return `${this.getCompactGeometryKey(props)}:${props.compactStreaming ? 'streaming' : 'final'}`;
+  }
+
+  private prepareCompactPresentation(nextState: GraphNGState): GraphNGState {
+    const { compactPlan, config, compactSessionKey, compactLayoutKey } = nextState;
+    if (!compactPlan || !config) {
+      return nextState;
+    }
+
+    const previousPlan = this.state.presentedCompactPlan;
+    const previousConfig = this.state.presentedCompactConfig;
+    if (!previousPlan || !previousConfig) {
+      return {
+        ...nextState,
+        presentedCompactPlan: undefined,
+        presentedCompactConfig: undefined,
+        presentedCompactLegend: undefined,
+        presentedCompactSessionKey: undefined,
+        presentedCompactLayoutKey: undefined,
+        presentedCompactWidth: undefined,
+        presentedCompactHeight: undefined,
+        stagedCompactLayoutKey: undefined,
+        stagedCompactWidth: undefined,
+        stagedCompactHeight: undefined,
+        holdPreviousCompactFrame: false,
+      };
+    }
+
+    const layoutChanged = compactLayoutKey !== this.state.presentedCompactLayoutKey;
+    const canReusePresentedGeometry = layoutChanged && this.canReusePresentedCompactGeometry(nextState, previousPlan);
+    const sourceChanged = compactPlan.source !== previousPlan.source;
+    const requiresCompletedDraw =
+      (sourceChanged && mayDrawCompactSourceProgressively(compactPlan.source)) ||
+      compactSessionKey !== this.state.compactSessionKey ||
+      (layoutChanged && !canReusePresentedGeometry) ||
+      config !== this.state.config;
+
+    if (requiresCompletedDraw) {
+      const reusePresentedDimensions =
+        canReusePresentedGeometry &&
+        this.state.presentedCompactWidth != null &&
+        this.state.presentedCompactHeight != null;
+      return {
+        ...nextState,
+        presentedCompactPlan: previousPlan,
+        presentedCompactConfig: previousConfig,
+        presentedCompactLegend: this.state.presentedCompactLegend,
+        presentedCompactSessionKey: this.state.presentedCompactSessionKey,
+        presentedCompactLayoutKey: this.state.presentedCompactLayoutKey,
+        stagedCompactLayoutKey: reusePresentedDimensions
+          ? compactLayoutKey
+          : layoutChanged && this.state.stagedCompactLayoutKey !== compactLayoutKey
+            ? undefined
+            : this.state.stagedCompactLayoutKey,
+        stagedCompactWidth: reusePresentedDimensions
+          ? this.state.presentedCompactWidth
+          : layoutChanged && this.state.stagedCompactLayoutKey !== compactLayoutKey
+            ? undefined
+            : this.state.stagedCompactWidth,
+        stagedCompactHeight: reusePresentedDimensions
+          ? this.state.presentedCompactHeight
+          : layoutChanged && this.state.stagedCompactLayoutKey !== compactLayoutKey
+            ? undefined
+            : this.state.stagedCompactHeight,
+        holdPreviousCompactFrame: true,
+      };
+    }
+
+    return {
+      ...nextState,
+      presentedCompactPlan: compactPlan,
+      presentedCompactConfig: config,
+      presentedCompactLegend: nextState.compactLegend,
+      presentedCompactSessionKey: compactSessionKey,
+      presentedCompactLayoutKey: compactLayoutKey,
+      presentedCompactContainerWidth: this.props.width,
+      presentedCompactContainerHeight: this.props.height,
+      presentedCompactPlacement: this.getCompactLegendPlacement(this.props),
+      stagedCompactLayoutKey: undefined,
+      stagedCompactWidth: undefined,
+      stagedCompactHeight: undefined,
+      holdPreviousCompactFrame: false,
+    };
+  }
+
+  private canReusePresentedCompactGeometry(nextState: GraphNGState, previousPlan: CompactNativeRenderPlan): boolean {
+    if (
+      !nextState.compactPlan ||
+      !nextState.compactLayoutKey ||
+      !this.state.presentedCompactLayoutKey ||
+      this.state.presentedCompactWidth == null ||
+      this.state.presentedCompactHeight == null
+    ) {
+      return false;
+    }
+
+    const geometryKey = this.getCompactGeometryKey(this.props);
+    if (
+      this.state.presentedCompactLayoutKey !== `${geometryKey}:streaming` &&
+      this.state.presentedCompactLayoutKey !== `${geometryKey}:final`
+    ) {
+      return false;
+    }
+
+    if (
+      this.state.presentedCompactContainerWidth !== this.props.width ||
+      this.state.presentedCompactContainerHeight !== this.props.height ||
+      this.state.presentedCompactPlacement !== this.getCompactLegendPlacement(this.props)
+    ) {
+      return false;
+    }
+
+    if (nextState.compactPlan.source === previousPlan.source) {
+      return true;
+    }
+
+    const legend = nextState.compactLegend ?? this.props.legend;
+    if (!legend.showLegend) {
+      return true;
+    }
+
+    const placement = this.getCompactLegendPlacement(this.props);
+    if (placement === 'right') {
+      return legend.width != null;
+    }
+
+    const legendHeight = this.props.height - this.state.presentedCompactHeight;
+    return legendHeight >= this.props.height * 0.35 - 1;
+  }
+
+  private getCompactLegendPlacement(props: GraphNGProps) {
+    return document.body.clientWidth < props.theme.breakpoints.values.lg ? 'bottom' : props.legend.placement;
+  }
+
+  private onStagedCompactLayout = (layoutKey: string, width: number, height: number) => {
+    width = Math.floor(width);
+    height = Math.floor(height);
+    if (
+      layoutKey !== this.state.compactLayoutKey ||
+      layoutKey !== this.getCompactLayoutKey(this.props) ||
+      (this.state.stagedCompactLayoutKey === layoutKey &&
+        this.state.stagedCompactWidth === width &&
+        this.state.stagedCompactHeight === height)
+    ) {
+      return;
+    }
+    this.setState(
+      {
+        stagedCompactLayoutKey: layoutKey,
+        stagedCompactWidth: width,
+        stagedCompactHeight: height,
+      },
+      () => {
+        if (
+          this.state.holdPreviousCompactFrame &&
+          this.state.compactPlan === this.state.presentedCompactPlan &&
+          this.state.config === this.state.presentedCompactConfig &&
+          width === this.state.presentedCompactWidth &&
+          height === this.state.presentedCompactHeight
+        ) {
+          this.commitCurrentCompactPresentation(width, height);
+        }
+      }
+    );
+  };
+
+  private onCompactFrameReady = (
+    source: uPlot.CompactPlotSource,
+    readyConfig: UPlotConfigBuilder,
+    width: number,
+    height: number
+  ) => {
+    const {
+      compactPlan,
+      config,
+      compactSessionKey,
+      compactLayoutKey,
+      presentedCompactPlan,
+      presentedCompactConfig,
+      presentedCompactLayoutKey,
+      stagedCompactLayoutKey,
+    } = this.state;
+    const layoutChangePending = presentedCompactPlan != null && compactLayoutKey !== presentedCompactLayoutKey;
+    if (
+      !compactPlan ||
+      !config ||
+      compactPlan.source !== source ||
+      compactPlan.data !== this.props.compactSeries ||
+      config !== readyConfig ||
+      compactSessionKey !== this.getCompactSessionKey(this.props) ||
+      compactLayoutKey !== this.getCompactLayoutKey(this.props) ||
+      (layoutChangePending && stagedCompactLayoutKey !== compactLayoutKey)
+    ) {
+      return;
+    }
+    if (
+      presentedCompactPlan === compactPlan &&
+      presentedCompactConfig === config &&
+      !this.state.holdPreviousCompactFrame
+    ) {
+      const placement = this.getCompactLegendPlacement(this.props);
+      if (
+        width !== this.state.presentedCompactWidth ||
+        height !== this.state.presentedCompactHeight ||
+        this.props.width !== this.state.presentedCompactContainerWidth ||
+        this.props.height !== this.state.presentedCompactContainerHeight ||
+        placement !== this.state.presentedCompactPlacement
+      ) {
+        this.setState({
+          presentedCompactWidth: width,
+          presentedCompactHeight: height,
+          presentedCompactContainerWidth: this.props.width,
+          presentedCompactContainerHeight: this.props.height,
+          presentedCompactPlacement: placement,
+        });
+      }
+      return;
+    }
+    this.commitCurrentCompactPresentation(width, height);
+  };
+
+  private commitCurrentCompactPresentation(width: number, height: number) {
+    const { compactPlan, config, compactSessionKey, compactLayoutKey } = this.state;
+    if (!compactPlan || !config) {
+      return;
+    }
+    this.setState({
+      presentedCompactPlan: compactPlan,
+      presentedCompactConfig: config,
+      presentedCompactLegend: this.state.compactLegend,
+      presentedCompactSessionKey: compactSessionKey,
+      presentedCompactLayoutKey: compactLayoutKey,
+      presentedCompactWidth: width,
+      presentedCompactHeight: height,
+      presentedCompactContainerWidth: this.props.width,
+      presentedCompactContainerHeight: this.props.height,
+      presentedCompactPlacement: this.getCompactLegendPlacement(this.props),
+      holdPreviousCompactFrame: false,
+    });
+  }
+
+  private scheduleStagedLayoutRelease() {
+    if (
+      this.state.holdPreviousCompactFrame ||
+      !this.state.stagedCompactLayoutKey ||
+      this.state.stagedCompactLayoutKey !== this.state.presentedCompactLayoutKey ||
+      this.stagedLayoutReleaseFrame !== undefined
+    ) {
+      return;
+    }
+    this.stagedLayoutReleaseFrame = window.requestAnimationFrame(() => {
+      this.stagedLayoutReleaseFrame = undefined;
+      if (
+        !this.state.holdPreviousCompactFrame &&
+        this.state.stagedCompactLayoutKey === this.state.presentedCompactLayoutKey
+      ) {
+        this.setState({
+          stagedCompactLayoutKey: undefined,
+          stagedCompactWidth: undefined,
+          stagedCompactHeight: undefined,
+        });
+      }
+    });
+  }
+
+  private cancelStagedLayoutRelease() {
+    if (this.stagedLayoutReleaseFrame !== undefined) {
+      window.cancelAnimationFrame(this.stagedLayoutReleaseFrame);
+      this.stagedLayoutReleaseFrame = undefined;
+    }
   }
 }

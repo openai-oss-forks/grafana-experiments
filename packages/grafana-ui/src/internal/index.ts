@@ -19,6 +19,7 @@ export {
   hasCompatibleCompactRenderSource,
   installCompactRenderer,
   isCompactRenderSource,
+  mayDrawCompactSourceProgressively,
   transferCompactVisibilityState,
   type CompactBarRenderOptions,
   type CompactCursorSnapshot,

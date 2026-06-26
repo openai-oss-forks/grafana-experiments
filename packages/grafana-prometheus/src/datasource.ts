@@ -83,8 +83,6 @@ import {
 import { utf8Support, wrapUtf8Filters } from './utf8_support';
 import { PrometheusVariableSupport } from './variables';
 
-const COMPACT_MULTI_TARGET_RENDER_INTERVAL_MS = 200;
-
 export class PrometheusDatasource
   extends DataSourceWithBackend<PromQuery, PromOptions>
   implements DataSourceWithQueryImportSupport<PromQuery>, DataSourceWithQueryExportSupport<PromQuery>
@@ -573,8 +571,6 @@ export class PrometheusDatasource
       const completedTargets = new Set<string>();
       const targetKeys = targets.map((target, index) => target.refId ?? String(index));
       const responseKey = `${request.requestId}-prometheus-multibatch`;
-      let pendingCompactResponse: DataQueryResponse | undefined;
-      let compactRenderTimer: ReturnType<typeof setTimeout> | undefined;
 
       const publishCombinedResponse = (response: DataQueryResponse) => {
         const allTargetsDone = completedTargets.size === targets.length;
@@ -619,26 +615,6 @@ export class PrometheusDatasource
           completedTargets.add(targetKey);
         }
 
-        const allTargetsDone = completedTargets.size === targets.length;
-        if (latestCompactSeriesByTarget.size > 0 && !allTargetsDone) {
-          // Coalesce target arrivals into one cumulative panel update per interval.
-          pendingCompactResponse = response;
-          compactRenderTimer ??= setTimeout(() => {
-            compactRenderTimer = undefined;
-            const pendingResponse = pendingCompactResponse;
-            pendingCompactResponse = undefined;
-            if (pendingResponse && !subscriber.closed) {
-              publishCombinedResponse(pendingResponse);
-            }
-          }, COMPACT_MULTI_TARGET_RENDER_INTERVAL_MS);
-          return;
-        }
-
-        if (compactRenderTimer) {
-          clearTimeout(compactRenderTimer);
-          compactRenderTimer = undefined;
-        }
-        pendingCompactResponse = undefined;
         publishCombinedResponse(response);
       };
 
@@ -670,9 +646,6 @@ export class PrometheusDatasource
       );
 
       return () => {
-        if (compactRenderTimer) {
-          clearTimeout(compactRenderTimer);
-        }
         for (const subscription of subscriptions) {
           subscription.unsubscribe();
         }

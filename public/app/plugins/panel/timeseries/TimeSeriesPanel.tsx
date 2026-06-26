@@ -196,6 +196,7 @@ export const TimeSeriesPanel = ({
       compactSeries={compactSeries}
       compactFieldConfig={compactFieldConfig}
       compactStreaming={Boolean(compactSeries && data.state === LoadingState.Streaming)}
+      compactRequestKey={data.request?.requestId}
       structureRev={data.structureRev}
       timeRange={timeRange}
       timeZone={timezones}
