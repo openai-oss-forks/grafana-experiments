@@ -232,6 +232,20 @@ describe('UPlotChart', () => {
   });
 
   describe('config update', () => {
+    it('reinitializes a compact plot when its resolved configuration changes', () => {
+      const { config } = mockData();
+      const data = mockCompactSource([10, 20, 5]);
+      const view = render(<UPlotChart data={data} config={config} width={100} height={100} />);
+      const nextConfig = new UPlotConfigBuilder();
+      nextConfig.addSeries({} as SeriesProps);
+
+      view.rerender(<UPlotChart data={data} config={nextConfig} width={100} height={100} />);
+
+      expect(destroyMock).toHaveBeenCalledTimes(1);
+      expect(uPlot.compact).toHaveBeenCalledTimes(2);
+      expect(setCompactDataMock).not.toHaveBeenCalled();
+    });
+
     it('skips compact uPlot initialization until both dimensions are renderable', () => {
       const { config } = mockData();
       const data = mockCompactSource([10, 20, 5]);

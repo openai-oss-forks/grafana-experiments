@@ -123,6 +123,31 @@ function sameProps<T extends Record<string, unknown>>(
   return true;
 }
 
+function getCompactLegendLayoutConfig(fieldConfig: CompactFieldConfigOptions['fieldConfig'] | undefined) {
+  if (!fieldConfig) {
+    return null;
+  }
+
+  const defaults = { ...fieldConfig.defaults };
+  if (defaults.custom) {
+    const custom = { ...defaults.custom };
+    delete custom.drawStyle;
+    if (Object.keys(custom).length) {
+      defaults.custom = custom;
+    } else {
+      delete defaults.custom;
+    }
+  }
+
+  const overrides = fieldConfig.overrides
+    .map((override) => ({
+      ...override,
+      properties: override.properties.filter((property) => property.id !== 'custom.drawStyle'),
+    }))
+    .filter((override) => override.properties.length > 0);
+  return { defaults, overrides };
+}
+
 /**
  * @internal -- not a public API
  */
@@ -683,7 +708,7 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
   private getCompactGeometryKey(props: GraphNGProps): string {
     const { legend } = props;
     const topologyState = props.compactSeries?.series.length ? 'nonempty' : 'empty';
-    const fieldConfig = JSON.stringify(props.compactFieldConfig?.fieldConfig ?? null);
+    const fieldConfig = JSON.stringify(getCompactLegendLayoutConfig(props.compactFieldConfig?.fieldConfig));
     return `${this.getCompactSessionKey(props)}:${topologyState}:${JSON.stringify(legend)}:${fieldConfig}`;
   }
 

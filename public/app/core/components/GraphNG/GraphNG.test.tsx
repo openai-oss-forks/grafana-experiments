@@ -5,7 +5,8 @@ import {
   dateTime,
   FieldConfigOptionsRegistry,
 } from '@grafana/data';
-import { getCompactRenderController, UPlotConfigBuilder } from '@grafana/ui/internal';
+import { GraphDrawStyle } from '@grafana/schema';
+import { CompactSeriesFlag, getCompactRenderController, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { GraphNGProps, GraphNGRenderer, GraphNGState } from './GraphNG';
 import { CompactFieldConfigOptions } from './compactTypes';
@@ -299,6 +300,74 @@ describe('GraphNGRenderer compact state ownership', () => {
     expect(renderer.render()?.props.children[1]).toBeTruthy();
   });
 
+  test('redraws progressive draw-style changes without invalidating legend geometry', () => {
+    const first = compactData(1, 1_000_000);
+    const second = compactData(2, 1_000_000);
+    const legend = {
+      showLegend: true,
+      displayMode: 'list',
+      placement: 'bottom',
+      calcs: ['lastNotNull'],
+    } as GraphNGProps['legend'];
+    const initialProps = {
+      ...graphProps(first, 100, 100),
+      compactRequestKey: 'request-1',
+      compactStreaming: true,
+      legend,
+    };
+    const renderer = new GraphNGRenderer(initialProps);
+    installSynchronousSetState(renderer);
+    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 80);
+    const initialPlan = renderer.state.presentedCompactPlan;
+    const initialConfig = renderer.state.presentedCompactConfig;
+    const initialLayoutKey = renderer.state.compactLayoutKey;
+    const barsFieldConfig: CompactFieldConfigOptions = {
+      ...compactFieldConfig,
+      capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        {
+          id: 'custom.drawStyle',
+          path: 'drawStyle',
+          name: 'Draw style',
+          isCustom: true,
+          editor: () => null,
+          override: () => null,
+          process: (value) => value,
+          shouldApply: () => true,
+        },
+      ]),
+      fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] },
+    };
+
+    const barsProps = { ...initialProps, compactSeries: second, compactFieldConfig: barsFieldConfig };
+    updateRenderer(renderer, initialProps, barsProps);
+
+    expect(renderer.state.compactLayoutKey).toBe(initialLayoutKey);
+    expect(renderer.state.compactPlan!.source.columns.flags[0] & CompactSeriesFlag.Bars).not.toBe(0);
+    expect(renderer.state.presentedCompactPlan).toBe(initialPlan);
+    expect(renderer.state.presentedCompactConfig).toBe(initialConfig);
+    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+    expect(renderer.state.stagedCompactLayoutKey).toBeUndefined();
+    const barsPlot = renderCompactPlot(renderer);
+    expect(barsPlot.props.data).toBe(renderer.state.compactPlan!.source);
+    expect(barsPlot.props.config).toBe(renderer.state.config);
+    expect(barsPlot.props.holdPreviousCompactFrame).toBe(true);
+
+    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 80);
+    expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
+    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
+
+    updateRenderer(renderer, barsProps, initialProps);
+
+    expect(renderer.state.compactLayoutKey).toBe(initialLayoutKey);
+    expect(renderer.state.compactPlan!.source.columns.flags[0] & CompactSeriesFlag.Bars).toBe(0);
+    expect(renderer.state.compactPlan!.source.columns.flags[0] & CompactSeriesFlag.DrawLine).not.toBe(0);
+    const linesPlot = renderCompactPlot(renderer);
+    expect(linesPlot.props.data).toBe(renderer.state.compactPlan!.source);
+    expect(linesPlot.props.config).toBe(renderer.state.config);
+    expect(linesPlot.props.holdPreviousCompactFrame).toBe(true);
+  });
+
   test('retains presented legend options while replacement options are staged', () => {
     const hiddenLegend = {
       showLegend: false,
@@ -433,6 +502,11 @@ function installSynchronousSetState(renderer: GraphNGRenderer): void {
 function updateRenderer(renderer: GraphNGRenderer, previous: GraphNGProps, next: GraphNGProps): void {
   Object.defineProperty(renderer, 'props', { configurable: true, value: next });
   renderer.componentDidUpdate(previous);
+}
+
+function renderCompactPlot(renderer: GraphNGRenderer) {
+  const shell = renderer.render();
+  return shell?.props.children[0].props.children(100, 80);
 }
 
 function expectGraphStateCleared(state: GraphNGState): void {
