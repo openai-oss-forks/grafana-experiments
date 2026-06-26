@@ -13,6 +13,7 @@ import {
   sceneUtils,
 } from '@grafana/scenes';
 import { useElementSelection, useStyles2 } from '@grafana/ui';
+import { getFocusStyles } from '@grafana/ui/internal';
 
 import { DashboardScene } from './DashboardScene';
 import { AddVariableButton } from './VariableControlsAddButton';
@@ -70,6 +71,7 @@ export function VariableValueSelectWrapper({ variable, inMenu, isEditingNewLayou
   const isHidden = state.hide === VariableHide.hideVariable;
   const shouldShowHiddenVariables = isEditingNewLayouts && isHidden;
   const styles = useStyles2(getStyles);
+  const useCompoundFocus = !sceneUtils.isAdHocVariable(variable) && !sceneUtils.isGroupByVariable(variable);
 
   // UNSAFE_renderAsHidden variables (like ScopesVariable) should always render invisibly
   if (isHidden && variable.UNSAFE_renderAsHidden) {
@@ -151,6 +153,9 @@ export function VariableValueSelectWrapper({ variable, inMenu, isEditingNewLayou
     <div
       className={cx(
         styles.container,
+        useCompoundFocus && styles.compoundFocus,
+        sceneUtils.isTextBoxVariable(variable) && styles.textBoxFocus,
+        sceneUtils.isSwitchVariable(variable) && styles.switchFocus,
         shouldShowHiddenVariables && styles.hidden,
         isSelected && 'dashboard-selected-element',
         isSelectable && !isSelected && 'dashboard-selectable-element'
@@ -208,6 +213,39 @@ const getStyles = (theme: GrafanaTheme2) => ({
     }),
     marginBottom: theme.spacing(1),
     marginRight: theme.spacing(1),
+  }),
+  compoundFocus: css({
+    borderRadius: theme.shape.radius.default,
+    position: 'relative',
+    '&:focus-within': {
+      ...getFocusStyles(theme),
+      zIndex: 2,
+    },
+    '&.dashboard-selected-element:focus-within::after': {
+      content: '""',
+      position: 'absolute',
+      inset: 0,
+      border: `1px dashed ${theme.colors.primary.border}`,
+      borderRadius: theme.shape.radius.default,
+      pointerEvents: 'none',
+      zIndex: 2,
+    },
+    '> :last-child:focus-within': {
+      boxShadow: 'none',
+      outline: 'none',
+    },
+  }),
+  textBoxFocus: css({
+    '> :last-child input:focus': {
+      boxShadow: 'none',
+      outline: 'none',
+    },
+  }),
+  switchFocus: css({
+    '> :last-child input:focus + label, > :last-child input:focus-visible + label': {
+      boxShadow: 'none',
+      outline: 'none',
+    },
   }),
   verticalContainer: css({
     display: 'flex',
