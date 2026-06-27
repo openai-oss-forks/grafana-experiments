@@ -615,10 +615,10 @@ describe('Query Response parser', () => {
     const response = toDataQueryResponse(compactResponse, undefined, true);
     expect(response.state).toBe('Error');
     expect(response.error).toMatchObject({ refId: 'A', message: 'query timed out', status: 504 });
-    expect(response.compactSeries).toBeUndefined();
+    expect(response.compactSeries?.series).toHaveLength(0);
   });
 
-  test('uses the legacy empty-series path for compact no-data results', () => {
+  test('preserves compact format for no-data results', () => {
     const compactResponse = {
       data: makeCompactResponse({ axes: [], results: { A: { frames: [] } } }),
       headers: new Headers({ 'content-type': QUERY_DATA_COMPACT_MEDIA_TYPE }),
@@ -627,7 +627,7 @@ describe('Query Response parser', () => {
     const response = toDataQueryResponse(compactResponse, undefined, true);
 
     expect(response.data).toEqual([]);
-    expect(response.compactSeries).toBeUndefined();
+    expect(response.compactSeries?.series).toHaveLength(0);
   });
 
   test('returns parser failures as query errors', () => {

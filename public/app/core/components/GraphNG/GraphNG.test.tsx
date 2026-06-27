@@ -29,6 +29,7 @@ describe('GraphNGRenderer compact state ownership', () => {
     expect(initialShell?.props['aria-hidden']).toBe(true);
     expect(initialShell?.props.style).toMatchObject({ opacity: 0, pointerEvents: 'none' });
 
+    renderCompactPlot(renderer, 100, 100);
     renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 100);
 
     const completedShell = renderer.render();
@@ -117,6 +118,7 @@ describe('GraphNGRenderer compact state ownership', () => {
     installSynchronousSetState(renderer);
     const firstPlan = renderer.state.compactPlan!;
     const firstConfig = renderer.state.config!;
+    renderCompactPlot(renderer, 100, 100);
     renderer['onCompactFrameReady'](firstPlan.source, firstConfig, 100, 100);
 
     const nextProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
@@ -130,62 +132,11 @@ describe('GraphNGRenderer compact state ownership', () => {
     expect(renderer.state.presentedCompactPlan).toBe(firstPlan);
 
     renderer['onStagedCompactLayout'](renderer.state.compactLayoutKey!, 90, 80);
+    renderCompactPlot(renderer, 90, 80);
     renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 90, 80);
     expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
     expect(renderer.state.presentedCompactSessionKey).toBe('request-2');
     expect(renderer.state.holdPreviousCompactFrame).toBe(false);
-  });
-
-  test('does not present a completed draw after a newer streaming revision is ingested', () => {
-    const first = compactData();
-    const second = compactData();
-    const third = compactData();
-    const initialProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 100);
-    const firstPlan = renderer.state.presentedCompactPlan;
-
-    const secondProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
-    updateRenderer(renderer, initialProps, secondProps);
-    renderer['onStagedCompactLayout'](renderer.state.compactLayoutKey!, 90, 80);
-    const secondPlan = renderer.state.compactPlan!;
-    const secondConfig = renderer.state.config!;
-
-    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
-    const thirdProps = {
-      ...graphProps(third, 100, 100),
-      compactRequestKey: 'request-2',
-      compactStreaming: true,
-    };
-    updateRenderer(renderer, secondProps, thirdProps);
-    renderer['onCompactFrameReady'](secondPlan.source, secondConfig, 90, 80);
-
-    expect(renderer.state.presentedCompactPlan).toBe(firstPlan);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
-    renderer.componentWillUnmount();
-    requestFrame.mockRestore();
-  });
-
-  test('does not stage a duplicate legend when streaming completes with stable topology', () => {
-    const data = compactData(1, 1_000_000);
-    const streamingProps = {
-      ...graphProps(data, 100, 100),
-      compactRequestKey: 'request-1',
-      compactStreaming: true,
-    };
-    const renderer = new GraphNGRenderer(streamingProps);
-    installSynchronousSetState(renderer);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 90, 80);
-    const streamingLayoutKey = renderer.state.compactLayoutKey;
-
-    const finalProps = { ...streamingProps, compactStreaming: false };
-    updateRenderer(renderer, streamingProps, finalProps);
-
-    expect(renderer.state.compactLayoutKey).not.toBe(streamingLayoutKey);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
-    expect(renderer.state.presentedCompactLayoutKey).toBe(renderer.state.compactLayoutKey);
-    expect(renderer.state.stagedCompactLayoutKey).toBeUndefined();
   });
 
   test('reuses capped legend geometry while a changed progressive final source draws', () => {
@@ -205,6 +156,7 @@ describe('GraphNGRenderer compact state ownership', () => {
     };
     const renderer = new GraphNGRenderer(streamingProps);
     installSynchronousSetState(renderer);
+    renderCompactPlot(renderer, 100, 65);
     renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 65);
 
     const finalProps = { ...streamingProps, compactSeries: second, compactStreaming: false };
@@ -216,88 +168,73 @@ describe('GraphNGRenderer compact state ownership', () => {
     expect(renderer.state.stagedCompactHeight).toBe(65);
     expect(renderer.render()?.props.children[1]).toBe(false);
 
+    renderCompactPlot(renderer, 100, 65);
     renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 65);
     expect(renderer.state.holdPreviousCompactFrame).toBe(false);
     expect(renderer.state.presentedCompactPlan?.data).toBe(second);
     expect(renderer.state.presentedCompactPlan?.seriesCount).toBe(2);
   });
 
-  test('remeasures final legend geometry when the panel dimensions change', () => {
-    const legend = {
-      showLegend: true,
-      displayMode: 'list',
-      placement: 'bottom',
-      calcs: [],
-    } as GraphNGProps['legend'];
+  test('ignores completion from a compact plan that never reached the plot', () => {
+    const first = compactData();
+    const second = compactData();
+    const third = compactData();
+    const initialProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
+    const renderer = new GraphNGRenderer(initialProps);
+    installSynchronousSetState(renderer);
+    renderCompactPlot(renderer, 100, 100);
+    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 100);
+    const presented = renderer.state.presentedCompactPlan;
+
+    const secondProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
+    updateRenderer(renderer, initialProps, secondProps);
+    const stalePlan = renderer.state.compactPlan!;
+    const staleConfig = renderer.state.config!;
+    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    updateRenderer(renderer, secondProps, { ...secondProps, compactSeries: third, compactStreaming: true });
+    const accepted = renderer['onCompactFrameReady'](stalePlan.source, staleConfig, 90, 80);
+
+    expect(accepted).toBe(false);
+    expect(renderer.state.presentedCompactPlan).toBe(presented);
+    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+    renderer.componentWillUnmount();
+    requestFrame.mockRestore();
+  });
+
+  test('presents each completed active batch while a newer streaming batch is pending', () => {
     const first = compactData(1, 1_000_000);
     const second = compactData(1, 1_000_000);
-    const streamingProps = {
+    const initialProps = {
       ...graphProps(first, 100, 100),
       compactRequestKey: 'request-1',
       compactStreaming: true,
-      legend,
+      structureRev: 1,
     };
-    const renderer = new GraphNGRenderer(streamingProps);
-    installSynchronousSetState(renderer);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 65);
-
-    const finalProps = {
-      ...streamingProps,
-      ...graphProps(second, 200, 200),
-      compactRequestKey: 'request-1',
-      compactStreaming: false,
-      legend,
-    };
-    updateRenderer(renderer, streamingProps, finalProps);
-
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
-    expect(renderer.state.stagedCompactLayoutKey).toBeUndefined();
-    expect(renderer.render()?.props.children[1]).toBeTruthy();
-  });
-
-  test('keeps pure resize out of the staged layout transaction', () => {
-    const data = compactData();
-    const initialProps = { ...graphProps(data, 100, 100), compactRequestKey: 'request-1' };
     const renderer = new GraphNGRenderer(initialProps);
     installSynchronousSetState(renderer);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 80);
-    const initialLayoutKey = renderer.state.compactLayoutKey;
+    const firstPlan = renderer.state.compactPlan!;
+    const firstConfig = renderer.state.config!;
+    renderCompactPlot(renderer);
 
-    const resizedProps = { ...initialProps, width: 200, height: 200 };
-    updateRenderer(renderer, initialProps, resizedProps);
+    let commitFrame: FrameRequestCallback | undefined;
+    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      commitFrame = callback;
+      return 1;
+    });
+    const secondProps = { ...initialProps, compactSeries: second, structureRev: 2 };
+    updateRenderer(renderer, initialProps, secondProps);
+    commitFrame?.(0);
 
-    expect(renderer.state.compactLayoutKey).toBe(initialLayoutKey);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 200, 160);
-    expect(renderer.state.presentedCompactWidth).toBe(200);
-    expect(renderer.state.presentedCompactHeight).toBe(160);
-    expect(renderer.state.presentedCompactContainerWidth).toBe(200);
-    expect(renderer.state.presentedCompactContainerHeight).toBe(200);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
-  });
+    expect(renderer.state.compactPlan?.data).toBe(second);
+    expect(renderer.state.presentedCompactPlan).toBeUndefined();
 
-  test('remeasures legend geometry when compact field overrides change its shape', () => {
-    const data = compactData();
-    const initialProps = { ...graphProps(data, 100, 100), compactRequestKey: 'request-1' };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 80);
-    const initialLayoutKey = renderer.state.compactLayoutKey;
-    const changedFieldConfig: CompactFieldConfigOptions = {
-      ...compactFieldConfig,
-      fieldConfig: {
-        defaults: { displayName: 'A substantially longer legend label' },
-        overrides: [],
-      },
-    };
+    const accepted = renderer['onCompactFrameReady'](firstPlan.source, firstConfig, 100, 80);
 
-    const nextProps = { ...initialProps, compactFieldConfig: changedFieldConfig };
-    updateRenderer(renderer, initialProps, nextProps);
-
-    expect(renderer.state.compactLayoutKey).not.toBe(initialLayoutKey);
+    expect(accepted).toBe(true);
+    expect(renderer.state.presentedCompactPlan).toBe(firstPlan);
     expect(renderer.state.holdPreviousCompactFrame).toBe(true);
-    expect(renderer.state.stagedCompactLayoutKey).toBeUndefined();
-    expect(renderer.render()?.props.children[1]).toBeTruthy();
+    expect(renderer.render()?.props['aria-hidden']).toBe(false);
+    requestFrame.mockRestore();
   });
 
   test('redraws progressive draw-style changes without invalidating legend geometry', () => {
@@ -317,6 +254,7 @@ describe('GraphNGRenderer compact state ownership', () => {
     };
     const renderer = new GraphNGRenderer(initialProps);
     installSynchronousSetState(renderer);
+    renderCompactPlot(renderer);
     renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 80);
     const initialPlan = renderer.state.presentedCompactPlan;
     const initialConfig = renderer.state.presentedCompactConfig;
@@ -368,26 +306,37 @@ describe('GraphNGRenderer compact state ownership', () => {
     expect(linesPlot.props.holdPreviousCompactFrame).toBe(true);
   });
 
-  test('retains presented legend options while replacement options are staged', () => {
-    const hiddenLegend = {
-      showLegend: false,
-      displayMode: 'list',
-      placement: 'bottom',
-    } as GraphNGProps['legend'];
-    const visibleLegend = { ...hiddenLegend, showLegend: true };
-    const first = compactData();
-    const second = compactData();
-    const initialProps = { ...graphProps(first, 100, 100), legend: hiddenLegend };
+  test('rejects a completed frame whose plot geometry predates the latest render', () => {
+    const data = compactData();
+    const initialProps = graphProps(data, 100, 100);
     const renderer = new GraphNGRenderer(initialProps);
     installSynchronousSetState(renderer);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 100);
+    const source = renderer.state.compactPlan!.source;
+    const config = renderer.state.config!;
+    renderCompactPlot(renderer, 100, 80);
 
-    const nextProps = { ...graphProps(second, 100, 100), legend: visibleLegend };
-    updateRenderer(renderer, initialProps, nextProps);
+    const resizedProps = graphProps(data, 200, 100);
+    updateRenderer(renderer, initialProps, resizedProps);
+    renderCompactPlot(renderer, 200, 80);
 
-    expect(renderer.state.compactLegend).toBe(visibleLegend);
-    expect(renderer.state.presentedCompactLegend).toBe(hiddenLegend);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+    expect(renderer['onCompactFrameReady'](source, config, 100, 80)).toBe(false);
+    expect(renderer.state.presentedCompactPlan).toBeUndefined();
+    expect(renderer['onCompactFrameReady'](source, config, 200, 80)).toBe(true);
+    expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
+  });
+
+  test('normalizes fractional layout geometry before validating a completed frame', () => {
+    const data = compactData();
+    const renderer = new GraphNGRenderer(graphProps(data, 200, 100));
+    installSynchronousSetState(renderer);
+
+    const plot = renderCompactPlot(renderer, 199.75, 79.5);
+
+    expect(plot.props).toMatchObject({ width: 199, height: 79 });
+    expect(renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 199, 79)).toBe(
+      true
+    );
+    expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
   });
 
   test('coalesces compatible streaming revisions to the newest source in one display frame', () => {
@@ -504,9 +453,9 @@ function updateRenderer(renderer: GraphNGRenderer, previous: GraphNGProps, next:
   renderer.componentDidUpdate(previous);
 }
 
-function renderCompactPlot(renderer: GraphNGRenderer) {
+function renderCompactPlot(renderer: GraphNGRenderer, width = 100, height = 80) {
   const shell = renderer.render();
-  return shell?.props.children[0].props.children(100, 80);
+  return shell?.props.children[0].props.children(width, height);
 }
 
 function expectGraphStateCleared(state: GraphNGState): void {

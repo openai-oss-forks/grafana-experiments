@@ -1,6 +1,6 @@
 import { ForwardedRef, forwardRef, ReactNode, useCallback, useEffect, useRef } from 'react';
 
-import { sceneGraph, type SceneObject } from '@grafana/scenes';
+import { LazyLoader, type SceneObject } from '@grafana/scenes';
 import { GraphNGRenderVisibilityProvider } from 'app/core/components/GraphNG/GraphNGRenderVisibility';
 
 import {
@@ -29,9 +29,7 @@ interface DashboardPanelLazyLoaderProps extends DashboardPanelRenderSuspensionPr
 }
 
 interface PanelLifecycleRenderState {
-  activationAllowed: boolean;
   graphNGRendererActive: boolean;
-  queryActive: boolean;
   setWrapperRef: (element: HTMLDivElement | null) => void;
   onBlurCapture: () => void;
   onFocusCapture: () => void;
@@ -40,11 +38,10 @@ interface PanelLifecycleRenderState {
 }
 
 function usePanelLifecycleRenderState(
-  activationTarget: SceneObject | undefined,
   suspendGraphNGOffscreen: boolean,
   ref: ForwardedRef<HTMLDivElement>
 ): PanelLifecycleRenderState {
-  const { snapshot, setElement, setInteractive } = usePanelLifecycleRegistration(activationTarget);
+  const { snapshot, setElement, setInteractive } = usePanelLifecycleRegistration();
   const wrapper = useRef<HTMLDivElement | null>(null);
   const blurTimer = useRef<number>();
   const hovered = useRef(false);
@@ -76,34 +73,6 @@ function usePanelLifecycleRenderState(
     element.addEventListener(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, updateInteraction);
     return () => element.removeEventListener(COMPACT_TOOLTIP_PIN_CHANGE_EVENT, updateInteraction);
   }, [updateInteraction]);
-
-  useEffect(() => {
-    if (!activationTarget || !snapshot.activationAllowed) {
-      return;
-    }
-
-    let dataObject: ReturnType<typeof sceneGraph.getData> | undefined;
-    const updateQueryActivity = () => {
-      let nextDataObject: ReturnType<typeof sceneGraph.getData> | undefined;
-      try {
-        nextDataObject = sceneGraph.getData(activationTarget);
-      } catch {
-        return;
-      }
-      if (dataObject !== nextDataObject) {
-        dataObject?.isInViewChanged?.(false);
-        dataObject = nextDataObject;
-      }
-      dataObject?.isInViewChanged?.(snapshot.queryActive);
-    };
-
-    updateQueryActivity();
-    const subscription = activationTarget.subscribeToState?.(updateQueryActivity);
-    return () => {
-      subscription?.unsubscribe();
-      dataObject?.isInViewChanged?.(false);
-    };
-  }, [activationTarget, snapshot.activationAllowed, snapshot.queryActive]);
 
   useEffect(
     () => () => {
@@ -141,9 +110,7 @@ function usePanelLifecycleRenderState(
   }, [updateInteraction]);
 
   return {
-    activationAllowed: snapshot.activationAllowed,
     graphNGRendererActive: suspendGraphNGOffscreen ? snapshot.rendererActive : true,
-    queryActive: snapshot.queryActive,
     setWrapperRef,
     onBlurCapture,
     onFocusCapture,
@@ -154,24 +121,23 @@ function usePanelLifecycleRenderState(
 
 export const DashboardPanelLazyLoader = forwardRef<HTMLDivElement, DashboardPanelLazyLoaderProps>(
   ({ activationTarget, children, className, suspendGraphNGOffscreen = true }, ref) => {
-    const lifecycle = usePanelLifecycleRenderState(activationTarget, suspendGraphNGOffscreen, ref);
+    const lifecycle = usePanelLifecycleRenderState(suspendGraphNGOffscreen, ref);
 
     return (
-      <div
+      <LazyLoader
         key="dashboard-panel-lazy-loader"
         ref={lifecycle.setWrapperRef}
         className={className}
+        activationTarget={activationTarget}
         onFocusCapture={lifecycle.onFocusCapture}
         onBlurCapture={lifecycle.onBlurCapture}
         onMouseEnter={lifecycle.onMouseEnter}
         onMouseLeave={lifecycle.onMouseLeave}
       >
         <GraphNGRenderVisibilityProvider active={lifecycle.graphNGRendererActive}>
-          {lifecycle.activationAllowed && (lifecycle.graphNGRendererActive || !suspendGraphNGOffscreen)
-            ? children
-            : null}
+          {children}
         </GraphNGRenderVisibilityProvider>
-      </div>
+      </LazyLoader>
     );
   }
 );
@@ -180,7 +146,7 @@ DashboardPanelLazyLoader.displayName = 'DashboardPanelLazyLoader';
 
 export const DashboardPanelRenderSuspender = forwardRef<HTMLDivElement, DashboardPanelRenderSuspensionProps>(
   ({ children, className, suspendGraphNGOffscreen = true }, ref) => {
-    const lifecycle = usePanelLifecycleRenderState(undefined, suspendGraphNGOffscreen, ref);
+    const lifecycle = usePanelLifecycleRenderState(suspendGraphNGOffscreen, ref);
 
     return (
       <div

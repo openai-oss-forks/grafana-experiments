@@ -2,7 +2,7 @@ import { Component, createRef } from 'react';
 import uPlot, { AlignedData, Options } from 'uplot';
 
 import { getCompactRenderController, isCompactRenderSource } from './compactRenderer';
-import { isCompactPlotSource, PlotProps } from './types';
+import { CompactPlotSource, isCompactPlotSource, PlotProps } from './types';
 import { pluginLog } from './utils';
 
 import 'uplot/dist/uPlot.min.css';
@@ -33,6 +33,10 @@ function hasRenderableDimensions(props: PlotProps) {
   return props.width > 0 && props.height > 0;
 }
 
+function isCompleteCompactPlotSource(source: uPlot.CompactPlotSource | null | undefined): source is CompactPlotSource {
+  return source != null && 'cursorValueAt' in source;
+}
+
 type UPlotChartState = {
   plot: uPlot | null;
 };
@@ -53,12 +57,14 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState, CompactCan
   plotCanvasBBox = createRef<DOMRect>();
   plotInstance: uPlot | null = null;
   snapshotCanvas: HTMLCanvasElement | null = null;
+  pendingCompactUpdate = false;
 
   constructor(props: PlotProps) {
     super(props);
   }
 
   destroyPlot() {
+    this.pendingCompactUpdate = false;
     if (!this.plotInstance) {
       return;
     }
@@ -172,14 +178,17 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState, CompactCan
         return;
       }
 
-      if (!sameDims(prevProps, this.props)) {
-        this.plotInstance.setSize({
-          width: Math.floor(this.props.width),
-          height: Math.floor(this.props.height),
-        });
+      const dimensionsChanged = !sameDims(prevProps, this.props);
+      const dataChanged = !sameData(prevProps, this.props);
+      if ((dimensionsChanged || dataChanged) && this.deferCompactUpdateWhileDrawing()) {
+        return;
       }
-      if (!sameData(prevProps, this.props)) {
+      if (dataChanged) {
         this.plotInstance.setCompactData!(this.props.data);
+      }
+      if (dimensionsChanged) {
+        this.plotInstance.setSize({ width: Math.floor(this.props.width), height: Math.floor(this.props.height) });
+        this.scheduleCompactSnapshotGeometrySync();
       }
       return;
     }
@@ -206,27 +215,85 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState, CompactCan
   }
 
   private onCompactDraw = (drawnPlot: uPlot) => {
-    const source = this.props.data;
-    if (!isCompactPlotSource(source) || drawnPlot.compactSource !== source) {
+    const source = drawnPlot.compactSource;
+    if (!isCompleteCompactPlotSource(source)) {
       return;
     }
     const config = this.props.config;
     const width = drawnPlot.width;
     const height = drawnPlot.height;
     queueMicrotask(() => {
-      if (
-        this.plotInstance === drawnPlot &&
-        drawnPlot.compactSource === source &&
-        this.props.data === source &&
-        this.props.config === config &&
-        Math.floor(this.props.width) === width &&
-        Math.floor(this.props.height) === height &&
-        this.plotInstance
-      ) {
-        this.props.onCompactFrameReady?.(source, config, width, height);
+      if (this.plotInstance === drawnPlot && drawnPlot.compactSource === source && this.plotInstance) {
+        if (this.pendingCompactUpdate && isCompactPlotSource(this.props.data)) {
+          const dimensionsChanged = Math.floor(this.props.width) !== width || Math.floor(this.props.height) !== height;
+          const sourceChanged = this.props.data !== source;
+          this.pendingCompactUpdate = false;
+          const accepted = !dimensionsChanged && this.reportCompactFrameReady(source, config, width, height);
+          if (sourceChanged && accepted) {
+            this.preserveCompletedCompactFrame();
+          }
+          if (sourceChanged) {
+            this.plotInstance.setCompactData!(this.props.data);
+          }
+          if (dimensionsChanged) {
+            this.plotInstance.setSize({
+              width: Math.floor(this.props.width),
+              height: Math.floor(this.props.height),
+            });
+            this.scheduleCompactSnapshotGeometrySync();
+          } else if (!sourceChanged && accepted && !this.props.holdPreviousCompactFrame) {
+            this.clearCompactSnapshot();
+          }
+          return;
+        }
+        if (this.props.data !== source) {
+          return;
+        }
+        if (Math.floor(this.props.width) !== width || Math.floor(this.props.height) !== height) {
+          return;
+        }
+        const accepted = this.reportCompactFrameReady(source, config, width, height);
+        if (accepted && !this.props.holdPreviousCompactFrame) {
+          this.clearCompactSnapshot();
+        }
       }
     });
   };
+
+  private reportCompactFrameReady(
+    source: CompactPlotSource,
+    config: PlotProps['config'],
+    width: number,
+    height: number
+  ): boolean {
+    return this.props.onCompactFrameReady?.(source, config, width, height) !== false;
+  }
+
+  private preserveCompletedCompactFrame() {
+    if (!this.snapshotCanvas) {
+      const snapshot = this.createCompactSnapshot();
+      if (snapshot) {
+        this.mountCompactSnapshot(snapshot);
+      }
+      return;
+    }
+    const source = this.plotContainer.current?.querySelector('canvas');
+    if (source) {
+      this.drawCompactSnapshot(this.snapshotCanvas, source);
+    }
+  }
+
+  private deferCompactUpdateWhileDrawing(): boolean {
+    const source = this.plotInstance?.compactSource;
+    if (!source || !isCompactRenderSource(source)) {
+      return false;
+    }
+    if (!getCompactRenderController(source).isProgressiveDrawInFlight()) {
+      return false;
+    }
+    this.pendingCompactUpdate = true;
+    return true;
+  }
 
   private createCompactSnapshot(): CompactCanvasSnapshot | null {
     const chartRoot = this.chartRoot.current;
@@ -236,24 +303,54 @@ export class UPlotChart extends Component<PlotProps, UPlotChartState, CompactCan
       return null;
     }
     const snapshot = document.createElement('canvas');
-    const context = snapshot.getContext('2d');
-    if (!context) {
-      return null;
-    }
-    const sourceRect = source.getBoundingClientRect();
-    const rootRect = chartRoot.getBoundingClientRect();
-    snapshot.width = source.width;
-    snapshot.height = source.height;
     snapshot.style.position = 'absolute';
     snapshot.dataset.compactFrameSnapshot = 'true';
     snapshot.style.pointerEvents = 'none';
     snapshot.style.zIndex = '1';
+    if (!this.drawCompactSnapshot(snapshot, source)) {
+      return null;
+    }
+    return { canvas: snapshot };
+  }
+
+  private drawCompactSnapshot(snapshot: HTMLCanvasElement, source: HTMLCanvasElement): boolean {
+    const context = snapshot.getContext('2d');
+    if (!context || !this.syncCompactSnapshotGeometry(snapshot, source)) {
+      return false;
+    }
+    snapshot.width = source.width;
+    snapshot.height = source.height;
+    context.clearRect(0, 0, snapshot.width, snapshot.height);
+    context.drawImage(source, 0, 0);
+    return true;
+  }
+
+  private syncCompactSnapshotGeometry(snapshot = this.snapshotCanvas, source?: HTMLCanvasElement): boolean {
+    const chartRoot = this.chartRoot.current;
+    source ??= this.plotContainer.current?.querySelector('canvas') ?? undefined;
+    if (!snapshot || !source || !chartRoot) {
+      return false;
+    }
+    const sourceRect = source.getBoundingClientRect();
+    const rootRect = chartRoot.getBoundingClientRect();
     snapshot.style.left = `${sourceRect.left - rootRect.left}px`;
     snapshot.style.top = `${sourceRect.top - rootRect.top}px`;
     snapshot.style.width = `${sourceRect.width}px`;
     snapshot.style.height = `${sourceRect.height}px`;
-    context.drawImage(source, 0, 0);
-    return { canvas: snapshot };
+    return true;
+  }
+
+  private scheduleCompactSnapshotGeometrySync() {
+    const plot = this.plotInstance;
+    const snapshot = this.snapshotCanvas;
+    if (!plot || !snapshot) {
+      return;
+    }
+    queueMicrotask(() => {
+      if (this.plotInstance === plot && this.snapshotCanvas === snapshot) {
+        this.syncCompactSnapshotGeometry(snapshot);
+      }
+    });
   }
 
   private mountCompactSnapshot({ canvas }: CompactCanvasSnapshot) {

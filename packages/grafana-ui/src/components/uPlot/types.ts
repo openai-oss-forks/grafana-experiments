@@ -75,7 +75,13 @@ export interface PlotProps {
   /** Retain the last completed compact canvas while a replacement frame is drawn. */
   holdPreviousCompactFrame?: boolean;
   /** Called after the current compact source has completed a visible-frame draw. */
-  onCompactFrameReady?: (source: CompactPlotSource, config: UPlotConfigBuilder, width: number, height: number) => void;
+  /** Return false when the completed frame is stale and must not replace the retained canvas. */
+  onCompactFrameReady?: (
+    source: CompactPlotSource,
+    config: UPlotConfigBuilder,
+    width: number,
+    height: number
+  ) => boolean | void;
 }
 
 export abstract class PlotConfigBuilder<P, T> {

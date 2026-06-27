@@ -1,6 +1,6 @@
 import { render } from '@testing-library/react';
 import { createElement, type ReactElement } from 'react';
-import uPlot from 'uplot';
+import uPlot, { Padding } from 'uplot';
 
 import { CompactTimeSeriesData, FieldConfigSource, FieldMatcherID, PanelProps } from '@grafana/data';
 import { setPluginImportUtils } from '@grafana/runtime';
@@ -15,6 +15,7 @@ import {
   createCompactRotationPadding,
   createCompactTickFilter,
   getRenderableCompactBarSeries,
+  resolveCompactBarTickLabelMaxLength,
 } from './CompactBarChart';
 import { Options } from './panelcfg.gen';
 
@@ -26,7 +27,8 @@ setPluginImportUtils({
 });
 
 describe('compact standalone Bar chart', () => {
-  const compactSeries = {} as CompactTimeSeriesData;
+  const compactSeries = { series: [{}] } as unknown as CompactTimeSeriesData;
+  const emptyCompactSeries = { series: [] } as unknown as CompactTimeSeriesData;
   const fieldConfig: FieldConfigSource = {
     defaults: { custom: { fillOpacity: 80, lineWidth: 2 } },
     overrides: [],
@@ -49,6 +51,13 @@ describe('compact standalone Bar chart', () => {
   it('keeps supported compact data unless the final request is full JSON', () => {
     expect(getRenderableCompactBarSeries(compactSeries, fieldConfig, options)).toBe(compactSeries);
     expect(getRenderableCompactBarSeries(compactSeries, fieldConfig, options, true)).toBeUndefined();
+    expect(getRenderableCompactBarSeries(emptyCompactSeries, fieldConfig, options)).toBeUndefined();
+    expect(
+      getRenderableCompactBarSeries(compactSeries, fieldConfig, {
+        ...options,
+        showValue: VisibilityMode.Always,
+      })
+    ).toBeUndefined();
   });
 
   it('forwards plot selections to the dashboard time range', () => {
@@ -80,7 +89,7 @@ describe('compact standalone Bar chart', () => {
     expect(timeSeriesProps.options.compactGroupedBarTickSpacing).toBe(0);
   });
 
-  it('keeps horizontal Bar chart label spacing on the horizontal value axis', () => {
+  it('keeps horizontal Bar chart label controls on the horizontal value axis', () => {
     render(
       createElement(CompactBarChart, {
         compactSeries,
@@ -97,7 +106,21 @@ describe('compact standalone Bar chart', () => {
 
     const timeSeriesProps = (TimeSeries as unknown as jest.Mock).mock.calls.at(-1)?.[0];
     expect(timeSeriesProps.options.compactGroupedBarTickSpacing).toBe(0);
-    expect(timeSeriesProps.options.compactValueAxisConfig.filter).toEqual(expect.any(Function));
+    expect(timeSeriesProps.options.compactValueAxisConfig).toMatchObject({
+      tickLabelRotation: 0,
+      filter: expect.any(Function),
+    });
+  });
+
+  it('matches the legacy automatic rotated-label length', () => {
+    const rotation = 45;
+    const height = 400;
+    const expected = Math.floor(
+      height / 2 / Math.sin((rotation * Math.PI) / 180) / measureText('M', UPLOT_AXIS_FONT_SIZE).width - 3
+    );
+    expect(resolveCompactBarTickLabelMaxLength(0, rotation, height)).toBe(expected);
+    expect(resolveCompactBarTickLabelMaxLength(12, rotation, height)).toBe(12);
+    expect(resolveCompactBarTickLabelMaxLength(0, 0, height)).toBe(Number.POSITIVE_INFINITY);
   });
 
   it('withholds compact data for an explicit or categorical X field', () => {
@@ -109,14 +132,25 @@ describe('compact standalone Bar chart', () => {
     const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
     expect(createCompactRotationPadding(0)).toBeUndefined();
     expect(createCompactRotationPadding(0, false)).toBeUndefined();
-    const crossPadding = Math.ceil((Math.sin(Math.PI / 4) * UPLOT_AXIS_FONT_SIZE) / 2);
     expect(createCompactRotationPadding(45)).toEqual([
-      UPLOT_AXIS_FONT_SIZE,
-      Math.ceil(Math.cos(Math.PI / 4) * labelWidth) + crossPadding,
-      Math.ceil(Math.sin(Math.PI / 4) * labelWidth),
-      crossPadding,
+      Math.round(UPLOT_AXIS_FONT_SIZE * uPlot.pxRatio),
+      Math.cos(Math.PI / 4) * labelWidth,
+      Math.sin(Math.PI / 4) * labelWidth - 14,
+      0,
     ]);
+    expect(createCompactRotationPadding(45, true, ['a much longer formatted timestamp'])?.[2]).toBeGreaterThan(
+      createCompactRotationPadding(45)?.[2] as number
+    );
     expect(createCompactRotationPadding(-45)).toEqual(expect.arrayContaining([expect.any(Number)]));
+
+    let revision = 0;
+    let labels = ['short'];
+    const dynamic = createCompactRotationPadding(45, true, () => ({ labels, revision }))!;
+    const bottom = dynamic[2] as Exclude<Padding[2], number | null>;
+    const initial = bottom({} as uPlot, 2, [false, false, false, false], 0);
+    labels = ['a much longer formatted timestamp'];
+    revision++;
+    expect(bottom({} as uPlot, 2, [false, false, false, false], 0)).toBeGreaterThan(initial);
   });
 
   it('matches legacy horizontal-axis spacing and negative anchoring', () => {

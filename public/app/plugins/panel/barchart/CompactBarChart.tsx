@@ -15,7 +15,9 @@ import {
 import { getPluginImportUtils } from '@grafana/runtime';
 import { AxisPlacement, GraphFieldConfig, VisibilityMode, VizOrientation } from '@grafana/schema';
 import { measureText, UPLOT_AXIS_FONT_SIZE, useTheme2 } from '@grafana/ui';
+import type { CompactRenderController } from '@grafana/ui/internal';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
+import { formatCompactBarTimeTicks } from 'app/core/components/TimeSeries/utils';
 import {
   buildCompactStandaloneBarFieldConfig,
   isCompactStandaloneBarChartConfigurationSupported,
@@ -24,6 +26,7 @@ import {
 import { CompactTooltipPlugin } from '../timeseries/CompactTooltipPlugin';
 
 import { Options } from './panelcfg.gen';
+import { calculateBarChartRotationPadding } from './utils';
 
 const COMPACT_GRAPH_PROPERTIES = [
   'barAlignment',
@@ -36,6 +39,8 @@ const COMPACT_GRAPH_PROPERTIES = [
 ] as const;
 
 const CompactFieldConfigEditor = () => null;
+const COMPACT_BAR_CHAR_WIDTH = measureText('M', UPLOT_AXIS_FONT_SIZE).width;
+const TO_RADIANS = Math.PI / 180;
 
 export function getRenderableCompactBarSeries(
   compactSeries: CompactTimeSeriesData | undefined,
@@ -44,6 +49,7 @@ export function getRenderableCompactBarSeries(
   hasFullFormatRequest = false
 ): CompactTimeSeriesData | undefined {
   return compactSeries &&
+    compactSeries.series.length > 0 &&
     !hasFullFormatRequest &&
     isCompactStandaloneBarChartConfigurationSupported({
       fieldConfig,
@@ -115,14 +121,24 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
   }, [adaptedFieldConfig, dataLinkPostProcessor, fieldConfigRegistry, options, replaceVariables, theme, timeZone]);
   const compactOptions = useMemo(() => {
     const categoriesAreHorizontal = compactOrientation === VizOrientation.Horizontal;
-    const tickLabelRotation = -(options.xTickLabelRotation ?? 0);
+    const configuredRotation = options.xTickLabelRotation ?? 0;
+    const tickLabelRotation = configuredRotation === 0 ? 0 : -configuredRotation;
     const tickLabelSpacing = options.xTickLabelSpacing ?? 0;
+    const tickLabelMaxLength = resolveCompactBarTickLabelMaxLength(
+      options.xTickLabelMaxLength,
+      configuredRotation,
+      height
+    );
     return {
       orientation: compactOrientation,
       tooltip: options.tooltip,
       highlightSeriesOnHover: options.fullHighlight !== false,
       compactGroupedBarTickSpacing: categoriesAreHorizontal ? tickLabelSpacing : 0,
-      compactPadding: createCompactRotationPadding(options.xTickLabelRotation ?? 0, categoriesAreHorizontal),
+      compactPadding: (controller: CompactRenderController) =>
+        createCompactRotationPadding(configuredRotation, categoriesAreHorizontal, () => ({
+          labels: getCompactBarRotationLabels(controller, timeZone, tickLabelMaxLength),
+          revision: controller.groupedBarRevision(),
+        })),
       compactXAxisConfig: {
         show: adaptedFieldConfig.defaults.custom?.axisPlacement !== AxisPlacement.Hidden,
         label: adaptedFieldConfig.defaults.custom?.axisLabel,
@@ -139,10 +155,13 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
     adaptedFieldConfig.defaults.custom?.axisPlacement,
     adaptedFieldConfig.defaults.custom?.axisLabel,
     compactOrientation,
+    height,
     options.fullHighlight,
     options.tooltip,
+    options.xTickLabelMaxLength,
     options.xTickLabelRotation,
     options.xTickLabelSpacing,
+    timeZone,
   ]);
 
   return (
@@ -178,25 +197,61 @@ export function CompactBarChart(props: PanelProps<Options> & { compactSeries: Co
   );
 }
 
-export function createCompactRotationPadding(rotation: number, categoriesAreHorizontal = true): Padding | undefined {
+export function resolveCompactBarTickLabelMaxLength(
+  configuredMaximum: number | undefined,
+  rotation: number,
+  height: number
+): number {
+  return rotation === 0
+    ? Number.POSITIVE_INFINITY
+    : configuredMaximum ||
+        Math.floor(height / 2 / Math.sin(Math.abs(rotation * TO_RADIANS)) / COMPACT_BAR_CHAR_WIDTH - 3);
+}
+
+export function createCompactRotationPadding(
+  rotation: number,
+  categoriesAreHorizontal = true,
+  labels: readonly string[] | (() => { labels: readonly string[]; revision: number }) = ['00:00:00.000']
+): Padding | undefined {
   if (rotation === 0) {
     return undefined;
   }
-  if (!categoriesAreHorizontal) {
-    const edgePadding = Math.ceil(UPLOT_AXIS_FONT_SIZE / 2);
-    return [edgePadding, 0, edgePadding, 0];
+  if (typeof labels === 'function') {
+    let cachedRevision = -1;
+    let cachedPadding = calculateBarChartRotationPadding([], rotation, 50, categoriesAreHorizontal ? 14 : 5);
+    const resolvePadding = () => {
+      const current = labels();
+      if (current.revision !== cachedRevision) {
+        cachedRevision = current.revision;
+        cachedPadding = calculateBarChartRotationPadding(
+          current.labels,
+          rotation,
+          50,
+          categoriesAreHorizontal ? 14 : 5
+        );
+      }
+      return cachedPadding;
+    };
+    return [
+      Math.round(UPLOT_AXIS_FONT_SIZE * uPlot.pxRatio),
+      () => resolvePadding()[1],
+      () => resolvePadding()[2],
+      () => resolvePadding()[3],
+    ];
   }
-  const radians = (Math.abs(rotation) * Math.PI) / 180;
-  const labelWidth = measureText('00:00:00.000', UPLOT_AXIS_FONT_SIZE).width;
-  const edgePadding = Math.ceil(Math.cos(radians) * labelWidth);
-  const crossPadding = Math.ceil((Math.sin(radians) * UPLOT_AXIS_FONT_SIZE) / 2);
-  const bottomPadding = Math.ceil(Math.sin(radians) * labelWidth);
-  return [
-    UPLOT_AXIS_FONT_SIZE,
-    rotation > 0 ? edgePadding + crossPadding : crossPadding,
-    bottomPadding,
-    rotation < 0 ? edgePadding + crossPadding : crossPadding,
-  ];
+  return calculateBarChartRotationPadding(labels, rotation, 50, categoriesAreHorizontal ? 14 : 5);
+}
+
+function getCompactBarRotationLabels(
+  controller: CompactRenderController,
+  timeZone: string,
+  maximumLength: number
+): string[] {
+  return formatCompactBarTimeTicks(controller.groupedBarTimestampSamples(), timeZone, controller.groupedBarIncrement())
+    .filter((label): label is string => label != null)
+    .map((label) =>
+      Number.isFinite(maximumLength) && label.length > maximumLength ? `${label.substring(0, maximumLength)}...` : label
+    );
 }
 
 export function createCompactTickFilter(spacing: number): Axis.Filter | undefined {

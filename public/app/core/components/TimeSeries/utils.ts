@@ -158,7 +158,7 @@ export function prepareCompactPlotConfigBuilder(options: {
   orientation?: VizOrientation;
   xAxisConfig?: Partial<AxisProps>;
   valueAxisConfig?: Partial<AxisProps>;
-  padding?: Padding;
+  padding?: Padding | ((controller: ReturnType<typeof installCompactRenderer>) => Padding);
   groupedBarTickSpacing?: number;
 }) {
   const {
@@ -178,9 +178,6 @@ export function prepareCompactPlotConfigBuilder(options: {
   let compactController: ReturnType<typeof installCompactRenderer>;
 
   const builder = new UPlotConfigBuilder(timeZones[0]);
-  if (padding) {
-    builder.setPadding(padding);
-  }
   builder.addScale({
     scaleKey: 'x',
     orientation: isHorizontal ? ScaleOrientation.Horizontal : ScaleOrientation.Vertical,
@@ -248,6 +245,9 @@ export function prepareCompactPlotConfigBuilder(options: {
     plan.source,
     isHorizontal ? ScaleOrientation.Vertical : ScaleOrientation.Horizontal
   );
+  if (padding) {
+    builder.setPadding(typeof padding === 'function' ? padding(compactController) : padding);
+  }
   const configuredScales = new Uint8Array(plan.source.scales.length);
   for (let seriesIndex = 0; seriesIndex < plan.seriesCount; seriesIndex++) {
     const scaleId = plan.source.columns.scaleIds[seriesIndex];

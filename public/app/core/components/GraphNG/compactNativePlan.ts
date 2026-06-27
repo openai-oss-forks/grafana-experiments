@@ -83,6 +83,7 @@ const scaleCustomProperties = new Set<keyof GraphFieldConfig>([
   'axisSoftMin',
   'axisWidth',
   'scaleDistribution',
+  'thresholdsStyle',
 ]);
 
 const reducerValues = Object.values(ReducerID);
@@ -840,6 +841,13 @@ function createRenderSource(
     flags,
     preserveSingletonStacks
   );
+  const stackDirections = new Int8Array(stackGroupCount);
+  for (let seriesIndex = 0; seriesIndex < seriesCount; seriesIndex++) {
+    const compactGroup = stackGroupIds[seriesIndex];
+    if (compactGroup !== 0) {
+      stackDirections[compactGroup - 1] = stackGroups[rawStackGroupIds[seriesIndex] - 1].direction;
+    }
+  }
   const barOptions = options.barOptions;
 
   Object.assign(source, {
@@ -853,6 +861,7 @@ function createRenderSource(
     styles,
     scales,
     stackGroupCount,
+    ...(stackGroupCount > 0 ? { stackDirections } : undefined),
     cursorMode: options.cursorMode ?? 'single',
     focusOverlayColor:
       options.highlightSeriesOnHover === false || options.barOptions?.fullHighlight
@@ -1025,8 +1034,11 @@ function getStackDirection(
   if (source.pointCount === 0) {
     return 1;
   }
-  const firstIndex = source.nearestPresent(seriesIndex, 0, 1);
-  const lastIndex = source.nearestPresent(seriesIndex, source.pointCount - 1, -1);
+  const usesRawValues = transform === GraphTransform.Constant && source.barWidthValueAt != null;
+  const firstIndex = usesRawValues ? 0 : source.nearestPresent(seriesIndex, 0, 1);
+  const lastIndex = usesRawValues
+    ? source.pointCount - 1
+    : source.nearestPresent(seriesIndex, source.pointCount - 1, -1);
   if (firstIndex == null || lastIndex == null) {
     return transform === GraphTransform.NegativeY ? -1 : 1;
   }
@@ -1035,7 +1047,7 @@ function getStackDirection(
   let positiveCount = 0;
   const stride = Math.max(1, Math.floor((lastIndex - firstIndex + 1) / samples));
   for (let index = firstIndex; index <= lastIndex; index += stride) {
-    const renderedValue = source.yAt(seriesIndex, index);
+    const renderedValue = usesRawValues ? source.barWidthValueAt!(seriesIndex, index) : source.yAt(seriesIndex, index);
     if (renderedValue == null) {
       continue;
     }
@@ -1619,6 +1631,7 @@ function splitConfig(config: FieldConfig<GraphFieldConfig>): {
   delete styleConfig.min;
   delete styleConfig.max;
   delete styleConfig.fieldMinMax;
+  delete styleConfig.thresholds;
 
   const scaleConfig: FieldConfig<GraphFieldConfig> = {};
   copyDefined(scaleConfig, config, 'unit');
@@ -1626,6 +1639,7 @@ function splitConfig(config: FieldConfig<GraphFieldConfig>): {
   copyDefined(scaleConfig, config, 'min');
   copyDefined(scaleConfig, config, 'max');
   copyDefined(scaleConfig, config, 'fieldMinMax');
+  copyDefined(scaleConfig, config, 'thresholds');
 
   if (config.custom) {
     const scaleCustom: GraphFieldConfig = {};

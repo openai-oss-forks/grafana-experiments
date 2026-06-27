@@ -164,8 +164,8 @@ describe('uPlot compact X host', () => {
         show: true,
         points: {
           one: true,
-          size: (plot, seriesIndex) => plot.series[seriesIndex].points.size * 2,
-          width: (_plot, _seriesIndex, size) => size / 4,
+          size: (plot: uPlot, seriesIndex: number) => plot.series[seriesIndex].points!.size! * 2,
+          width: (_plot: uPlot, _seriesIndex: number, size: number) => size / 4,
         },
         focus: { prox: 30 },
         sync: { key: syncKey, scales: ['x', null] as [string, null] },
@@ -418,7 +418,6 @@ function createSource(
       }
       return closest;
     },
-    cursorValueAt: (_seriesIndex, index) => values[index],
     yAt: (_seriesIndex, index) => values[index],
     scan: (_seriesIndex, from, to, visitor) => {
       for (let index = from; index <= to; index++) {

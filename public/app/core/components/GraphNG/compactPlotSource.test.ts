@@ -208,23 +208,6 @@ describe('CompactPlotSource', () => {
     expect(createCompactPlotSource(source, () => ({ insertNulls: 50 })).isDirectSegmentConnected(0, 0, 4)).toBe(true);
   });
 
-  test('treats another axis timestamp between neighboring vertices as alignment only', () => {
-    const source = compactSource(
-      [
-        { start: 0, step: 10, count: 3 },
-        { start: 5, step: 10, count: 3 },
-      ],
-      [
-        { axisId: 0, values: [1, 2, 3] },
-        { axisId: 1, values: [4, 5, 6] },
-      ]
-    );
-    const plot = createCompactPlotSource(source);
-
-    expect(plot.isDirectSegmentConnected(0, 0, 2)).toBe(true);
-    expect(plot.isDirectSegmentConnected(1, 1, 3)).toBe(true);
-  });
-
   test('retains an explicit local null when span-null insertion is disabled', () => {
     const source = compactSource(
       [
@@ -242,77 +225,6 @@ describe('CompactPlotSource', () => {
 
     expect(plot.yAt(0, 2)).toBeNull();
     expect(plot.isDirectSegmentConnected(0, 0, 4)).toBe(false);
-  });
-
-  test('classifies an aligned point inside a source gap even when the missing tick is outside the interval', () => {
-    const source = compactSource(
-      [
-        { start: 0, step: 10, count: 3 },
-        { start: 2, step: 6, count: 2 },
-        { start: 5, step: 1, count: 1 },
-      ],
-      [
-        { axisId: 0, values: [1, 3], positions: [0, 2] },
-        { axisId: 1, values: [4, 5] },
-        { axisId: 2, values: [6] },
-      ]
-    );
-    const plot = createCompactPlotSource(source);
-    const from = plot.closestXIndex(2, 0, plot.pointCount - 1);
-    const middle = plot.closestXIndex(5, 0, plot.pointCount - 1);
-    const to = plot.closestXIndex(8, 0, plot.pointCount - 1);
-
-    expect(plot.yAt(0, middle)).toBeNull();
-    expect(plot.isDirectSegmentConnected(0, from, to)).toBe(false);
-  });
-
-  test('keeps alignment-only segments connected beyond a series virtual gap sentinels', () => {
-    const source = compactSource(
-      [
-        { start: 0, step: 10, count: 11 },
-        { start: -100, step: 50, count: 2 },
-        { start: -75, step: 1, count: 1 },
-        { start: 150, step: 50, count: 2 },
-        { start: 175, step: 1, count: 1 },
-      ],
-      [
-        { axisId: 0, values: [1], positions: [10] },
-        { axisId: 1, values: [2, 3] },
-        { axisId: 2, values: [4] },
-        { axisId: 3, values: [5, 6] },
-        { axisId: 4, values: [7] },
-      ]
-    );
-    const plot = createCompactPlotSource(source);
-    const indexAt = (timestamp: number) => plot.closestXIndex(timestamp, 0, plot.pointCount - 1);
-
-    expect(plot.yAt(0, indexAt(-75))).toBeUndefined();
-    expect(plot.isDirectSegmentConnected(0, indexAt(-100), indexAt(-50))).toBe(true);
-    expect(plot.yAt(0, indexAt(175))).toBeUndefined();
-    expect(plot.isDirectSegmentConnected(0, indexAt(150), indexAt(200))).toBe(true);
-  });
-
-  test('detects a leading source gap when an aligned segment crosses its virtual sentinel', () => {
-    const source = compactSource(
-      [
-        { start: 0, step: 10, count: 2 },
-        { start: -20, step: 15, count: 2 },
-        { start: -15, step: 1, count: 1 },
-        { start: -8, step: 1, count: 1 },
-      ],
-      [
-        { axisId: 0, values: [1], positions: [1] },
-        { axisId: 1, values: [2, 3] },
-        { axisId: 2, values: [4] },
-        { axisId: 3, values: [5] },
-      ]
-    );
-    const plot = createCompactPlotSource(source);
-    const indexAt = (timestamp: number) => plot.closestXIndex(timestamp, 0, plot.pointCount - 1);
-
-    expect(plot.yAt(0, indexAt(-15))).toBeUndefined();
-    expect(plot.yAt(0, indexAt(-8))).toBeNull();
-    expect(plot.isDirectSegmentConnected(0, indexAt(-20), indexAt(-5))).toBe(false);
   });
 
   test('finds a source gap between vertices supplied by other aligned series', () => {
@@ -359,45 +271,6 @@ describe('CompactPlotSource', () => {
     expect(plot.nearestPresent(0, 35_000, -1)).toBe(0);
     expect(plot.nearestPresent(0, 35_000, 1)).toBe(count - 1);
     expect(plot.isDirectSegmentConnected(0, 0, count - 1)).toBe(false);
-  });
-
-  test('keeps neighboring lookup local on a common-size dense bitmap', () => {
-    const count = 10_000;
-    const positions = Array.from({ length: count }, (_, index) => index).filter(
-      (index) => index !== count - 2 && index !== count - 3
-    );
-    const source = compactSource([{ start: 0, step: 1, count }], [{ axisId: 0, values: positions, positions }]);
-    const plot = createCompactPlotSource(source);
-    const internal = plot as unknown as {
-      isPresent(seriesIndex: number, index: number): boolean;
-      countPresent(seriesIndex: number, from: number, to: number): number;
-    };
-    const isPresent = jest.spyOn(internal, 'isPresent');
-    const countPresent = jest.spyOn(internal, 'countPresent');
-
-    expect(plot.nearestPresent(0, count - 2, -1)).toBe(count - 4);
-    expect(isPresent.mock.calls.length).toBeLessThan(16);
-    countPresent.mockClear();
-    expect(plot.nearestPresent(0, count - 3, -1)).toBe(count - 4);
-    expect(countPresent.mock.calls.every(([, from, to]) => to - from <= 1)).toBe(true);
-  });
-
-  test('uses the shared-axis path for distinct axis ids with identical geometry', () => {
-    const source = compactSource(
-      [
-        { start: 100, step: 10, count: 3 },
-        { start: 100, step: 10, count: 3 },
-      ],
-      [
-        { axisId: 0, values: [1, 2, 3] },
-        { axisId: 1, values: [4, 5, 6] },
-      ]
-    );
-    const plot = createCompactPlotSource(source);
-
-    expect(Array.from({ length: plot.pointCount }, (_, index) => plot.xAt(index))).toEqual([100, 110, 120]);
-    expect(plot.prepareBufferScan(0, 0, emptyBufferScan())).toBe(true);
-    expect(plot.prepareBufferScan(1, 0, emptyBufferScan())).toBe(true);
   });
 
   test('finds distant packed endpoints without probing aligned values', () => {

@@ -992,6 +992,7 @@ func mergeDataResponses(base backend.DataResponse, delta backend.DataResponse) b
 	}
 	if len(base.Frames) == 0 || onlyNoDataFramesForResource(base.Frames) {
 		base.Frames = cloneFrames(delta.Frames)
+		normalizeAccumulatedFrameMetadata(base.Frames)
 		return base
 	}
 	if onlyNoDataFramesForResource(delta.Frames) {
@@ -1016,7 +1017,20 @@ func mergeDataResponses(base backend.DataResponse, delta backend.DataResponse) b
 		index[key] = len(base.Frames)
 		base.Frames = append(base.Frames, cloneFrame(frame))
 	}
+	normalizeAccumulatedFrameMetadata(base.Frames)
 	return base
+}
+
+func normalizeAccumulatedFrameMetadata(frames data.Frames) {
+	for _, frame := range frames[1:] {
+		if frame == nil || frame.Meta == nil {
+			continue
+		}
+		frame.Meta.ExecutedQueryString = ""
+		if custom, ok := frame.Meta.Custom.(map[string]any); ok {
+			delete(custom, "calculatedMinStep")
+		}
+	}
 }
 
 func onlyNoDataFramesForResource(frames data.Frames) bool {

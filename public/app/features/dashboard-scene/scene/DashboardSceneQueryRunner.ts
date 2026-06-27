@@ -70,6 +70,13 @@ export class DashboardSceneQueryRunner extends SceneQueryRunner {
       const prepared = prepareRequests.call(this, timeRange, ds);
       const resolvedMinInterval = this.getResolvedMinInterval(ds);
 
+      if (ds.meta?.mixed) {
+        prepared.primary.preferredQueryResultFormat = undefined;
+        for (const request of prepared.secondaries) {
+          request.preferredQueryResultFormat = undefined;
+        }
+      }
+
       this.applyStepSizeToRequest(prepared.primary, resolvedMinInterval);
       prepared.secondaries = prepared.secondaries.map((request) => {
         this.applyStepSizeToRequest(request, resolvedMinInterval);

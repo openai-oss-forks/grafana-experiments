@@ -337,10 +337,7 @@ function isSupportedStandaloneBarChartOptions(options: unknown): boolean {
       orientation === VizOrientation.Horizontal ||
       orientation === VizOrientation.Vertical) &&
     (stacking == null || isStandaloneBarStacking(stacking)) &&
-    (showValue == null ||
-      showValue === VisibilityMode.Auto ||
-      showValue === VisibilityMode.Always ||
-      showValue === VisibilityMode.Never) &&
+    (showValue == null || showValue === VisibilityMode.Auto || showValue === VisibilityMode.Never) &&
     isOptionalFiniteRange(getObjectProperty(options, 'groupWidth'), 0, 1) &&
     isOptionalFiniteRange(getObjectProperty(options, 'barWidth'), 0, 1) &&
     isOptionalFiniteRange(getObjectProperty(options, 'barRadius'), 0, 0.5) &&

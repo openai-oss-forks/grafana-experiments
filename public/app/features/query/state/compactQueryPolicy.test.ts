@@ -19,6 +19,7 @@ import {
   ScaleDistribution,
   SortOrder,
   StackingMode,
+  VisibilityMode,
   VizOrientation,
 } from '@grafana/schema';
 
@@ -457,6 +458,7 @@ describe('compact dashboard query policy', () => {
     { colorByField: 'color' },
     { barWidth: 2 },
     { stacking: 'future' },
+    { showValue: VisibilityMode.Always },
     { xTickLabelMaxLength: 12 },
   ])('keeps unsupported standalone Bar chart configuration on JSON: %p', (unsupported) => {
     expect(

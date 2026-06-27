@@ -15,12 +15,14 @@ import {
   NullValueMode,
   ReducerID,
   reduceField,
+  ThresholdsMode,
 } from '@grafana/data';
 import {
   AxisColorMode,
   ComparisonOperation,
   GraphDrawStyle,
   GraphGradientMode,
+  GraphThresholdsStyleMode,
   GraphTransform,
   ScaleDistribution,
   StackingMode,
@@ -830,7 +832,7 @@ describe('CompactNativeRenderPlan', () => {
     const { source } = columnarSource([
       series('A', 'positive', [1, 2, 3]),
       series('B', 'negative-rendered-positive', [-1, -2, -3]),
-      series('C', 'constant-positive', [4, 5, 6]),
+      series('C', 'constant-positive', [-4, 5, 6]),
     ]);
     const plan = createCompactNativeRenderPlan(source, {
       ...baseOptions,
@@ -855,6 +857,31 @@ describe('CompactNativeRenderPlan', () => {
 
     expect(plan.source.stackGroupCount).toBe(1);
     expect(plan.source.columns.stackGroupIds).toEqual(new Uint8Array([1, 1, 1]));
+    expect(plan.source.stackDirections).toEqual(new Int8Array([1]));
+  });
+
+  test('keeps threshold rendering configuration on the scale record', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2])]);
+    const thresholds = {
+      mode: ThresholdsMode.Absolute,
+      steps: [
+        { color: 'green', value: -Infinity },
+        { color: 'red', value: 10 },
+      ],
+    };
+    const thresholdsStyle = { mode: GraphThresholdsStyleMode.Line };
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('thresholds', 'thresholds', false),
+        compactProperty('custom.thresholdsStyle', 'thresholdsStyle', true),
+      ]),
+      fieldConfig: { defaults: { thresholds, custom: { thresholdsStyle } }, overrides: [] },
+    });
+
+    expect(plan.getScale(0).config).toMatchObject({ thresholds, custom: { thresholdsStyle } });
+    expect(plan.getStyle(0).config.thresholds).toBeUndefined();
+    expect(plan.getStyle(0).config.custom?.thresholdsStyle).toBeUndefined();
   });
 
   test('does not allocate stack state for singleton groups', () => {

@@ -10,29 +10,21 @@ import {
   useState,
 } from 'react';
 
-import { SceneObject } from '@grafana/scenes';
-
 export const PANEL_PREFETCH_MIN_MARGIN = 800;
 export const PANEL_RETENTION_VIEWPORTS = 2;
 export const PANEL_EVICTION_GRACE_MS = 1_000;
-export const PANEL_ACTIVATION_BUDGET = 4;
 export const PANEL_RENDER_PREPARATION_BUDGET = 2;
 export const PANEL_EVICTION_BUDGET = 2;
 
 export interface PanelLifecycleSnapshot {
-  activationAllowed: boolean;
   rendererActive: boolean;
-  queryActive: boolean;
 }
 
 interface PanelLifecycleEntry {
   element: HTMLElement;
-  target?: SceneObject;
   listener: (snapshot: PanelLifecycleSnapshot) => void;
-  activationAllowed: boolean;
   rendererActive: boolean;
   rendererPrepared: boolean;
-  queryActive: boolean;
   visible: boolean;
   withinPrefetch: boolean;
   withinRetention: boolean;
@@ -72,13 +64,11 @@ function lifecyclePriority(left: PanelLifecycleEntry, right: PanelLifecycleEntry
   return viewportDistance(left.element) - viewportDistance(right.element);
 }
 
-/** Owns admission, renderer preparation, interaction retention, and bounded eviction for one dashboard. */
+/** Paces renderer preparation and bounded eviction for one dashboard. */
 export class PanelLifecycleCoordinator {
   private entries = new Map<Element, PanelLifecycleEntry>();
-  private activationQueue = new Set<PanelLifecycleEntry>();
   private renderQueue = new Set<PanelLifecycleEntry>();
   private evictionQueue = new Set<PanelLifecycleEntry>();
-  private activationFrame?: number;
   private renderFrame?: number;
   private evictionFrame?: number;
   private visibleObserver?: IntersectionObserver;
@@ -100,22 +90,15 @@ export class PanelLifecycleCoordinator {
     });
   }
 
-  register(
-    element: HTMLElement,
-    target: SceneObject | undefined,
-    listener: (snapshot: PanelLifecycleSnapshot) => void
-  ): PanelLifecycleRegistration {
+  register(element: HTMLElement, listener: (snapshot: PanelLifecycleSnapshot) => void): PanelLifecycleRegistration {
     const prefetchMargin = Math.max(window.innerHeight, PANEL_PREFETCH_MIN_MARGIN);
     const visible = isWithinViewportMargin(element, 0);
     const withinPrefetch = isWithinViewportMargin(element, prefetchMargin);
     const entry: PanelLifecycleEntry = {
       element,
-      target,
       listener,
-      activationAllowed: !target || target.isActive,
       rendererActive: false,
       rendererPrepared: false,
-      queryActive: visible || withinPrefetch,
       visible,
       withinPrefetch,
       withinRetention: isWithinViewportMargin(element, prefetchMargin * PANEL_RETENTION_VIEWPORTS),
@@ -130,7 +113,6 @@ export class PanelLifecycleCoordinator {
     this.publish(entry);
 
     if (withinPrefetch) {
-      this.queueActivation(entry);
       this.queueRenderPreparation(entry);
     }
 
@@ -141,10 +123,8 @@ export class PanelLifecycleCoordinator {
         }
         entry.interactive = interactive;
         if (interactive) {
-          this.queueActivation(entry);
           this.queueRenderPreparation(entry);
         }
-        this.updateQueryActivity(entry);
         this.updateRendererRetention(entry);
       },
       unregister: () => this.unregister(entry),
@@ -158,7 +138,6 @@ export class PanelLifecycleCoordinator {
     this.visibleObserver?.disconnect();
     this.prefetchObserver?.disconnect();
     this.retentionObserver?.disconnect();
-    this.cancelFrame('activation');
     this.cancelFrame('render');
     this.cancelFrame('eviction');
   }
@@ -173,14 +152,12 @@ export class PanelLifecycleCoordinator {
         case 'visible':
           entry.visible = observerEntry.isIntersecting;
           if (entry.visible) {
-            this.queueActivation(entry);
             this.queueRenderPreparation(entry);
           }
           break;
         case 'prefetch':
           entry.withinPrefetch = observerEntry.isIntersecting;
           if (entry.withinPrefetch) {
-            this.queueActivation(entry);
             this.queueRenderPreparation(entry);
           }
           break;
@@ -188,39 +165,7 @@ export class PanelLifecycleCoordinator {
           entry.withinRetention = observerEntry.isIntersecting;
           break;
       }
-      this.updateQueryActivity(entry);
       this.updateRendererRetention(entry);
-    }
-  }
-
-  private queueActivation(entry: PanelLifecycleEntry) {
-    if (!entry.target || entry.activationAllowed) {
-      return;
-    }
-    this.activationQueue.add(entry);
-    if (this.activationFrame === undefined) {
-      this.activationFrame = window.requestAnimationFrame(() => this.drainActivationQueue());
-    }
-  }
-
-  private drainActivationQueue() {
-    this.activationFrame = undefined;
-    const queued = [...this.activationQueue].sort(lifecyclePriority);
-    let admitted = 0;
-    for (const entry of queued) {
-      if (admitted >= PANEL_ACTIVATION_BUDGET) {
-        break;
-      }
-      this.activationQueue.delete(entry);
-      if (!this.entries.has(entry.element) || (!entry.visible && !entry.interactive && !entry.withinPrefetch)) {
-        continue;
-      }
-      entry.activationAllowed = true;
-      admitted++;
-      this.publish(entry);
-    }
-    if (this.activationQueue.size > 0) {
-      this.activationFrame = window.requestAnimationFrame(() => this.drainActivationQueue());
     }
   }
 
@@ -324,20 +269,9 @@ export class PanelLifecycleCoordinator {
     this.publish(entry);
   }
 
-  private updateQueryActivity(entry: PanelLifecycleEntry) {
-    const queryActive = entry.visible || entry.withinPrefetch || entry.interactive;
-    if (entry.queryActive === queryActive) {
-      return;
-    }
-    entry.queryActive = queryActive;
-    this.publish(entry);
-  }
-
   private publish(entry: PanelLifecycleEntry) {
     entry.listener({
-      activationAllowed: entry.activationAllowed,
       rendererActive: entry.rendererActive,
-      queryActive: entry.queryActive,
     });
   }
 
@@ -350,15 +284,12 @@ export class PanelLifecycleCoordinator {
     this.evictionQueue.delete(entry);
   }
 
-  private cancelFrame(kind: 'activation' | 'render' | 'eviction') {
-    const frame =
-      kind === 'activation' ? this.activationFrame : kind === 'render' ? this.renderFrame : this.evictionFrame;
+  private cancelFrame(kind: 'render' | 'eviction') {
+    const frame = kind === 'render' ? this.renderFrame : this.evictionFrame;
     if (frame !== undefined) {
       window.cancelAnimationFrame(frame);
     }
-    if (kind === 'activation') {
-      this.activationFrame = undefined;
-    } else if (kind === 'render') {
+    if (kind === 'render') {
       this.renderFrame = undefined;
     } else {
       this.evictionFrame = undefined;
@@ -372,7 +303,6 @@ export class PanelLifecycleCoordinator {
     this.visibleObserver?.unobserve(entry.element);
     this.prefetchObserver?.unobserve(entry.element);
     this.retentionObserver?.unobserve(entry.element);
-    this.activationQueue.delete(entry);
     this.renderQueue.delete(entry);
     this.evictionQueue.delete(entry);
     this.clearEviction(entry);
@@ -381,14 +311,10 @@ export class PanelLifecycleCoordinator {
 
 const PanelLifecycleContext = createContext<PanelLifecycleCoordinator | null>(null);
 const UNCOORDINATED_SNAPSHOT: PanelLifecycleSnapshot = {
-  activationAllowed: true,
   rendererActive: true,
-  queryActive: true,
 };
 const PENDING_REGISTRATION_SNAPSHOT: PanelLifecycleSnapshot = {
-  activationAllowed: false,
   rendererActive: false,
-  queryActive: false,
 };
 
 export function PanelLifecycleProvider({ children }: { children: ReactNode }) {
@@ -397,36 +323,26 @@ export function PanelLifecycleProvider({ children }: { children: ReactNode }) {
   return <PanelLifecycleContext.Provider value={coordinator}>{children}</PanelLifecycleContext.Provider>;
 }
 
-export function usePanelLifecycleRegistration(target: SceneObject | undefined) {
+export function usePanelLifecycleRegistration() {
   const coordinator = useContext(PanelLifecycleContext);
   const elementRef = useRef<HTMLElement | null>(null);
   const registrationRef = useRef<PanelLifecycleRegistration>();
-  const [registrationState, setRegistrationState] = useState<{
-    target: SceneObject | undefined;
-    snapshot: PanelLifecycleSnapshot;
-  }>(() => ({
-    target,
-    snapshot: {
-      activationAllowed: !coordinator || !target || target.isActive,
-      rendererActive: !coordinator,
-      queryActive: !coordinator,
-    },
-  }));
+  const [snapshot, setSnapshot] = useState<PanelLifecycleSnapshot>(() =>
+    coordinator ? PENDING_REGISTRATION_SNAPSHOT : UNCOORDINATED_SNAPSHOT
+  );
 
   useLayoutEffect(() => {
     const element = elementRef.current;
     if (!coordinator || !element) {
       return;
     }
-    const registration = coordinator.register(element, target, (snapshot) =>
-      setRegistrationState({ target, snapshot })
-    );
+    const registration = coordinator.register(element, setSnapshot);
     registrationRef.current = registration;
     return () => {
       registration.unregister();
       registrationRef.current = undefined;
     };
-  }, [coordinator, target]);
+  }, [coordinator]);
 
   const setElement = useCallback((element: HTMLElement | null) => {
     elementRef.current = element;
@@ -438,17 +354,11 @@ export function usePanelLifecycleRegistration(target: SceneObject | undefined) {
 
   return useMemo(
     () => ({
-      snapshot: !coordinator
-        ? UNCOORDINATED_SNAPSHOT
-        : registrationState.target === target
-          ? registrationState.snapshot
-          : target?.isActive
-            ? { ...PENDING_REGISTRATION_SNAPSHOT, activationAllowed: true }
-            : PENDING_REGISTRATION_SNAPSHOT,
+      snapshot: !coordinator ? UNCOORDINATED_SNAPSHOT : snapshot,
       setElement,
       setInteractive,
       coordinated: coordinator !== null,
     }),
-    [coordinator, registrationState, setElement, setInteractive, target]
+    [coordinator, setElement, setInteractive, snapshot]
   );
 }

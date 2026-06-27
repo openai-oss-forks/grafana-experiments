@@ -21,6 +21,7 @@ import { Panel } from '@grafana/schema';
 import { OptionFilter } from 'app/features/dashboard/components/PanelEditor/OptionsPaneOptions';
 import { getLastUsedDatasourceFromStorage } from 'app/features/dashboard/utils/dashboard';
 import { saveLibPanel } from 'app/features/library-panels/state/api';
+import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSource';
 
 import { DashboardEditActionEvent } from '../edit-pane/shared';
 import { DashboardSceneChangeTracker } from '../saving/DashboardSceneChangeTracker';
@@ -141,8 +142,12 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
         return;
       }
 
+      const datasource = currentRunner.state.datasource;
+      const isMixedDatasource = datasource?.type === 'mixed' || datasource?.uid === MIXED_DATASOURCE_NAME;
       const requiredFormat =
-        dashboard.enrichDataRequest(currentRunner).preferredQueryResultFormat === 'compact-v1' ? 'compact-v1' : 'full';
+        !isMixedDatasource && dashboard.enrichDataRequest(currentRunner).preferredQueryResultFormat === 'compact-v1'
+          ? 'compact-v1'
+          : 'full';
       const currentData = currentRunner.state.data;
       const preparedRequest =
         currentRunner instanceof DashboardSceneQueryRunner ? currentRunner.getLastPreparedRequest() : undefined;

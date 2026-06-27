@@ -177,6 +177,19 @@ export interface GraphNGState {
   holdPreviousCompactFrame: boolean;
 }
 
+interface CompactFrameRecord {
+  plan: CompactNativeRenderPlan;
+  config: UPlotConfigBuilder;
+  legend: VizLegendOptions;
+  sessionKey?: string;
+  layoutKey?: string;
+  plotWidth: number;
+  plotHeight: number;
+  containerWidth: number;
+  containerHeight: number;
+  placement: LegendPlacement;
+}
+
 function emptyGraphState(): GraphNGState {
   return {
     alignedFrame: undefined,
@@ -239,6 +252,7 @@ export function GraphNG(props: GraphNGProps) {
 export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
   private compactRevisionFrame?: number;
   private stagedLayoutReleaseFrame?: number;
+  private compactFrames = new WeakMap<uPlot.CompactPlotSource, CompactFrameRecord>();
 
   constructor(props: GraphNGProps) {
     super(props);
@@ -477,7 +491,6 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
         cursorSync !== prevProps.cursorSync ||
         (!compactSeries && structureRev !== prevProps.structureRev) ||
         compactConfigChanged ||
-        compactFieldConfig !== prevProps.compactFieldConfig ||
         (!compactSeries && !structureRev) ||
         propsChanged;
 
@@ -566,6 +579,10 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
         (stagedCompactLayoutKey === compactLayoutKey && stagedCompactWidth != null && stagedCompactHeight != null);
       const plotPlan = requiresStagedLayout && !hasStagedLayout ? visiblePlan : compactPlan;
       const plotConfig = requiresStagedLayout && !hasStagedLayout ? visibleConfig : config;
+      const plotUsesCurrentState = plotPlan === compactPlan && plotConfig === config;
+      const plotLegendOptions = plotUsesCurrentState ? currentLegendOptions : visibleLegendOptions;
+      const plotSessionKey = plotUsesCurrentState ? compactSessionKey : presentedCompactSessionKey;
+      const plotLayoutKey = plotUsesCurrentState ? compactLayoutKey : presentedCompactLayoutKey;
       const stagedWidth = stagedCompactLayoutKey === compactLayoutKey ? stagedCompactWidth : undefined;
       const stagedHeight = stagedCompactLayoutKey === compactLayoutKey ? stagedCompactHeight : undefined;
       const currentLegend = renderCompactLegend?.(config, compactPlan, currentLegendOptions) ?? null;
@@ -590,18 +607,34 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
             mountBeforeLegendMeasure
             stableLegendSlot
           >
-            {(vizWidth: number, vizHeight: number) => (
-              <UPlotChart
-                config={plotConfig}
-                data={plotPlan.source}
-                holdPreviousCompactFrame={holdPreviousCompactFrame}
-                onCompactFrameReady={this.onCompactFrameReady}
-                width={stagedWidth ?? vizWidth}
-                height={stagedHeight ?? vizHeight}
-              >
-                {compactChildren ? compactChildren(plotConfig, plotPlan) : null}
-              </UPlotChart>
-            )}
+            {(vizWidth: number, vizHeight: number) => {
+              const plotWidth = Math.floor(stagedWidth ?? vizWidth);
+              const plotHeight = Math.floor(stagedHeight ?? vizHeight);
+              this.compactFrames.set(plotPlan.source, {
+                plan: plotPlan,
+                config: plotConfig,
+                legend: plotLegendOptions,
+                sessionKey: plotSessionKey,
+                layoutKey: plotLayoutKey,
+                plotWidth,
+                plotHeight,
+                containerWidth: width,
+                containerHeight: height,
+                placement: this.getCompactLegendPlacement(this.props),
+              });
+              return (
+                <UPlotChart
+                  config={plotConfig}
+                  data={plotPlan.source}
+                  holdPreviousCompactFrame={holdPreviousCompactFrame}
+                  onCompactFrameReady={this.onCompactFrameReady}
+                  width={plotWidth}
+                  height={plotHeight}
+                >
+                  {compactChildren ? compactChildren(plotConfig, plotPlan) : null}
+                </UPlotChart>
+              );
+            }}
           </VizLayout>
           {requiresStagedLayout && !hasStagedLayout && (
             <div
@@ -884,7 +917,7 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
     readyConfig: UPlotConfigBuilder,
     width: number,
     height: number
-  ) => {
+  ): boolean => {
     const {
       compactPlan,
       config,
@@ -895,7 +928,37 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
       presentedCompactLayoutKey,
       stagedCompactLayoutKey,
     } = this.state;
+    const completedFrame = this.compactFrames.get(source);
+    if (
+      !completedFrame ||
+      completedFrame.config !== readyConfig ||
+      completedFrame.sessionKey !== compactSessionKey ||
+      completedFrame.layoutKey !== compactLayoutKey ||
+      completedFrame.plotWidth !== width ||
+      completedFrame.plotHeight !== height ||
+      completedFrame.containerWidth !== this.props.width ||
+      completedFrame.containerHeight !== this.props.height ||
+      completedFrame.placement !== this.getCompactLegendPlacement(this.props)
+    ) {
+      return false;
+    }
     const layoutChangePending = presentedCompactPlan != null && compactLayoutKey !== presentedCompactLayoutKey;
+    if (compactPlan && compactPlan.source !== source) {
+      this.setState({
+        presentedCompactPlan: completedFrame.plan,
+        presentedCompactConfig: completedFrame.config,
+        presentedCompactLegend: completedFrame.legend,
+        presentedCompactSessionKey: completedFrame.sessionKey,
+        presentedCompactLayoutKey: completedFrame.layoutKey,
+        presentedCompactWidth: width,
+        presentedCompactHeight: height,
+        presentedCompactContainerWidth: completedFrame.containerWidth,
+        presentedCompactContainerHeight: completedFrame.containerHeight,
+        presentedCompactPlacement: completedFrame.placement,
+        holdPreviousCompactFrame: true,
+      });
+      return true;
+    }
     if (
       !compactPlan ||
       !config ||
@@ -906,7 +969,7 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
       compactLayoutKey !== this.getCompactLayoutKey(this.props) ||
       (layoutChangePending && stagedCompactLayoutKey !== compactLayoutKey)
     ) {
-      return;
+      return false;
     }
     if (
       presentedCompactPlan === compactPlan &&
@@ -929,9 +992,10 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
           presentedCompactPlacement: placement,
         });
       }
-      return;
+      return true;
     }
     this.commitCurrentCompactPresentation(width, height);
+    return true;
   };
 
   private commitCurrentCompactPresentation(width: number, height: number) {

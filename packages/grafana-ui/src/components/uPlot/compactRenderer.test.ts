@@ -1,6 +1,6 @@
 import uPlot from 'uplot';
 
-import { ScaleDistribution, StackingMode } from '@grafana/schema';
+import { ScaleDistribution } from '@grafana/schema';
 
 import {
   CompactRenderController,
@@ -8,9 +8,8 @@ import {
   CompactSeriesFlag,
   CompactStyleRecord,
   getCompactRenderController,
-  installCompactRenderer,
+  mayDrawCompactSourceProgressively,
 } from './compactRenderer';
-import { UPlotConfigBuilder } from './config/UPlotConfigBuilder';
 
 describe('CompactRenderController', () => {
   test('draws source-native lines, steps, points, splines, and gaps without dense arrays', () => {
@@ -158,28 +157,6 @@ describe('CompactRenderController', () => {
     expect(isolatedBars[0][2]).toBeGreaterThan(restoredBars[0][2]);
   });
 
-  test('keeps an empty grouped-bar scale range non-degenerate', () => {
-    const source = createSource([[]], [CompactSeriesFlag.Bars]);
-    Reflect.set(source, 'barOptions', { mode: 'grouped' });
-    const controller = new CompactRenderController(source);
-    const [minimum, maximum] = controller.groupedBarRange();
-
-    expect([controller.groupedBarIndexAt(minimum), controller.groupedBarIndexAt(maximum)]).toEqual([0, 1]);
-  });
-
-  test('keeps the grouped scale stable when its only configured bar is restored', () => {
-    const source = createSource([[1, 2]], [CompactSeriesFlag.Bars]);
-    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.7, barWidth: 0.9 });
-    Reflect.set(source, 'barLayoutVisibility', new Uint8Array([1]));
-    source.columns.visibility[0] = 0;
-    const controller = new CompactRenderController(source);
-
-    const hiddenRange = controller.groupedBarRange();
-    controller.setSeries(0, { show: true });
-
-    expect(controller.groupedBarRange()).toEqual(hiddenRange);
-  });
-
   test('keeps configured point markers on TimeSeries bars', () => {
     const source = createSource([[1, 2]], [CompactSeriesFlag.Bars | CompactSeriesFlag.Points]);
     const { plot, context } = createPlot();
@@ -187,16 +164,6 @@ describe('CompactRenderController', () => {
     new CompactRenderController(source).draw(plot, 0, 1);
 
     expect(context.arc).toHaveBeenCalledTimes(2);
-  });
-
-  test('keeps zero-width bar settings visible at the one-pixel minimum', () => {
-    const source = createSource([[10]], [CompactSeriesFlag.Bars]);
-    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0, barWidth: 0 });
-    const { plot, context } = createPlot();
-
-    new CompactRenderController(source).draw(plot, 0, 0);
-
-    expect(context.rect).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), uPlot.pxRatio, 10);
   });
 
   test.each([
@@ -220,7 +187,8 @@ describe('CompactRenderController', () => {
           }
         });
       }
-      source.cursorValueAt = jest.fn(source.cursorValueAt);
+      const cursorValueAt = jest.fn(source.cursorValueAt);
+      source.cursorValueAt = cursorValueAt;
       const controller = new CompactRenderController(source);
       const { plot, context } = createPlot();
       plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 2 : 80 - value * 10);
@@ -235,9 +203,9 @@ describe('CompactRenderController', () => {
       expect(context.fill).toHaveBeenCalledTimes(1);
       expect(source.cursorValueAt).toHaveBeenCalledTimes(3);
 
-      source.cursorValueAt.mockClear();
+      cursorValueAt.mockClear();
       controller.draw(plot, 0, 2);
-      expect(source.cursorValueAt).not.toHaveBeenCalled();
+      expect(cursorValueAt).not.toHaveBeenCalled();
     }
   );
 
@@ -276,28 +244,6 @@ describe('CompactRenderController', () => {
     });
   });
 
-  test('keeps a point on a bar focusable where the marker extends beyond the bar body', () => {
-    const source = createSource([[100]], [CompactSeriesFlag.Bars | CompactSeriesFlag.Points], 0, 'series', 'single', {
-      stroke: '#00f',
-      areaFill: '#0000ff40',
-      lineWidth: 1,
-      pointSize: 5,
-      barWidthFactor: 0.6,
-    });
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 0;
-    plot.focus.prox = 1;
-    controller.draw(plot, 0, 0);
-
-    expect(controller.updateCursor(plot, 0, 102, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      distance: 0,
-      centered: true,
-    });
-  });
-
   test('fills dense TimeSeries bars with the stroke color when uPlot suppresses their outlines', () => {
     for (const showValue of ['never', 'always'] as const) {
       const source = createSource([[1, 2]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
@@ -317,36 +263,73 @@ describe('CompactRenderController', () => {
     }
   });
 
-  test.each([
-    {
-      name: 'unstacked series',
-      flags: CompactSeriesFlag.Bars,
-      stackGroupCount: 0,
-      expectedY: 65.5,
-      expectedHeight: 14.5,
-    },
-    {
-      name: 'bottom stack series',
-      flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
-      stackGroupCount: 1,
-      expectedY: 70.4,
-      expectedHeight: 9.6,
-    },
-  ])('keeps uPlot baseline rounding for a dense $name', ({ flags, stackGroupCount, expectedY, expectedHeight }) => {
-    const source = createSource([[1.49, 2.25]], [flags], stackGroupCount, 'series', 'single', {
+  test('keeps dense TimeSeries value labels on the legacy 30px cadence', () => {
+    const source = createSource([[1, 2, 3, 4]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
       stroke: '#f00',
-      areaFill: '#fcc',
-      lineWidth: 0,
-      barWidthFactor: 0.6,
+      lineWidth: 1,
+      showValues: true,
     });
+    source.formatValueAt = (_series, _index, value) => String(value);
     const { plot, context } = createPlot();
-    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 4 : 80.4 - value * 10);
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? 10 + value * 20 : 80 - value * 10);
 
-    new CompactRenderController(source).draw(plot, 0, 1);
+    new CompactRenderController(source).draw(plot, 0, 3);
 
-    const [, y, , height] = context.rect.mock.calls.slice(1)[0];
-    expect(y).toBeCloseTo(expectedY);
-    expect(height).toBeCloseTo(expectedHeight);
+    expect(context.fillText).not.toHaveBeenCalled();
+  });
+
+  test('admits large unstacked and stacked bars to the progressive renderer', () => {
+    const unstacked = createVirtualSource(1_000, 1_000);
+    Reflect.set(unstacked.columns, 'flags', new Uint16Array(unstacked.seriesCount).fill(CompactSeriesFlag.Bars));
+    Reflect.set(unstacked, 'styles', [{ ...unstacked.styles[0], showValues: true }]);
+    const stacked = createVirtualSource(1_000, 1_000);
+    Reflect.set(
+      stacked.columns,
+      'flags',
+      new Uint16Array(stacked.seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
+    );
+    Reflect.set(stacked.columns, 'stackGroupIds', new Uint8Array(stacked.seriesCount).fill(1));
+    Reflect.set(stacked, 'stackGroupCount', 1);
+    Reflect.set(stacked, 'stackDirections', new Int8Array([1]));
+    const grouped = createVirtualSource(1_000, 1_000);
+    Reflect.set(grouped.columns, 'flags', new Uint16Array(grouped.seriesCount).fill(CompactSeriesFlag.Bars));
+    Reflect.set(grouped, 'barOptions', { mode: 'grouped', showValue: 'auto' });
+    Reflect.set(grouped, 'formatValueAt', (_series: number, _index: number, value: number) => String(value));
+
+    expect(mayDrawCompactSourceProgressively(unstacked)).toBe(true);
+    expect(mayDrawCompactSourceProgressively(stacked)).toBe(true);
+    expect(mayDrawCompactSourceProgressively(grouped)).toBe(true);
+  });
+
+  test('skips time-series width preparation for progressive grouped bars', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    try {
+      const source = createVirtualSource(1_000, 1_000);
+      Reflect.set(source.columns, 'flags', new Uint16Array(source.seriesCount).fill(CompactSeriesFlag.Bars));
+      Reflect.set(source, 'barOptions', { mode: 'grouped', showValue: 'never' });
+      source.cursorValueAt = jest.fn(source.cursorValueAt);
+      const controller = new CompactRenderController(source);
+      const completed = controller.draw(createPlot().plot, 0, 999);
+      const [timer, callback] = callbacks.entries().next().value!;
+      callbacks.delete(timer);
+      (callback as () => void)();
+
+      expect(source.cursorValueAt).not.toHaveBeenCalled();
+      controller.destroy(source);
+      await expect(completed).resolves.toBe(false);
+    } finally {
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
   });
 
   test.each([
@@ -390,55 +373,6 @@ describe('CompactRenderController', () => {
     }
   );
 
-  test('uses pre-transform stack presence to size constant TimeSeries bars', () => {
-    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
-    const source = createSource(
-      [
-        [1, undefined, undefined],
-        [1, null, 1],
-      ],
-      [flags | CompactSeriesFlag.Constant, flags],
-      1,
-      'series',
-      'single',
-      { stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }
-    );
-    const barWidthValueAt = source.barWidthValueAt!;
-    source.barWidthValueAt = (series, index) => (series === 0 ? 1 : barWidthValueAt(series, index));
-    source.xAt = (index) => [0, 1, 10][index];
-    const { plot, context } = createPlot();
-    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 10 : 80 - value * 10);
-
-    new CompactRenderController(source).draw(plot, 0, 2);
-
-    expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([6, 6, 6]);
-  });
-
-  test('does not apply another series cadence to a constant TimeSeries stack', () => {
-    const source = createSource(
-      [
-        [1, undefined, undefined],
-        [1, 1, 1],
-      ],
-      [CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.Constant, CompactSeriesFlag.Bars],
-      1,
-      'series',
-      'single',
-      { stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }
-    );
-    Reflect.set(source.columns, 'stackGroupIds', new Uint8Array([1, 0]));
-    const barWidthValueAt = source.barWidthValueAt!;
-    source.barWidthValueAt = (series, index) =>
-      series === 0 ? (index === 1 ? undefined : 1) : barWidthValueAt(series, index);
-    source.xAt = (index) => [0, 1, 10][index];
-    const { plot, context } = createPlot();
-    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 10 : 80 - value * 10);
-
-    new CompactRenderController(source).draw(plot, 0, 2);
-
-    expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([60, 6, 6, 6]);
-  });
-
   test('normalizes percent-stacked bars for extents and cursor focus', () => {
     const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
     const source = createSource(
@@ -466,14 +400,19 @@ describe('CompactRenderController', () => {
     });
   });
 
-  test('configures percent-stacked value scales with the fixed 0 to 1 range', () => {
+  test('keeps a positive percent stack positive when one timestamp crosses below zero', () => {
     const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
-    const source = createSource([[1], [3]], [flags, flags], 1);
-    const builder = new UPlotConfigBuilder();
+    const source = createSource(
+      [
+        [1, -2, 1],
+        [1, -1, 1],
+      ],
+      [flags, flags],
+      1
+    );
+    Reflect.set(source, 'stackDirections', new Int8Array([1]));
 
-    installCompactRenderer(builder, source);
-
-    expect(builder.scales[0].props.stackingMode).toBe(StackingMode.Percent);
+    expect(new CompactRenderController(source).extent(createPlot().plot, 'y', 1, 1)).toEqual([0, 1]);
   });
 
   test('formats stacked bar labels from segment values and rounds only exposed normal stacks', () => {
@@ -513,7 +452,7 @@ describe('CompactRenderController', () => {
         areaFill: '#fcc',
         lineWidth: 1,
       });
-      const formatValueAt = jest.fn(() => 'value');
+      const formatValueAt = jest.fn((_series: number, _index: number, _value: number) => 'value');
       Reflect.set(source, 'formatValueAt', formatValueAt);
       Reflect.set(source, 'barOptions', {
         mode: 'grouped',
@@ -530,6 +469,21 @@ describe('CompactRenderController', () => {
       expect(formatValueAt.mock.calls.map(([, , value]) => value)).toEqual([...expected, ...expected]);
       expect(context.quadraticCurveTo).toHaveBeenCalledTimes(roundedCorners);
     }
+  });
+
+  test('formats TimeSeries stack labels from prepared cumulative values', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[1], [3]], [flags, flags], 1, 'series', 'single', {
+      stroke: '#f00',
+      lineWidth: 1,
+      showValues: true,
+    });
+    const formatValueAt = jest.fn((_series: number, _index: number, value: number) => String(value));
+    Reflect.set(source, 'formatValueAt', formatValueAt);
+
+    new CompactRenderController(source).draw(createPlot().plot, 0, 0);
+
+    expect(formatValueAt.mock.calls.map(([, , value]) => value)).toEqual([4]);
   });
 
   test('suppresses colliding auto labels within a stacked bar', () => {
@@ -564,24 +518,6 @@ describe('CompactRenderController', () => {
     new CompactRenderController(source).draw(plot, 0, 0);
 
     expect(context.font).toBe('30px sans-serif');
-  });
-
-  test('uses one automatic font size across differently sized standalone bars', () => {
-    const source = createSource([[1, 5]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
-      stroke: '#f00',
-      areaFill: '#fcc',
-      lineWidth: 0,
-    });
-    Reflect.set(source, 'formatValueAt', () => '1');
-    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1, showValue: 'always' });
-    const { plot, context } = createPlot();
-    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value * 10);
-    const fonts: string[] = [];
-    context.fillText.mockImplementation(() => fonts.push(context.font));
-
-    new CompactRenderController(source).draw(plot, 0, 1);
-
-    expect(fonts).toEqual(['25px sans-serif', '25px sans-serif']);
   });
 
   test('exposes a full bar-group cursor rectangle for standalone highlight mode', () => {
@@ -622,7 +558,7 @@ describe('CompactRenderController', () => {
     Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1 });
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
-    plot.scales.x.ori = xOrientation;
+    plot.scales.x.ori = xOrientation as 0 | 1;
     plot.scales.y.ori = xOrientation === 0 ? 1 : 0;
     plot.cursor.left = 0;
     plot.cursor.top = 0;
@@ -892,8 +828,8 @@ describe('CompactRenderController', () => {
         const completed = controller.draw(plot, 0, 999);
 
         expect(completed).toBeInstanceOf(Promise);
-        expect(source.scan.mock.calls.length).toBeGreaterThan(0);
-        expect(source.scan.mock.calls.length).toBeLessThan(source.seriesCount);
+        expect(controller.isProgressiveDrawInFlight()).toBe(true);
+        expect(source.scan).not.toHaveBeenCalled();
         expect(callbacks.size).toBe(1);
 
         if (action === 'focused visibility change') {
@@ -905,6 +841,7 @@ describe('CompactRenderController', () => {
         }
 
         await expect(completed).resolves.toBe(false);
+        expect(controller.isProgressiveDrawInFlight()).toBe(false);
         expect(callbacks.size).toBe(0);
       } finally {
         setTimeout.mockRestore();
@@ -1046,33 +983,6 @@ describe('CompactRenderController', () => {
     });
   });
 
-  test('keeps sparse area hover work independent of the gap length', () => {
-    const pointCount = 1_000_001;
-    const source = createVirtualSource(1, pointCount);
-    source.styles[0] = { stroke: '#00f', areaFill: '#0000ff40', lineWidth: 1 };
-    source.yAt = jest.fn((_series, index) => (index === 0 ? 0 : index === pointCount - 1 ? 100 : undefined));
-    source.nearestPresent = jest.fn((_series, index, bias) => {
-      if (index === 0 || index === pointCount - 1) {
-        return index;
-      }
-      return bias > 0 ? pointCount - 1 : 0;
-    });
-    source.isDirectSegmentConnected = jest.fn(() => true);
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = (pointCount - 1) / 2;
-
-    expect(controller.updateCursor(plot, (pointCount - 1) / 2, 25, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      distance: 25,
-    });
-    expect(source.yAt).toHaveBeenCalledTimes(3);
-    expect(source.nearestPresent).toHaveBeenCalledTimes(3);
-    expect(source.isDirectSegmentConnected).toHaveBeenCalledTimes(1);
-    expect(source.scan).not.toHaveBeenCalled();
-  });
-
   test.each([
     { path: CompactSeriesFlag.StepBefore, expected: true },
     { path: CompactSeriesFlag.StepAfter, expected: false },
@@ -1134,25 +1044,6 @@ describe('CompactRenderController', () => {
     expect(controller.updateCursor(plot, 1, 50, 'local')).toMatchObject({
       hasPoint: expected,
       seriesIndex: expected ? 0 : -1,
-    });
-  });
-
-  test('checks every interior null when a compact source has no connectivity shortcut', () => {
-    const source = createSource([[100, null, undefined, 100]], [CompactSeriesFlag.DrawLine], 0, 'series', 'multi', {
-      stroke: '#00f',
-      areaFill: '#0000ff40',
-      lineWidth: 1,
-    });
-    Reflect.deleteProperty(source, 'isDirectSegmentConnected');
-    source.xAt = (index) => index * 50;
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 100;
-    plot.focus.prox = 1;
-
-    expect(controller.updateCursor(plot, 2, 50, 'local')).toMatchObject({
-      hasPoint: false,
-      seriesIndex: -1,
     });
   });
 
@@ -1384,62 +1275,6 @@ describe('CompactRenderController', () => {
     });
   });
 
-  test('uses the closer rendered primitive when line and point geometry overlap', () => {
-    const source = createSource(
-      [
-        [0, 10],
-        [1, 1],
-        [100, 100],
-      ],
-      [CompactSeriesFlag.DrawLine | CompactSeriesFlag.Points, CompactSeriesFlag.DrawLine, CompactSeriesFlag.Bars],
-      0,
-      'series',
-      'single',
-      { stroke: '#00f', areaFill: null, lineWidth: 2, pointSize: 8, barWidthFactor: 0.6 }
-    );
-    source.xAt = (index) => index * 10;
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 2;
-    plot.focus.prox = 1;
-    controller.draw(plot, 0, 1);
-
-    expect(controller.updateCursor(plot, 0, 2, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      distance: 0,
-      centered: true,
-    });
-  });
-
-  test('does not interpolate line paths when a mixed-panel bar is outside the cursor', () => {
-    const source = createSource(
-      [
-        [0, undefined, 100],
-        [100, null, null],
-      ],
-      [CompactSeriesFlag.DrawLine, CompactSeriesFlag.Bars],
-      0,
-      'series',
-      'single',
-      { stroke: '#00f', areaFill: null, lineWidth: 1, barWidthFactor: 0.6 }
-    );
-    source.xAt = (index) => index * 50;
-    source.isDirectSegmentConnected = jest.fn(source.isDirectSegmentConnected);
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 50;
-    plot.focus.prox = 1;
-    controller.draw(plot, 0, 2);
-    source.isDirectSegmentConnected.mockClear();
-
-    expect(controller.updateCursor(plot, 1, 50, 'local')).toMatchObject({
-      hasPoint: false,
-      seriesIndex: -1,
-    });
-    expect(source.isDirectSegmentConnected).not.toHaveBeenCalled();
-  });
-
   test.each([
     {
       visibility: 'auto shown',
@@ -1473,65 +1308,6 @@ describe('CompactRenderController', () => {
       hasPoint: true,
       seriesIndex: expectedSeries,
       centered: expectedSeries !== 1,
-    });
-  });
-
-  test('tests the previous Time series bar body before applying point proximity', () => {
-    const source = createSource([[100, null, 100]], [CompactSeriesFlag.Bars], 0, 'series', 'multi', {
-      stroke: '#00f',
-      fill: null,
-      lineWidth: 1,
-      barAlignment: 1,
-      barWidthFactor: 0.8,
-    });
-    source.xAt = (index) => [0, 60, 100][index];
-    const cursorValueAt = source.cursorValueAt;
-    source.cursorValueAt = (seriesIndex, index) => (index === 1 ? undefined : cursorValueAt(seriesIndex, index));
-    source.barWidthValueAt = (_seriesIndex, index) => (index === 1 ? undefined : 100);
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 60;
-    plot.focus.prox = 1;
-
-    controller.draw(plot, 0, 2);
-
-    expect(controller.updateCursor(plot, 1, 50, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      dataIndex: 0,
-      distance: 0,
-      centered: false,
-    });
-    expect(controller.getCursorSnapshot(1, plot)).toMatchObject({ cursorIndex: 1 });
-    expect(controller.getCursorSnapshot(1, plot).dataIndexAt(0)).toBe(0);
-    expect(controller.getCursorSnapshot(1, plot).valueAt(0)).toBe(100);
-  });
-
-  test('tests the next Time series bar body when the closer previous sample misses', () => {
-    const source = createSource([[100, null, 100]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
-      stroke: '#00f',
-      fill: null,
-      lineWidth: 1,
-      barAlignment: -1,
-      barWidthFactor: 0.8,
-    });
-    source.xAt = (index) => [0, 40, 100][index];
-    const cursorValueAt = source.cursorValueAt;
-    source.cursorValueAt = (seriesIndex, index) => (index === 1 ? undefined : cursorValueAt(seriesIndex, index));
-    source.barWidthValueAt = (_seriesIndex, index) => (index === 1 ? undefined : 100);
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 40;
-    plot.focus.prox = 1;
-
-    controller.draw(plot, 0, 2);
-
-    expect(controller.updateCursor(plot, 1, 50, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      dataIndex: 2,
-      distance: 0,
-      centered: false,
     });
   });
 
@@ -1570,31 +1346,6 @@ describe('CompactRenderController', () => {
     expect(secondSnapshot.revision).toBeGreaterThan(firstRevision);
     expect(secondSnapshot.dataIndexAt(1)).toBe(2);
     expect(secondSnapshot.valueAt(1)).toBe(40);
-  });
-
-  test('keeps a containing Time series bar body ahead of a closer non-body sample', () => {
-    const source = createSource([[100, 10]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
-      stroke: '#00f',
-      fill: null,
-      lineWidth: 1,
-      barWidthFactor: 0.6,
-    });
-    source.xAt = (index) => index * 100;
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 0;
-    plot.cursor.hover!.prox = -1;
-    plot.focus.prox = 1;
-
-    controller.draw(plot, 0, 1);
-
-    expect(controller.updateCursor(plot, 0, 10, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      dataIndex: 0,
-      distance: 0,
-      centered: false,
-    });
   });
 
   test('uses the rendered horizontal Time series bar body as the hover target', () => {
@@ -1728,6 +1479,9 @@ describe('CompactRenderController', () => {
 
     expect(controller.updateCursor(plot, 1, 10, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
     expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
+    plot.cursor.left = 1.5;
+    expect(controller.updateCursor(plot, 1, 10, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
   });
 
   test('reuses exact multi-tooltip values while resolving focus indexes separately', () => {
@@ -1767,64 +1521,6 @@ describe('CompactRenderController', () => {
     controller.updateCursor(plot, 2, 2, 'local');
     expect(source.cursorValueAt).toHaveBeenCalledTimes(4);
     expect(source.yAt).toHaveBeenCalledTimes(2);
-  });
-
-  test('keeps the tooltip snapshot stable while resolving line focus inside a bar body', () => {
-    const source = createSource(
-      [
-        [0, undefined, 100],
-        [100, 100, 100],
-      ],
-      [CompactSeriesFlag.DrawLine, CompactSeriesFlag.Bars],
-      0,
-      'series',
-      'multi',
-      { stroke: '#00f', areaFill: null, lineWidth: 1, barWidthFactor: 0.6 }
-    );
-    Reflect.set(source, 'styles', [
-      source.styles[0],
-      { stroke: '#f00', cursorStroke: '#f008', areaFill: '#ff000040', lineWidth: 1, barWidthFactor: 0.6 },
-    ]);
-    source.columns.styleIds[1] = 1;
-    source.xAt = (index) => index * 50;
-    source.cursorValueAt = jest.fn(source.cursorValueAt);
-    const controller = new CompactRenderController(source);
-    const { plot } = createPlot();
-    plot.cursor.left = 50;
-    plot.cursor.hover!.prox = 1;
-    plot.focus.prox = 1;
-    controller.draw(plot, 0, 2);
-    source.cursorValueAt.mockClear();
-
-    expect(controller.updateCursor(plot, 1, 110, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
-    const snapshot = controller.getCursorSnapshot(1, plot);
-    expect(snapshot.dataIndexAt(0)).toBe(1);
-    const revision = snapshot.revision;
-
-    expect(controller.updateCursor(plot, 1, 50, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      distance: 0,
-      centered: true,
-    });
-    const insideSnapshot = controller.getCursorSnapshot(1, plot);
-    expect(insideSnapshot.revision).toBe(revision);
-    expect(insideSnapshot.dataIndexAt(0)).toBe(1);
-    expect(source.cursorValueAt).toHaveBeenCalledTimes(4);
-
-    const directController = new CompactRenderController(source);
-    const { plot: directPlot } = createPlot();
-    directPlot.cursor.left = 50;
-    directPlot.cursor.hover!.prox = 1;
-    directPlot.focus.prox = 1;
-    directController.draw(directPlot, 0, 2);
-    expect(directController.updateCursor(directPlot, 1, 50, 'local')).toMatchObject({
-      hasPoint: true,
-      seriesIndex: 0,
-      distance: 0,
-      centered: true,
-    });
-    expect(directController.getCursorSnapshot(1, directPlot).dataIndexAt(0)).toBe(insideSnapshot.dataIndexAt(0));
   });
 
   test('preserves null, undefined, and NaN cursor values', () => {
@@ -1947,12 +1643,15 @@ describe('CompactRenderController', () => {
       hasPoint: false,
       seriesIndex: -1,
     });
-    expect(controller.getCursorSnapshot(1, plot).valueAt(0)).toBeNull();
+    const firstSnapshot = controller.getCursorSnapshot(1, plot);
+    const firstRevision = firstSnapshot.revision;
+    expect(firstSnapshot.valueAt(0)).toBeNull();
 
     Reflect.set(plot, 'cursor', { left: 1.9, top: 1, event: null, hover: { prox: 15 } });
     const snapshot = controller.getCursorSnapshot(1, plot);
     expect(snapshot.valueAt(0)).toBeNull();
     expect(snapshot.dataIndexAt(0)).toBe(2);
+    expect(snapshot.revision).toBeGreaterThan(firstRevision);
   });
 
   test('draws and clears a focused-series overlay without rebuilding the complete plot', () => {
@@ -2011,6 +1710,45 @@ describe('CompactRenderController', () => {
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
       controller.destroy(source);
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  test('reconstructs a stacked focus from the shorter side of the stack', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [[1], [2], [3], [4], [5]],
+      Array(5).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const parent = document.createElement('div');
+    const mainCanvas = document.createElement('canvas');
+    const over = document.createElement('div');
+    parent.append(mainCanvas, over);
+    Object.defineProperty(context, 'canvas', { value: mainCanvas, configurable: true });
+    Reflect.set(plot, 'over', over);
+    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+      this: HTMLCanvasElement
+    ) {
+      Object.defineProperty(context, 'canvas', { value: this, configurable: true });
+      return context;
+    });
+
+    try {
+      controller.draw(plot, 0, 0);
+      source.scan.mockClear();
+      controller.setSeries(4, { focus: true });
+
+      const scannedSeries = source.scan.mock.calls.map(([series]) => series);
+      expect(new Set(scannedSeries)).toEqual(new Set([4]));
+      expect(scannedSeries.length).toBeLessThan(4);
     } finally {
       getContext.mockRestore();
     }

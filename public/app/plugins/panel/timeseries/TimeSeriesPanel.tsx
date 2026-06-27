@@ -51,6 +51,7 @@ export function getRenderableCompactSeries(
   hasFullFormatRequest = false
 ): CompactTimeSeriesData | undefined {
   return compactSeries &&
+    compactSeries.series.length > 0 &&
     !hasFullFormatRequest &&
     isCompactTimeSeriesPanelConfigurationSupported({
       fieldConfig,

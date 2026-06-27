@@ -13,6 +13,7 @@ import {
   DataQueryResponse,
   DataSourceInstanceSettings,
   dateTime,
+  FieldType,
   LoadingState,
   ScopeSpecFilter,
   TimeRange,
@@ -564,7 +565,7 @@ describe('PrometheusDatasource', () => {
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(browserFetchSpy).toHaveBeenCalledTimes(2);
-        expect(responses).toHaveLength(2);
+        expect(responses).toHaveLength(1);
         const finalResponse = responses[responses.length - 1];
         expect(finalResponse.state).toBe(LoadingState.Done);
         expect(finalResponse.errors?.map((error) => error.message)).toEqual([
@@ -577,7 +578,7 @@ describe('PrometheusDatasource', () => {
       }
     });
 
-    it('publishes each cumulative target revision for render-session scheduling', async () => {
+    it('coalesces cumulative target revisions before render-session scheduling', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
       const streams = new Map([
@@ -588,6 +589,7 @@ describe('PrometheusDatasource', () => {
         .spyOn(prometheusMultibatchStream, 'queryPrometheusMultiBatch')
         .mockImplementation((_datasourceUid, _request, target) => streams.get(target.refId!)!);
       const responses: DataQueryResponse[] = [];
+      const waitForCombinedResponse = () => new Promise((resolve) => setTimeout(resolve, 25));
 
       try {
         const completion = new Promise<void>((resolve, reject) => {
@@ -616,10 +618,10 @@ describe('PrometheusDatasource', () => {
           data: [],
           state: LoadingState.Streaming,
         });
-        expect(responses).toHaveLength(2);
+        await waitForCombinedResponse();
+        expect(responses).toHaveLength(1);
         expect(responses[0].state).toBe(LoadingState.Streaming);
-        expect(responses[0].compactSeries?.series).toHaveLength(1);
-        expect(responses[1].compactSeries?.series).toHaveLength(2);
+        expect(responses[0].compactSeries?.series).toHaveLength(2);
 
         streams.get('A')!.next({
           compactSeries: compactResponseFixture('A', 24),
@@ -631,8 +633,36 @@ describe('PrometheusDatasource', () => {
           data: [],
           state: LoadingState.Streaming,
         });
-        expect(responses).toHaveLength(4);
-        expect(responses[3].state).toBe(LoadingState.Streaming);
+        await waitForCombinedResponse();
+        expect(responses).toHaveLength(2);
+        expect(responses[1].state).toBe(LoadingState.Streaming);
+
+        streams.get('A')!.next({
+          data: [
+            {
+              refId: 'A',
+              length: 1,
+              fields: [
+                { name: 'Time', type: FieldType.time, config: {}, values: [0] },
+                { name: 'Value', type: FieldType.number, config: {}, values: [7] },
+              ],
+            },
+          ],
+          state: LoadingState.Streaming,
+        });
+        await waitForCombinedResponse();
+        expect(responses[2].compactSeries).toBeUndefined();
+        expect(responses[2].data.map((frame) => frame.refId)).toEqual(['A', 'B']);
+        expect(responses[2].data[1].fields[0].config.interval).toBe(1000);
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 24),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        await waitForCombinedResponse();
+        expect(responses[3].compactSeries?.series).toHaveLength(2);
+        expect(responses[3].data).toHaveLength(0);
 
         streams.get('A')!.next({
           compactSeries: compactResponseFixture('A', 24),
@@ -648,9 +678,9 @@ describe('PrometheusDatasource', () => {
         streams.get('B')!.complete();
         await completion;
 
-        expect(responses).toHaveLength(6);
-        expect(responses[5].state).toBe(LoadingState.Done);
-        expect(responses[5].compactSeries?.series).toHaveLength(2);
+        expect(responses).toHaveLength(5);
+        expect(responses[4].state).toBe(LoadingState.Done);
+        expect(responses[4].compactSeries?.series).toHaveLength(2);
       } finally {
         multiBatchSpy.mockRestore();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;

@@ -5,11 +5,16 @@ import { getRenderableCompactSeries } from './TimeSeriesPanel';
 import { Options } from './panelcfg.gen';
 
 describe('getRenderableCompactSeries', () => {
-  const compactSeries = {} as CompactTimeSeriesData;
+  const compactSeries = { series: [{}] } as unknown as CompactTimeSeriesData;
+  const emptyCompactSeries = { series: [] } as unknown as CompactTimeSeriesData;
   const options = { legend: { calcs: [] } } as unknown as Options;
 
   it('keeps compact data for supported time series configuration', () => {
     expect(getRenderableCompactSeries(compactSeries, { defaults: {}, overrides: [] }, options)).toBe(compactSeries);
+  });
+
+  it('routes empty compact responses through the standard no-data state', () => {
+    expect(getRenderableCompactSeries(emptyCompactSeries, { defaults: {}, overrides: [] }, options)).toBeUndefined();
   });
 
   it('keeps compact data for supported TimeSeries bars', () => {
