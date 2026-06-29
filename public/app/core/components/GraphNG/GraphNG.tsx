@@ -19,6 +19,7 @@ import { DashboardCursorSync, LegendPlacement, VizLegendOptions } from '@grafana
 import { Themeable2, VizLayout, VizLayoutLegendProps } from '@grafana/ui';
 import {
   AxisProps,
+  getCompactRenderController,
   mayDrawCompactSourceProgressively,
   pluginLog,
   Renderers,
@@ -216,6 +217,14 @@ function emptyGraphState(): GraphNGState {
     stagedCompactHeight: undefined,
     holdPreviousCompactFrame: false,
   };
+}
+
+function compactLayoutShapeKey(layoutKey: string | undefined, sessionKey: string | undefined): string | undefined {
+  if (!layoutKey || !sessionKey) {
+    return layoutKey;
+  }
+  const prefix = `${sessionKey}:`;
+  return layoutKey.startsWith(prefix) ? layoutKey.slice(prefix.length) : layoutKey;
 }
 
 const defaultMatchers = {
@@ -775,13 +784,25 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
     }
 
     const layoutChanged = compactLayoutKey !== this.state.presentedCompactLayoutKey;
-    const canReusePresentedGeometry = layoutChanged && this.canReusePresentedCompactGeometry(nextState, previousPlan);
+    const layoutShapeChanged =
+      compactLayoutShapeKey(compactLayoutKey, compactSessionKey) !==
+      compactLayoutShapeKey(this.state.presentedCompactLayoutKey, this.state.presentedCompactSessionKey);
+    const canReusePresentedGeometry =
+      layoutChanged &&
+      this.canReusePresentedCompactContainer() &&
+      (!layoutShapeChanged || this.canReusePresentedCompactGeometry(nextState, previousPlan));
     const sourceChanged = compactPlan.source !== previousPlan.source;
+    const configChanged = config !== previousConfig;
+    const currentDrawInFlight =
+      this.state.compactPlan != null &&
+      getCompactRenderController(this.state.compactPlan.source).isProgressiveDrawInFlight();
+    const replacementDrawPending = this.state.holdPreviousCompactFrame || currentDrawInFlight;
+    const mayDrawProgressively = mayDrawCompactSourceProgressively(compactPlan.source);
+    const replacementChanged = sourceChanged || configChanged;
     const requiresCompletedDraw =
-      (sourceChanged && mayDrawCompactSourceProgressively(compactPlan.source)) ||
-      compactSessionKey !== this.state.compactSessionKey ||
-      (layoutChanged && !canReusePresentedGeometry) ||
-      config !== this.state.config;
+      replacementDrawPending ||
+      (replacementChanged && mayDrawProgressively) ||
+      (layoutChanged && !canReusePresentedGeometry);
 
     if (requiresCompletedDraw) {
       const reusePresentedDimensions =
@@ -850,11 +871,7 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
       return false;
     }
 
-    if (
-      this.state.presentedCompactContainerWidth !== this.props.width ||
-      this.state.presentedCompactContainerHeight !== this.props.height ||
-      this.state.presentedCompactPlacement !== this.getCompactLegendPlacement(this.props)
-    ) {
+    if (!this.canReusePresentedCompactContainer()) {
       return false;
     }
 
@@ -874,6 +891,16 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
 
     const legendHeight = this.props.height - this.state.presentedCompactHeight;
     return legendHeight >= this.props.height * 0.35 - 1;
+  }
+
+  private canReusePresentedCompactContainer(): boolean {
+    return (
+      this.state.presentedCompactWidth != null &&
+      this.state.presentedCompactHeight != null &&
+      this.state.presentedCompactContainerWidth === this.props.width &&
+      this.state.presentedCompactContainerHeight === this.props.height &&
+      this.state.presentedCompactPlacement === this.getCompactLegendPlacement(this.props)
+    );
   }
 
   private getCompactLegendPlacement(props: GraphNGProps) {
@@ -932,8 +959,6 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
     if (
       !completedFrame ||
       completedFrame.config !== readyConfig ||
-      completedFrame.sessionKey !== compactSessionKey ||
-      completedFrame.layoutKey !== compactLayoutKey ||
       completedFrame.plotWidth !== width ||
       completedFrame.plotHeight !== height ||
       completedFrame.containerWidth !== this.props.width ||
@@ -963,6 +988,8 @@ export class GraphNGRenderer extends Component<GraphNGProps, GraphNGState> {
       !compactPlan ||
       !config ||
       compactPlan.source !== source ||
+      completedFrame.sessionKey !== compactSessionKey ||
+      completedFrame.layoutKey !== compactLayoutKey ||
       compactPlan.data !== this.props.compactSeries ||
       config !== readyConfig ||
       compactSessionKey !== this.getCompactSessionKey(this.props) ||

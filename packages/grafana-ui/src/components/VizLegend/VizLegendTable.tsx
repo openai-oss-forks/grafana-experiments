@@ -12,7 +12,8 @@ import { VizLegendItem, VizLegendItemSource, VizLegendTableProps } from './types
 
 const nameSortKey = 'Name';
 const naturalCompare = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
-const VIRTUALIZE_THRESHOLD = 200;
+const VIRTUALIZE_THRESHOLD = 50;
+const CUSTOM_RENDERER_VIRTUALIZE_THRESHOLD = 200;
 const VIRTUAL_ROW_HEIGHT = 28;
 const VIRTUAL_OVERSCAN = 12;
 const TABLE_NAME_COLUMN_MIN_WIDTH = 160;
@@ -224,11 +225,11 @@ function IndexedVizLegendTable<T>({
   const getDisplayValues = (sourceIndex: number, item: VizLegendItem<T>) =>
     itemSource.getDisplayValues?.(sourceIndex) ?? getItemDisplayValues?.(item) ?? item.getDisplayValues?.() ?? [];
 
-  if (itemRenderer && itemSource.length > VIRTUALIZE_THRESHOLD) {
+  if (itemRenderer && itemSource.length > CUSTOM_RENDERER_VIRTUALIZE_THRESHOLD) {
     throw new Error('Virtualized indexed legends do not support custom item renderers');
   }
 
-  if (itemSource.length > VIRTUALIZE_THRESHOLD) {
+  if (!itemRenderer && itemSource.length > VIRTUALIZE_THRESHOLD) {
     return (
       <VirtualizedIndexedVizLegendTable
         className={className}

@@ -236,8 +236,13 @@ const enum ScanOperation {
 }
 
 const controllers = new WeakMap<CompactRenderSource, CompactRenderController>();
-const PROGRESSIVE_SAMPLE_THRESHOLD = 1_000_000;
-const PROGRESSIVE_POINT_BUDGET = 32_000;
+const PROGRESSIVE_SAMPLE_THRESHOLD = 32_000;
+const LONG_SERIES_PROGRESSIVE_SAMPLE_THRESHOLD = 1_000_000;
+const PROGRESSIVE_POINT_BUDGET = 8_000;
+const PROGRESSIVE_TASKS_PER_TURN = 4;
+const PROGRESSIVE_TURN_BUDGET_MS = 8;
+const PROGRESSIVE_INPUT_YIELD_DELAY_MS = 8;
+const MAX_CONSECUTIVE_INPUT_YIELDS = 4;
 const MAX_GROUPED_BAR_SPLITS = 2_048;
 const CURSOR_STACK_CACHE_SIZE = 4;
 const MAX_STACK_FOCUS_CHECKPOINTS = 32;
@@ -250,6 +255,83 @@ const BAR_VALUE_FIT_RATIO = 0.65;
 const retainPixel = (value: number) => value;
 const interpolate = (from: number, to: number, fraction: number) => from + (to - from) * fraction;
 const hoverStageProbe = getCompactHoverStageProbe();
+
+type ProgressiveDrawTask = () => boolean;
+
+const progressiveDrawQueue = new Set<ProgressiveDrawTask>();
+let progressiveDrawTimer: number | undefined;
+let consecutiveInputYields = 0;
+
+function scheduleProgressiveDraw(task: ProgressiveDrawTask): void {
+  progressiveDrawQueue.add(task);
+  scheduleProgressiveDrawTurn();
+}
+
+function cancelScheduledProgressiveDraw(task: ProgressiveDrawTask): void {
+  progressiveDrawQueue.delete(task);
+  if (progressiveDrawQueue.size === 0 && progressiveDrawTimer != null) {
+    window.clearTimeout(progressiveDrawTimer);
+    progressiveDrawTimer = undefined;
+    consecutiveInputYields = 0;
+  }
+}
+
+function scheduleProgressiveDrawTurn(delay = 0): void {
+  if (progressiveDrawTimer != null || progressiveDrawQueue.size === 0) {
+    return;
+  }
+  progressiveDrawTimer = window.setTimeout(runProgressiveDrawTurn, delay);
+}
+
+function runProgressiveDrawTurn(): void {
+  progressiveDrawTimer = undefined;
+  const deadline = performance.now() + PROGRESSIVE_TURN_BUDGET_MS;
+  let completedTasks = 0;
+  let yieldedForInput = false;
+  try {
+    while (progressiveDrawQueue.size > 0 && completedTasks < PROGRESSIVE_TASKS_PER_TURN) {
+      const task = progressiveDrawQueue.values().next().value;
+      if (!task) {
+        break;
+      }
+      if (hasPendingInput() && consecutiveInputYields < MAX_CONSECUTIVE_INPUT_YIELDS) {
+        consecutiveInputYields++;
+        yieldedForInput = true;
+        break;
+      }
+      consecutiveInputYields = 0;
+      progressiveDrawQueue.delete(task);
+      if (task()) {
+        progressiveDrawQueue.add(task);
+      }
+      completedTasks++;
+      if (performance.now() >= deadline) {
+        break;
+      }
+    }
+  } finally {
+    if (progressiveDrawQueue.size === 0) {
+      consecutiveInputYields = 0;
+    }
+    scheduleProgressiveDrawTurn(yieldedForInput ? PROGRESSIVE_INPUT_YIELD_DELAY_MS : 0);
+  }
+}
+
+function hasPendingInput(): boolean {
+  const scheduling: unknown = Reflect.get(window.navigator, 'scheduling');
+  if (scheduling == null || typeof scheduling !== 'object') {
+    return false;
+  }
+  const isInputPending: unknown = Reflect.get(scheduling, 'isInputPending');
+  if (typeof isInputPending !== 'function') {
+    return false;
+  }
+  try {
+    return isInputPending.call(scheduling, { includeContinuous: true }) === true;
+  } catch {
+    return false;
+  }
+}
 
 function normalizeBarCadence(value: number): number {
   const cadence = Math.abs(value);
@@ -356,7 +438,17 @@ export function mayDrawCompactSourceProgressively(source: CompactRenderSource): 
       return false;
     }
   }
-  return visibleSeriesCount * source.pointCount >= PROGRESSIVE_SAMPLE_THRESHOLD;
+  const shortRangePointCount = Math.min(source.pointCount, PROGRESSIVE_POINT_BUDGET);
+  return (
+    visibleSeriesCount * shortRangePointCount >= progressiveSampleThreshold(shortRangePointCount) ||
+    visibleSeriesCount * source.pointCount >= progressiveSampleThreshold(source.pointCount)
+  );
+}
+
+function progressiveSampleThreshold(pointCount: number): number {
+  return pointCount <= PROGRESSIVE_POINT_BUDGET
+    ? PROGRESSIVE_SAMPLE_THRESHOLD
+    : LONG_SERIES_PROGRESSIVE_SAMPLE_THRESHOLD;
 }
 
 function canDrawCompactSeriesProgressively(
@@ -448,7 +540,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private stackFrom = 0;
   private stackPointCount = 0;
   private progressiveGeneration = 0;
-  private progressiveTimer: number | undefined;
+  private progressiveTask: ProgressiveDrawTask | undefined;
   private resolveProgressiveDraw: ((completed: boolean) => void) | undefined;
 
   private operation = ScanOperation.None;
@@ -979,7 +1071,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         return false;
       }
     }
-    return visibleSeriesCount * (to - from + 1) >= PROGRESSIVE_SAMPLE_THRESHOLD;
+    const pointCount = to - from + 1;
+    return visibleSeriesCount * pointCount >= progressiveSampleThreshold(pointCount);
   }
 
   private drawProgressively(
@@ -1000,52 +1093,58 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     return new Promise<boolean>((resolve) => {
       this.resolveProgressiveDraw = resolve;
       const drawChunk = () => {
-        if (generation !== this.progressiveGeneration) {
-          return;
-        }
-        if (preparationStage === 0) {
-          if (prepareStack()) {
-            preparationStage = 1;
+        try {
+          if (generation !== this.progressiveGeneration) {
+            return false;
           }
-          this.progressiveTimer = window.setTimeout(drawChunk, 0);
-          return;
-        }
-        if (preparationStage === 1) {
-          if (prepareBarWidths()) {
-            preparationStage = 2;
+          if (preparationStage === 0) {
+            if (prepareStack()) {
+              preparationStage = 1;
+            }
+            return true;
           }
-          this.progressiveTimer = window.setTimeout(drawChunk, 0);
-          return;
-        }
-        if (preparationStage === 2) {
-          if (prepareBarValueLabels()) {
-            this.prepareFocusStackCheckpoints();
-            preparationStage = 3;
+          if (preparationStage === 1) {
+            if (prepareBarWidths()) {
+              preparationStage = 2;
+            }
+            return true;
           }
-          this.progressiveTimer = window.setTimeout(drawChunk, 0);
-          return;
-        }
-        const firstSeries = nextSeries;
-        nextSeries = Math.min(this.source.seriesCount, firstSeries + seriesPerChunk);
-        this.drawSeriesRange(plot, firstSeries, nextSeries, scanFrom, scanTo, visibleFrom, visibleTo, plot.ctx, true);
+          if (preparationStage === 2) {
+            if (prepareBarValueLabels()) {
+              this.prepareFocusStackCheckpoints();
+              preparationStage = 3;
+            }
+            return true;
+          }
+          const firstSeries = nextSeries;
+          nextSeries = Math.min(this.source.seriesCount, firstSeries + seriesPerChunk);
+          this.drawSeriesRange(plot, firstSeries, nextSeries, scanFrom, scanTo, visibleFrom, visibleTo, plot.ctx, true);
 
-        if (nextSeries >= this.source.seriesCount) {
-          this.progressiveTimer = undefined;
+          if (nextSeries < this.source.seriesCount) {
+            return true;
+          }
+          this.progressiveTask = undefined;
           this.resolveProgressiveDraw = undefined;
           resolve(true);
-          return;
+          return false;
+        } catch (error) {
+          this.progressiveTask = undefined;
+          this.resolveProgressiveDraw = undefined;
+          this.invalidateFocusFrame();
+          resolve(false);
+          throw error;
         }
-        this.progressiveTimer = window.setTimeout(drawChunk, 0);
       };
-      drawChunk();
+      this.progressiveTask = drawChunk;
+      scheduleProgressiveDraw(drawChunk);
     });
   }
 
   private cancelProgressiveDraw(): void {
     this.progressiveGeneration++;
-    if (this.progressiveTimer != null) {
-      window.clearTimeout(this.progressiveTimer);
-      this.progressiveTimer = undefined;
+    if (this.progressiveTask) {
+      cancelScheduledProgressiveDraw(this.progressiveTask);
+      this.progressiveTask = undefined;
     }
     this.resolveProgressiveDraw?.(false);
     this.resolveProgressiveDraw = undefined;

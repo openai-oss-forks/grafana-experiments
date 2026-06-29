@@ -351,28 +351,28 @@ async function toggleHoverHighlight(page) {
 async function verifyHover(page, expectFocusOverlay, panelIndex = 0) {
   await page.mouse.move(1, 1);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  const panel = page
-    .locator('[data-testid="data-testid panel content"]')
-    .filter({ has: page.locator('.uplot') })
-    .nth(panelIndex);
+  const chartPanels = page.locator('[data-testid="data-testid panel content"]').filter({ has: page.locator('.uplot') });
+  const panel = chartPanels.nth(panelIndex);
   await panel.scrollIntoViewIfNeeded();
   const bounds = await panel.locator('.u-over').boundingBox();
   if (!bounds) {
     throw new Error('Hover verification found no plot bounds');
   }
-  const tooltip = page.locator('[data-testid="data-testid viz-tooltip-wrapper"]').first();
+  const tooltip = page.locator('[data-testid="data-testid viz-tooltip-wrapper"]:visible').first();
+  const paintedPositions = expectFocusOverlay ? await findSeriesHoverPositions(panel) : [];
   const positions = [
-    [0.5, 0.5],
-    [0.25, 0.25],
-    [0.5, 0.25],
-    [0.75, 0.5],
-    [0.75, 0.75],
+    { x: bounds.x + bounds.width * 0.5, y: bounds.y + bounds.height * 0.5 },
+    { x: bounds.x + bounds.width * 0.25, y: bounds.y + bounds.height * 0.25 },
+    { x: bounds.x + bounds.width * 0.5, y: bounds.y + bounds.height * 0.25 },
+    { x: bounds.x + bounds.width * 0.75, y: bounds.y + bounds.height * 0.5 },
+    { x: bounds.x + bounds.width * 0.75, y: bounds.y + bounds.height * 0.75 },
+    ...paintedPositions,
   ];
   const startedAt = Date.now();
   let overlayCount = 0;
   let tooltipVisible = false;
-  for (const [x, y] of positions) {
-    await page.mouse.move(bounds.x + bounds.width * x, bounds.y + bounds.height * y);
+  for (const position of positions) {
+    await page.mouse.move(position.x, position.y);
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     tooltipVisible = await tooltip.isVisible().catch(() => false);
     overlayCount = await panel.locator('.u-compact-focus-overlay').count();
@@ -442,6 +442,85 @@ async function verifyHover(page, expectFocusOverlay, panelIndex = 0) {
     focusColorCount,
     focusGeometryPixels,
   };
+}
+
+async function findSeriesHoverPositions(panel) {
+  return panel
+    .locator('.uplot canvas:not(.u-compact-focus-overlay)')
+    .first()
+    .evaluate((canvas) => {
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      const panelRoot = canvas.closest('section');
+      if (!context || !panelRoot || canvas.width <= 0 || canvas.height <= 0) {
+        return [];
+      }
+      const seriesColors = [];
+      for (const icon of panelRoot.querySelectorAll('[data-testid="series-icon"]')) {
+        const style = getComputedStyle(icon);
+        for (const match of `${style.backgroundColor} ${style.backgroundImage}`.matchAll(/rgba?\(([^)]+)\)/g)) {
+          const channels = match[1].split(/[,\s/]+/).map(Number);
+          if (channels.length >= 3 && channels.slice(0, 3).every(Number.isFinite)) {
+            seriesColors.push(channels.slice(0, 3));
+          }
+        }
+      }
+      if (seriesColors.length === 0) {
+        return [];
+      }
+
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      const columns = [];
+      const yFrom = Math.floor(canvas.height * 0.05);
+      const yTo = Math.floor(canvas.height * 0.9);
+      const isSeriesPixel = (offset) => {
+        if (pixels[offset + 3] <= 8) {
+          return false;
+        }
+        return seriesColors.some(
+          (color) =>
+            Math.abs(pixels[offset] - color[0]) <= 18 &&
+            Math.abs(pixels[offset + 1] - color[1]) <= 18 &&
+            Math.abs(pixels[offset + 2] - color[2]) <= 18
+        );
+      };
+      for (let x = 0; x < canvas.width; x += 2) {
+        let runFrom = -1;
+        let longestFrom = -1;
+        let longestTo = -1;
+        for (let y = yFrom; y < yTo; y += 2) {
+          const matched = isSeriesPixel((y * canvas.width + x) * 4);
+          if (matched && runFrom < 0) {
+            runFrom = y;
+          }
+          if ((!matched || y + 2 >= yTo) && runFrom >= 0) {
+            const runTo = matched ? y : y - 2;
+            if (runTo - runFrom > longestTo - longestFrom) {
+              longestFrom = runFrom;
+              longestTo = runTo;
+            }
+            runFrom = -1;
+          }
+        }
+        if (longestFrom >= 0) {
+          columns.push({ x, y: (longestFrom + longestTo) / 2, length: longestTo - longestFrom });
+        }
+      }
+
+      const bounds = canvas.getBoundingClientRect();
+      const selected = [];
+      for (const column of columns.sort((left, right) => right.length - left.length)) {
+        if (selected.every((candidate) => Math.abs(candidate.x - column.x) >= canvas.width * 0.02)) {
+          selected.push(column);
+        }
+        if (selected.length === 12) {
+          break;
+        }
+      }
+      return selected.map(({ x, y }) => ({
+        x: bounds.left + (x / canvas.width) * bounds.width,
+        y: bounds.top + (y / canvas.height) * bounds.height,
+      }));
+    });
 }
 
 async function waitForExpectedRequest(
@@ -537,7 +616,12 @@ async function assertVisualization(page, plugin, panelIndex = 0) {
       };
       const malformed = (text) => /Invalid date|\bNaN\b|\bundefined\b/i.test(text);
       const panel = Array.from(document.querySelectorAll('[data-testid="data-testid panel content"]'))[panelIndex];
-      if (!panel || !visible(panel) || malformed(panel.textContent ?? '')) {
+      if (
+        !panel ||
+        !visible(panel) ||
+        malformed(panel.textContent ?? '') ||
+        panel.querySelector('[aria-busy="true"]')
+      ) {
         return false;
       }
       if (plugin === 'table') {
@@ -573,14 +657,10 @@ async function assertVisualization(page, plugin, panelIndex = 0) {
           continue;
         }
         let canvasOpaque = 0;
-        for (let row = 0; row < 10; row++) {
-          const y = Math.min(canvas.height - 1, Math.floor(((row + 0.5) * canvas.height) / 10));
-          for (let column = 0; column < 20; column++) {
-            const x = Math.min(canvas.width - 1, Math.floor(((column + 0.5) * canvas.width) / 20));
-            const pixel = context.getImageData(x, y, 1, 1).data;
-            if (pixel[3] > 0) {
-              canvasOpaque++;
-            }
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let alpha = 3; alpha < pixels.length && canvasOpaque < 16; alpha += 16) {
+          if (pixels[alpha] > 0) {
+            canvasOpaque++;
           }
         }
         if (canvasOpaque > 0) {

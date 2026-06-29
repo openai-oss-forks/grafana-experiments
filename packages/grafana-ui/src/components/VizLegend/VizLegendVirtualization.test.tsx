@@ -139,6 +139,26 @@ describe('high-cardinality visualization UI', () => {
     expect(screen.getAllByRole('row')[1]).toHaveAttribute('aria-rowindex', '2');
   });
 
+  test('keeps custom indexed table rows materialized below their existing limit', () => {
+    const source = createItemSource(100);
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        itemRenderer={(item, index) => (
+          <tr key={index}>
+            <td>{item.label}</td>
+          </tr>
+        )}
+      />
+    );
+
+    expect(screen.getByText('series-99')).toBeInTheDocument();
+    expect(source.getItem).toHaveBeenCalledTimes(100);
+  });
+
   test('keeps virtualized names and Min/Max values aligned while scrolling', async () => {
     const source = createItemSource(1_000);
     source.getDisplayValues = (index) => [

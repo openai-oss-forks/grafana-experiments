@@ -6,7 +6,12 @@ import {
   FieldConfigOptionsRegistry,
 } from '@grafana/data';
 import { GraphDrawStyle } from '@grafana/schema';
-import { CompactSeriesFlag, getCompactRenderController, UPlotConfigBuilder } from '@grafana/ui/internal';
+import {
+  CompactSeriesFlag,
+  getCompactRenderController,
+  mayDrawCompactSourceProgressively,
+  UPlotConfigBuilder,
+} from '@grafana/ui/internal';
 
 import { GraphNGProps, GraphNGRenderer, GraphNGState } from './GraphNG';
 import { CompactFieldConfigOptions } from './compactTypes';
@@ -99,11 +104,12 @@ describe('GraphNGRenderer compact state ownership', () => {
   });
 
   test('retains the completed compact frame until a replacement request finishes drawing', () => {
-    const first = compactData();
-    const second = compactData();
+    const first = compactData(100, 400);
+    const second = compactData(100, 400);
     const initialProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
     const renderer = createRenderer(initialProps);
     const firstPlan = renderer.state.compactPlan!;
+    expect(mayDrawCompactSourceProgressively(firstPlan.source)).toBe(true);
     completeCurrentFrame(renderer, 100, 100);
 
     const nextProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
@@ -111,16 +117,142 @@ describe('GraphNGRenderer compact state ownership', () => {
     const replacementSource = renderer.state.compactPlan!.source;
 
     expect(renderer.state.compactPlan?.data).toBe(second);
-    expect(renderCompactPlot(renderer, 100, 100).props.data).toBe(firstPlan.source);
+    expect(renderCompactPlot(renderer, 100, 100).props.data).toBe(replacementSource);
     expect(renderer.render()?.props).toMatchObject({ 'aria-busy': true, 'aria-hidden': false });
 
-    expect(renderer['onCompactFrameReady'](replacementSource, renderer.state.config!, 100, 100)).toBe(false);
-    expect(renderCompactPlot(renderer, 100, 100).props.data).toBe(firstPlan.source);
-
-    renderer['onStagedCompactLayout'](renderer.state.compactLayoutKey!, 90, 80);
-    expect(completeCurrentFrame(renderer, 90, 80)).toBe(true);
-    expect(renderCompactPlot(renderer, 90, 80).props.data).toBe(replacementSource);
+    expect(renderer['onCompactFrameReady'](replacementSource, renderer.state.config!, 100, 100)).toBe(true);
     expect(renderer.render()?.props['aria-busy']).toBe(false);
+  });
+
+  test('accepts a superseded request frame while its replacement is staged', () => {
+    const first = compactData(100, 400);
+    const second = compactData(100, 400);
+    const initialProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
+    const renderer = createRenderer(initialProps);
+    const firstPlan = renderer.state.compactPlan!;
+    const firstConfig = renderer.state.config!;
+    renderCompactPlot(renderer, 100, 80);
+
+    const nextProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
+    updateRenderer(renderer, initialProps, nextProps);
+    renderCompactPlot(renderer, 100, 80);
+
+    expect(renderer['onCompactFrameReady'](firstPlan.source, firstConfig, 100, 80)).toBe(true);
+    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': true, 'aria-hidden': false });
+
+    renderer['onStagedCompactLayout'](renderer.state.compactLayoutKey!, 100, 80);
+    expect(completeCurrentFrame(renderer, 100, 80)).toBe(true);
+    expect(renderer.render()?.props['aria-busy']).toBe(false);
+  });
+
+  test('publishes a synchronous replacement request without staging a frame', () => {
+    const first = compactData();
+    const second = compactData();
+    const initialProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
+    const renderer = createRenderer(initialProps);
+    completeCurrentFrame(renderer, 100, 80);
+
+    const nextProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
+    updateRenderer(renderer, initialProps, nextProps);
+
+    expect(renderCompactPlot(renderer, 100, 80).props.data).toBe(renderer.state.compactPlan!.source);
+    expect(renderer.render()?.props['aria-busy']).toBe(false);
+  });
+
+  test('keeps unchanged compact data interactive when only the request key advances', () => {
+    const data = compactData(100, 400);
+    const firstProps = { ...graphProps(data, 100, 100), compactRequestKey: 'request-1' };
+    const renderer = createRenderer(firstProps);
+    const source = renderer.state.compactPlan!.source;
+    completeCurrentFrame(renderer, 100, 80);
+
+    const loadingProps = { ...firstProps, compactRequestKey: 'request-2' };
+    updateRenderer(renderer, firstProps, loadingProps);
+
+    expect(renderer.state.compactPlan?.source).toBe(source);
+    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
+    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': false, 'aria-hidden': false });
+  });
+
+  test('retains a completed frame across deferred replacements ending in a synchronous source', () => {
+    const first = compactData();
+    const mountedProgressive = compactData(100, 400);
+    const deferredProgressive = compactData(100, 400);
+    const synchronous = compactData();
+    const firstProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
+    const renderer = createRenderer(firstProps);
+    completeCurrentFrame(renderer, 100, 80);
+
+    const mountedProps = { ...graphProps(mountedProgressive, 100, 100), compactRequestKey: 'request-2' };
+    updateRenderer(renderer, firstProps, mountedProps);
+    const mountedPlan = renderer.state.compactPlan!;
+    const inFlight = jest
+      .spyOn(getCompactRenderController(mountedPlan.source), 'isProgressiveDrawInFlight')
+      .mockReturnValue(true);
+
+    const deferredProps = { ...graphProps(deferredProgressive, 100, 100), compactRequestKey: 'request-3' };
+    try {
+      updateRenderer(renderer, mountedProps, deferredProps);
+    } finally {
+      inFlight.mockRestore();
+    }
+
+    const synchronousProps = { ...graphProps(synchronous, 100, 100), compactRequestKey: 'request-4' };
+    updateRenderer(renderer, deferredProps, synchronousProps);
+
+    expect(renderer.state.compactPlan?.data).toBe(synchronous);
+    expect(renderer.state.presentedCompactPlan?.data).toBe(first);
+    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': true, 'aria-hidden': false });
+  });
+
+  test('remeasures layout when a replacement request also resizes the container', () => {
+    const first = compactData(100, 400);
+    const second = compactData(100, 400);
+    const firstProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
+    const renderer = createRenderer(firstProps);
+    completeCurrentFrame(renderer, 100, 80);
+
+    const resizedProps = { ...graphProps(second, 120, 100), compactRequestKey: 'request-2' };
+    updateRenderer(renderer, firstProps, resizedProps);
+
+    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+    expect(renderer.state.stagedCompactLayoutKey).toBeUndefined();
+    expect(renderer.state.stagedCompactWidth).toBeUndefined();
+    expect(renderer.state.stagedCompactHeight).toBeUndefined();
+  });
+
+  test('publishes a synchronous configuration replacement without staging a frame', () => {
+    const first = compactData();
+    const second = compactData();
+    const initialProps = graphProps(first, 100, 100);
+    const renderer = createRenderer(initialProps);
+    const initialConfig = renderer.state.config;
+    completeCurrentFrame(renderer, 100, 80);
+
+    const nextProps = { ...graphProps(second, 100, 100), timeZone: 'browser' };
+    updateRenderer(renderer, initialProps, nextProps);
+
+    expect(renderer.state.config).not.toBe(initialConfig);
+    expect(renderCompactPlot(renderer, 100, 80).props.data).toBe(renderer.state.compactPlan!.source);
+    expect(renderer.render()?.props['aria-busy']).toBe(false);
+  });
+
+  test('keeps a pending same-source configuration draw held across a compatible layout update', () => {
+    const data = compactData(100, 400);
+    const firstProps = graphProps(data, 100, 100);
+    const renderer = createRenderer(firstProps);
+    completeCurrentFrame(renderer, 100, 80);
+
+    const configProps = { ...firstProps, timeZone: 'browser' };
+    updateRenderer(renderer, firstProps, configProps);
+    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+
+    const layoutProps = { ...configProps, compactStreaming: true };
+    updateRenderer(renderer, configProps, layoutProps);
+
+    expect(renderer.state.presentedCompactPlan?.data).toBe(data);
+    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': true, 'aria-hidden': false });
   });
 
   test('reuses capped legend geometry while a changed progressive final source draws', () => {
@@ -170,7 +302,7 @@ describe('GraphNGRenderer compact state ownership', () => {
     const accepted = renderer['onCompactFrameReady'](stalePlan.source, staleConfig, 90, 80);
 
     expect(accepted).toBe(false);
-    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': true, 'aria-hidden': false });
+    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': false, 'aria-hidden': false });
     renderer.componentWillUnmount();
     requestFrame.mockRestore();
   });

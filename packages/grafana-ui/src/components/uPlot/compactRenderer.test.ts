@@ -334,6 +334,32 @@ describe('CompactRenderController', () => {
     }
   });
 
+  test('keeps long low-cardinality sources on the existing synchronous path', () => {
+    const source = createVirtualSource(1, 40_000);
+    source.scan.mockImplementation(() => undefined);
+    const controller = new CompactRenderController(source);
+
+    const completed = controller.draw(createPlot().plot, 0, source.pointCount - 1);
+
+    expect(mayDrawCompactSourceProgressively(source)).toBe(false);
+    expect(completed).toBeUndefined();
+    expect(source.scan).toHaveBeenCalled();
+    controller.destroy(source);
+  });
+
+  test('predicts progressive drawing for a short viewport over a long source', async () => {
+    const source = createVirtualSource(5, 40_000);
+    source.scan.mockImplementation(() => undefined);
+    const controller = new CompactRenderController(source);
+
+    const completed = controller.draw(createPlot().plot, 0, 7_997);
+
+    expect(mayDrawCompactSourceProgressively(source)).toBe(true);
+    expect(completed).toBeInstanceOf(Promise);
+    controller.destroy(source);
+    await expect(completed).resolves.toBe(false);
+  });
+
   test.each([
     {
       name: 'unstacked series',
@@ -863,6 +889,107 @@ describe('CompactRenderController', () => {
       }
     }
   );
+
+  test('shares progressive turns and makes bounded progress while input remains pending', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    const schedulingDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'scheduling');
+    Object.defineProperty(window.navigator, 'scheduling', {
+      configurable: true,
+      value: { isInputPending: () => true },
+    });
+
+    const createStackedSource = () => {
+      const source = createVirtualSource(100, 400);
+      Reflect.set(
+        source.columns,
+        'flags',
+        new Uint16Array(source.seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
+      );
+      Reflect.set(source.columns, 'stackGroupIds', new Uint8Array(source.seriesCount).fill(1));
+      Reflect.set(source, 'stackGroupCount', 1);
+      Reflect.set(source, 'stackDirections', new Int8Array([1]));
+      return source;
+    };
+    const first = createStackedSource();
+    const second = createStackedSource();
+    const firstController = new CompactRenderController(first);
+    const secondController = new CompactRenderController(second);
+    const firstCompleted = firstController.draw(createPlot().plot, 0, 399);
+    const secondCompleted = secondController.draw(createPlot().plot, 0, 399);
+
+    try {
+      expect(callbacks.size).toBe(1);
+
+      for (let yieldCount = 0; yieldCount < 4; yieldCount++) {
+        runNextTimer(callbacks);
+        expect(first.scan).not.toHaveBeenCalled();
+        expect(second.scan).not.toHaveBeenCalled();
+        expect(callbacks.size).toBe(1);
+      }
+
+      runNextTimer(callbacks);
+      expect(first.scan).toHaveBeenCalled();
+      expect(second.scan).not.toHaveBeenCalled();
+      for (let turn = 0; turn < 5; turn++) {
+        runNextTimer(callbacks);
+      }
+      expect(second.scan).toHaveBeenCalled();
+      expect(firstController.isProgressiveDrawInFlight()).toBe(true);
+      expect(secondController.isProgressiveDrawInFlight()).toBe(true);
+    } finally {
+      firstController.destroy(first);
+      secondController.destroy(second);
+      await expect(firstCompleted).resolves.toBe(false);
+      await expect(secondCompleted).resolves.toBe(false);
+      expect(callbacks.size).toBe(0);
+      if (schedulingDescriptor) {
+        Object.defineProperty(window.navigator, 'scheduling', schedulingDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, 'scheduling');
+      }
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
+  });
+
+  test('settles a progressive draw when a scheduled task throws', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    const source = createVirtualSource(100, 400);
+    source.scan.mockImplementation(() => {
+      throw new Error('scan failed');
+    });
+    const controller = new CompactRenderController(source);
+    const completed = controller.draw(createPlot().plot, 0, source.pointCount - 1);
+
+    try {
+      expect(() => runNextTimer(callbacks)).toThrow('scan failed');
+      await expect(completed).resolves.toBe(false);
+      expect(controller.isProgressiveDrawInFlight()).toBe(false);
+      expect(callbacks.size).toBe(0);
+    } finally {
+      controller.destroy(source);
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
+  });
 
   test('preserves visibility only when the replacement has the same series identity', () => {
     const first = createSource(
@@ -1729,7 +1856,7 @@ describe('CompactRenderController', () => {
     }
   });
 
-  test('bounds distant stacked focus point scans with retained stack checkpoints', () => {
+  test('bounds distant stacked focus point scans with retained stack checkpoints', async () => {
     const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
     const values = Array(300).fill(1);
     const source = createSource(
@@ -1746,7 +1873,7 @@ describe('CompactRenderController', () => {
     const restoreContext = installFocusOverlayContext(plot, context);
 
     try {
-      controller.draw(plot, 0, values.length - 1);
+      await controller.draw(plot, 0, values.length - 1);
       source.scan.mockClear();
       context.rect.mockClear();
       controller.setSeries(65, { focus: true });
@@ -1857,7 +1984,7 @@ describe('CompactRenderController', () => {
     }
   });
 
-  test('uses an equally cheap exact prefix when a decimal suffix cannot be reversed', () => {
+  test('uses an equally cheap exact prefix when a decimal suffix cannot be reversed', async () => {
     const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
     const values = [Array(42_000).fill(1.5), Array(42_000).fill(2.5)];
     const source = createSource(values, [flags, flags], 1, 'series', 'single', undefined, '#0008');
@@ -1866,7 +1993,7 @@ describe('CompactRenderController', () => {
     const restoreContext = installFocusOverlayContext(plot, context);
 
     try {
-      controller.draw(plot, 0, values[0].length - 1);
+      await controller.draw(plot, 0, values[0].length - 1);
       source.scan.mockClear();
       controller.setSeries(1, { focus: true });
 
@@ -1877,7 +2004,7 @@ describe('CompactRenderController', () => {
     }
   });
 
-  test('uses a bounded exact prefix for an uncheckpointed decimal stack group', () => {
+  test('uses a bounded exact prefix for an uncheckpointed decimal stack group', async () => {
     const groupCount = 17;
     const seriesPerGroup = 4;
     const seriesCount = groupCount * seriesPerGroup;
@@ -1900,7 +2027,7 @@ describe('CompactRenderController', () => {
     const restoreContext = installFocusOverlayContext(plot, context);
 
     try {
-      controller.draw(plot, 0, values[0].length - 1);
+      await controller.draw(plot, 0, values[0].length - 1);
       const focusedGroupStart = seriesCount - seriesPerGroup;
       controller.setSeries(focusedGroupStart, { focus: true });
       source.scan.mockClear();
@@ -1913,7 +2040,7 @@ describe('CompactRenderController', () => {
     }
   });
 
-  test('invalidates cached focus state when a suffix baseline is not exact', () => {
+  test('invalidates cached focus state when a suffix baseline is not exact', async () => {
     const values = [1e16, 1, -1e16, 2, 3, 4, 5].map((value) => Array(42_000).fill(value));
     const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
     const source = createSource(values, Array(values.length).fill(flags), 1, 'series', 'single', undefined, '#0008');
@@ -1922,7 +2049,7 @@ describe('CompactRenderController', () => {
     const restoreContext = installFocusOverlayContext(plot, context);
 
     try {
-      controller.draw(plot, 0, values[0].length - 1);
+      await controller.draw(plot, 0, values[0].length - 1);
       controller.setSeries(0, { focus: true });
       controller.setSeries(5, { focus: true });
       source.scan.mockClear();
@@ -2756,6 +2883,16 @@ function createPlot(): {
     posToVal: (value: number) => value,
   } as unknown as uPlot;
   return { plot, context, gradient };
+}
+
+function runNextTimer(callbacks: Map<ReturnType<typeof window.setTimeout>, TimerHandler>): void {
+  const entry = callbacks.entries().next().value;
+  if (!entry) {
+    throw new Error('Expected a scheduled progressive render turn');
+  }
+  const [timer, callback] = entry;
+  callbacks.delete(timer);
+  (callback as () => void)();
 }
 
 function installFocusOverlayContext(plot: uPlot, context: jest.Mocked<CanvasRenderingContext2D>): () => void {
