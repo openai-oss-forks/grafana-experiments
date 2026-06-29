@@ -11,11 +11,13 @@ import {
 } from './compact-v1.mjs';
 import { createDashboardFixture, DASHBOARD_UID, DATASOURCE_UID } from './fixtures.mjs';
 import { buildJsonResponse } from './json-response.mjs';
+import { runPanelFsm } from './panel-fsm.mjs';
 
 const COMPACT_HEADER = 'x-grafana-query-format';
 const COMPACT_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact;version=1';
 const COMPACT_BASE_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact';
 const JSON_MEDIA_TYPE = 'application/json';
+const verifyPanelFsm = process.env.VERIFY_PANEL_FSM === '1';
 
 const options = {
   baseUrl: process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000',
@@ -49,6 +51,7 @@ const options = {
   headless: process.env.HEADLESS === '1',
   editPanel: process.env.EDIT_PANEL === '1',
   verifyPanelEditor: process.env.VERIFY_PANEL_EDITOR === '1',
+  verifyPanelFsm,
   highlightSeriesOnHover: readOptionalBoolean('HIGHLIGHT_SERIES_ON_HOVER'),
   preservePanelGrid: process.env.PRESERVE_PANEL_GRID === '1',
   deviceScaleFactor: readPositiveNumber('DEVICE_SCALE_FACTOR', 1),
@@ -94,6 +97,8 @@ Environment:
   EDIT_PANEL              Set to 1 to open the selected panel in edit mode
   VERIFY_PANEL_EDITOR     Set to 1 to require the time-series panel editor and hover control
                           toggle, including compact highlight removal/restoration
+  VERIFY_PANEL_FSM        Set to 1 to traverse dashboard, editor visualization/style changes,
+                          save, dashboard return, and refresh with compact/full UI assertions
   HIGHLIGHT_SERIES_ON_HOVER
                           Override the selected panel's hover highlighting with true or false
   CHROMIUM_PATH           Optional Chromium executable
@@ -115,6 +120,22 @@ if (options.highlightSeriesOnHover != null) {
 const capturedResponse = options.responseJson ? await loadCapturedResponse(options.responseJson) : undefined;
 await fs.mkdir(options.outputDir, { recursive: true });
 
+if (options.verifyPanelFsm) {
+  if (options.editPanel) {
+    throw new Error('VERIFY_PANEL_FSM starts on the dashboard and cannot be combined with EDIT_PANEL=1');
+  }
+  if (options.expectedFormat !== 'auto' || options.responseFormat !== 'auto' || options.requestFormat !== 'auto') {
+    throw new Error('VERIFY_PANEL_FSM requires EXPECTED_FORMAT=auto, RESPONSE_FORMAT=auto, and REQUEST_FORMAT=auto');
+  }
+}
+const panelFsmFixture = options.verifyPanelFsm ? preparePanelFsmFixture(fixture.dashboard) : undefined;
+const interceptedPanelIds = new Set(
+  (panelFsmFixture
+    ? [panelFsmFixture.exactPanelId, panelFsmFixture.transitionPanelId]
+    : [fixture.dashboard.panels[0].id]
+  ).map(String)
+);
+
 const browser = await chromium.launch({
   executablePath: options.chromiumPath ?? chromium.executablePath(),
   headless: options.headless,
@@ -130,6 +151,7 @@ const cdp = await context.newCDPSession(page);
 await cdp.send('Performance.enable');
 
 const queryRequests = [];
+let nextRequestNumber = 0;
 const responseHeaders = [];
 const pageErrors = [];
 const requestWaiters = [];
@@ -149,16 +171,12 @@ page.on('response', (response) => {
 await context.route('**/api/ds/query**', async (route) => {
   const request = route.request();
   const headers = request.headers();
-  if (
-    headers['x-dashboard-uid'] !== options.dashboardUid ||
-    headers['x-panel-id'] !== '1' ||
-    headers['x-panel-plugin-id'] !== 'timeseries'
-  ) {
+  if (headers['x-dashboard-uid'] !== options.dashboardUid || !interceptedPanelIds.has(headers['x-panel-id'])) {
     await route.continue();
     return;
   }
 
-  const requestNumber = queryRequests.length + 1;
+  const requestNumber = ++nextRequestNumber;
   const requestBody = parseQueryRequest(request.postData());
   const refIds = requestBody.queries.map((query) => query.refId);
   const preferredFormat = headers[COMPACT_HEADER];
@@ -168,6 +186,8 @@ await context.route('**/api/ds/query**', async (route) => {
   if (options.expectedFormat !== 'auto' && requestedFormat !== options.expectedFormat) {
     queryRequests.push({
       requestNumber,
+      panelId: headers['x-panel-id'],
+      panelPluginId: headers['x-panel-plugin-id'],
       preferredFormat,
       refIds,
       error: `Expected ${options.expectedFormat}, received ${requestedFormat}`,
@@ -185,6 +205,8 @@ await context.route('**/api/ds/query**', async (route) => {
   if (responseFormat === 'compact-v1' && requestedFormat !== 'compact-v1') {
     queryRequests.push({
       requestNumber,
+      panelId: headers['x-panel-id'],
+      panelPluginId: headers['x-panel-plugin-id'],
       preferredFormat,
       refIds,
       error: 'Cannot return compact-v1 to a request that did not opt in',
@@ -229,10 +251,10 @@ await context.route('**/api/ds/query**', async (route) => {
     },
   }).byteLength;
   const compressedAt = performance.now();
-  await page.evaluate((id) => window.__compactPaintProbe?.arm(id), requestNumber);
-
   queryRequests.push({
     requestNumber,
+    panelId: headers['x-panel-id'],
+    panelPluginId: headers['x-panel-plugin-id'],
     preferredFormat,
     refIds,
     seriesCount: responseSummary.seriesCount,
@@ -247,6 +269,7 @@ await context.route('**/api/ds/query**', async (route) => {
     compressionMs: round(compressedAt - compressionStartedAt),
   });
   notifyRequestWaiters();
+  await page.evaluate((id) => window.__compactPaintProbe?.arm(id), requestNumber);
 
   await route.fulfill({
     status: 200,
@@ -271,6 +294,7 @@ const report = {
   fixture: {
     ...fixture.source,
     responseFixture: capturedResponse?.summary,
+    panelFsm: panelFsmFixture,
   },
   executionMode: 'optimize',
   telemetryMode: 'degraded-cdp',
@@ -298,12 +322,24 @@ try {
     await startCpuProfile(cdp);
   }
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
-  await recordRender(page, cdp, report, 1, 'initial-render');
+  await recordRender(page, cdp, report, panelFsmFixture ? interceptedPanelIds.size : 1, 'initial-render');
   if (options.verifyPanelEditor) {
     if (!options.editPanel) {
       throw new Error('VERIFY_PANEL_EDITOR requires EDIT_PANEL=1');
     }
     report.panelEditor = await verifyPanelEditor(page, queryRequests[0].responseFormat, queryRequests[0].seriesCount);
+  }
+  if (options.verifyPanelFsm) {
+    report.panelFsm = await runPanelFsm({
+      page,
+      queryRequests,
+      waitForRequestCount: waitForQueryRequest,
+      outputDir: options.outputDir,
+      baseUrl: options.baseUrl,
+      dashboardUid: options.dashboardUid,
+      pageErrors,
+      fixture: panelFsmFixture,
+    });
   }
   await captureChart(page, path.join(options.outputDir, 'chart.png'));
   if (options.cpuProfile) {
@@ -321,7 +357,8 @@ try {
     report.legendInteractions = await verifyLegendInteractions(page);
   }
 
-  for (let refreshIndex = 0; refreshIndex < options.refreshes; refreshIndex++) {
+  const postRunRefreshes = options.verifyPanelFsm ? 0 : options.refreshes;
+  for (let refreshIndex = 0; refreshIndex < postRunRefreshes; refreshIndex++) {
     const expectedRequestCount = queryRequests.length + 1;
     if (options.cpuProfile) {
       await startCpuProfile(cdp);
@@ -341,7 +378,7 @@ try {
       ['move-backward', 'data-testid explore-toolbar-timepicker-move-backward-button'],
     ]) {
       const previousRequest = queryRequests.at(-1);
-      const expectedRequestCount = queryRequests.length + 1;
+      const expectedRequestCount = queryRequests.length + (panelFsmFixture ? interceptedPanelIds.size : 1);
       await page.getByTestId(testId).click();
       await recordRender(page, cdp, report, expectedRequestCount, `time-range-${action}`);
       const currentRequest = queryRequests.at(-1);
@@ -1727,6 +1764,11 @@ function printReport(report, reportPath) {
       `interactions: tooltip=${report.interactions.hoverToTooltipMs}ms commitP50=${report.interactions.repeatedHover.inputToCommitMedianMs}ms paintP50=${report.interactions.repeatedHover.inputToNextPaintMedianMs}ms paintP95=${report.interactions.repeatedHover.inputToNextPaintP95Ms}ms rows=${report.interactions.tooltip.totalRows} mountedRows=${report.interactions.tooltip.mountedRows} legendToggle=${report.interactions.legendToggleChangedState}`
     );
   }
+  if (report.panelFsm) {
+    console.log(
+      `panel FSM: transitions=${report.panelFsm.transitions.length} hoverOptionQueries=${report.panelFsm.hoverOptionQueryCount} saved=${report.panelFsm.saved.plugin}/${report.panelFsm.saved.style}`
+    );
+  }
   if (report.error) {
     console.error(report.error);
   }
@@ -1742,6 +1784,51 @@ function readPositiveInteger(name, defaultValue) {
     throw new Error(`${name} must be at least 1`);
   }
   return value;
+}
+
+function preparePanelFsmFixture(dashboard) {
+  const exactPanel = dashboard.panels[0];
+  const transitionPanel = structuredClone(exactPanel);
+  transitionPanel.id = exactPanel.id + 1;
+  transitionPanel.title = `${exactPanel.title} — state transitions`;
+  transitionPanel.gridPos = { ...exactPanel.gridPos, y: 0 };
+  exactPanel.gridPos = { ...exactPanel.gridPos, y: transitionPanel.gridPos.h };
+  let removedDrawStyleOverrides = 0;
+  const barOverrideRefs = new Set();
+  for (const override of transitionPanel.fieldConfig?.overrides ?? []) {
+    const properties = override.properties ?? [];
+    const barOverride =
+      override.matcher?.id === 'byFrameRefID' &&
+      properties.some((property) => property.id === 'custom.drawStyle' && property.value === 'bars');
+    if (barOverride) {
+      barOverrideRefs.add(override.matcher.options);
+    }
+    override.properties = properties.filter((property) => {
+      const remove = property.id === 'custom.drawStyle';
+      removedDrawStyleOverrides += Number(remove);
+      return !(
+        remove ||
+        (barOverride && ['custom.lineWidth', 'custom.fillOpacity', 'custom.stacking'].includes(property.id))
+      );
+    });
+  }
+  const transitionDefaults = transitionPanel.fieldConfig?.defaults?.custom;
+  if (transitionDefaults?.drawStyle === 'bars') {
+    transitionDefaults.drawStyle = 'line';
+    transitionDefaults.lineWidth = 1;
+    transitionDefaults.fillOpacity = 0;
+    transitionDefaults.stacking = { group: 'A', mode: 'none' };
+  }
+  dashboard.panels = [transitionPanel, exactPanel];
+  const queryRefs = (exactPanel.targets ?? []).filter((target) => !target.hide).map((target) => target.refId);
+  return {
+    exactPanelId: exactPanel.id,
+    exactPanelTitle: exactPanel.title,
+    transitionPanelId: transitionPanel.id,
+    transitionPanelTitle: transitionPanel.title,
+    removedDrawStyleOverrides,
+    exhaustiveBarOverrides: queryRefs.length > 0 && queryRefs.every((refId) => barOverrideRefs.has(refId)),
+  };
 }
 
 function percentile(values, fraction) {
@@ -1809,7 +1896,7 @@ function readOptionalBoolean(name) {
 }
 
 function readExpectedFormat() {
-  const value = process.env.EXPECTED_FORMAT ?? 'compact-v1';
+  const value = process.env.EXPECTED_FORMAT ?? (verifyPanelFsm ? 'auto' : 'compact-v1');
   if (value !== 'compact-v1' && value !== 'json' && value !== 'auto') {
     throw new Error('EXPECTED_FORMAT must be compact-v1, json, or auto');
   }

@@ -8,8 +8,10 @@ import {
   CompactSeriesFlag,
   CompactStyleRecord,
   getCompactRenderController,
+  installCompactRenderer,
   mayDrawCompactSourceProgressively,
 } from './compactRenderer';
+import { UPlotConfigBuilder } from './config/UPlotConfigBuilder';
 
 describe('CompactRenderController', () => {
   test('draws source-native lines, steps, points, splines, and gaps without dense arrays', () => {
@@ -789,6 +791,18 @@ describe('CompactRenderController', () => {
     expect(second.buffer.byteLength).toBeGreaterThan(0);
     expect(getCompactRenderController(second)).toBe(controller);
     controller.destroy(second);
+  });
+
+  test('does not unregister a newer controller when an older plot is destroyed', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Linear]);
+    const registry = { get: getCompactRenderController, install: installCompactRenderer };
+    const previousController = registry.get(source);
+    const replacementController = registry.install(new UPlotConfigBuilder('utc'), source);
+
+    previousController.destroy(source);
+
+    expect(registry.get(source)).toBe(replacementController);
+    replacementController.destroy(source);
   });
 
   test('drops response ownership from snapshots when the renderer is destroyed', () => {
@@ -1715,10 +1729,290 @@ describe('CompactRenderController', () => {
     }
   });
 
-  test('reconstructs a stacked focus from the shorter side of the stack', () => {
+  test('bounds distant stacked focus point scans with retained stack checkpoints', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array(300).fill(1);
+    const source = createSource(
+      Array.from({ length: 129 }, () => values),
+      Array(129).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      context.rect.mockClear();
+      controller.setSeries(65, { focus: true });
+
+      const scannedSeries = source.scan.mock.calls.map(([series]) => series);
+      expect(scannedSeries).toContain(65);
+      expect(scannedSeries.filter((series) => series !== 65).length).toBeLessThan(Math.sqrt(source.seriesCount));
+      expect(context.rect.mock.calls.some(([, top, , height]) => top === 65 && height === 1)).toBe(true);
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('bounds tail focus scans for many short stacked series', () => {
+    const seriesCount = 1_000;
+    const values = Array(10).fill(1);
     const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
     const source = createSource(
-      [[1], [2], [3], [4], [5]],
+      Array.from({ length: seriesCount }, () => values),
+      Array(seriesCount).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== seriesCount - 1).length;
+      expect(nonFocusedScans).toBeLessThan(Math.sqrt(seriesCount));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('bounds tail focus scans for a moderate stacked group', () => {
+    const seriesCount = 127;
+    const values = Array(250).fill(1);
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      Array.from({ length: seriesCount }, () => values),
+      Array(seriesCount).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== seriesCount - 1).length;
+      expect(nonFocusedScans).toBeLessThan(Math.sqrt(seriesCount));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('bounds zero-heavy tail focus work beyond the checkpoint memory cap', () => {
+    const seriesCount = 5;
+    const values = Array.from({ length: seriesCount }, (_, series) => Array(42_000).fill(series === 4 ? 0 : 1));
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(values, Array(seriesCount).fill(flags), 1, 'series', 'single', undefined, '#0008');
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values[0].length - 1);
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== seriesCount - 1).length;
+      expect(nonFocusedScans).toBeLessThan(Math.ceil(seriesCount / 2));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('uses the empty baseline for a decimal singleton stack group', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[1.5], [2.5]], [flags, flags], 2, 'series', 'single', undefined, '#0008');
+    source.columns.stackGroupIds![1] = 2;
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, 0);
+      controller.setSeries(1, { focus: true });
+
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).not.toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('uses an equally cheap exact prefix when a decimal suffix cannot be reversed', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = [Array(42_000).fill(1.5), Array(42_000).fill(2.5)];
+    const source = createSource(values, [flags, flags], 1, 'series', 'single', undefined, '#0008');
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values[0].length - 1);
+      source.scan.mockClear();
+      controller.setSeries(1, { focus: true });
+
+      expect(source.scan.mock.calls[0]?.[0]).toBe(0);
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).not.toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('uses a bounded exact prefix for an uncheckpointed decimal stack group', () => {
+    const groupCount = 17;
+    const seriesPerGroup = 4;
+    const seriesCount = groupCount * seriesPerGroup;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array.from({ length: seriesCount }, () => Array(2_000).fill(1.5));
+    const source = createSource(
+      values,
+      Array(seriesCount).fill(flags),
+      groupCount,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    for (let series = 0; series < seriesCount; series++) {
+      source.columns.stackGroupIds![series] = Math.floor(series / seriesPerGroup) + 1;
+    }
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values[0].length - 1);
+      const focusedGroupStart = seriesCount - seriesPerGroup;
+      controller.setSeries(focusedGroupStart, { focus: true });
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      expect(source.scan.mock.calls.map(([series]) => series)).toContain(focusedGroupStart);
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).not.toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('invalidates cached focus state when a suffix baseline is not exact', () => {
+    const values = [1e16, 1, -1e16, 2, 3, 4, 5].map((value) => Array(42_000).fill(value));
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(values, Array(values.length).fill(flags), 1, 'series', 'single', undefined, '#0008');
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values[0].length - 1);
+      controller.setSeries(0, { focus: true });
+      controller.setSeries(5, { focus: true });
+      source.scan.mockClear();
+      controller.setSeries(4, { focus: true });
+      controller.setSeries(6, { focus: true });
+
+      const scannedSeries = source.scan.mock.calls.map(([series]) => series);
+      expect(scannedSeries).toEqual(expect.arrayContaining([4, 5, 6]));
+      expect(scannedSeries).not.toEqual(expect.arrayContaining([0, 1, 2]));
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('checkpoints a large stack group without copying unrelated groups', () => {
+    const largeGroupSize = 129;
+    const smallGroupCount = 109;
+    const seriesCount = largeGroupSize + smallGroupCount;
+    const values = Array(300).fill(1);
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      Array.from({ length: seriesCount }, () => values),
+      Array(seriesCount).fill(flags),
+      smallGroupCount + 1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    for (let series = largeGroupSize; series < seriesCount; series++) {
+      source.columns.stackGroupIds![series] = series - largeGroupSize + 2;
+    }
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      controller.setSeries(65, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== 65).length;
+      expect(nonFocusedScans).toBeLessThan(Math.sqrt(largeGroupSize));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('reuses forward stack work and rebases backward focus', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      Array.from({ length: 7 }, (_, series) => [series + 1]),
+      Array(7).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, 0);
+      controller.setSeries(3, { focus: true });
+
+      source.scan.mockClear();
+      context.rect.mockClear();
+      controller.setSeries(4, { focus: true });
+      expect(source.scan.mock.calls.map(([series]) => series).filter((series) => series !== 4)).toHaveLength(0);
+      expect(context.rect.mock.calls.some(([, top, , height]) => top === 10 && height === 4)).toBe(true);
+
+      source.scan.mockClear();
+      context.rect.mockClear();
+      controller.setSeries(3, { focus: true });
+      expect(
+        source.scan.mock.calls.map(([series]) => series).filter((series) => series !== 3).length
+      ).toBeLessThanOrEqual(3);
+      expect(context.rect.mock.calls.some(([, top, , height]) => top === 6 && height === 3)).toBe(true);
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('keeps backward focus geometry stable across mixed-magnitude stacks', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [[1e16], [1], [-1e16], [2], [3]],
       Array(5).fill(flags),
       1,
       'series',
@@ -1728,29 +2022,50 @@ describe('CompactRenderController', () => {
     );
     const controller = new CompactRenderController(source);
     const { plot, context } = createPlot();
-    const parent = document.createElement('div');
-    const mainCanvas = document.createElement('canvas');
-    const over = document.createElement('div');
-    parent.append(mainCanvas, over);
-    Object.defineProperty(context, 'canvas', { value: mainCanvas, configurable: true });
-    Reflect.set(plot, 'over', over);
-    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
-      this: HTMLCanvasElement
-    ) {
-      Object.defineProperty(context, 'canvas', { value: this, configurable: true });
-      return context;
-    });
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, 0);
+      context.rect.mockClear();
+      controller.setSeries(3, { focus: true });
+      const initialGeometry = context.rect.mock.calls.at(-1);
+
+      controller.setSeries(4, { focus: true });
+      context.rect.mockClear();
+      controller.setSeries(3, { focus: true });
+
+      expect(context.rect.mock.calls.at(-1)).toEqual(initialGeometry);
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('builds focused stack geometry in the main chart accumulation order', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [[1], [2], [1], [1], [4], [1e16], [1e100]],
+      Array(7).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
 
     try {
       controller.draw(plot, 0, 0);
       source.scan.mockClear();
+      context.rect.mockClear();
       controller.setSeries(4, { focus: true });
 
       const scannedSeries = source.scan.mock.calls.map(([series]) => series);
-      expect(new Set(scannedSeries)).toEqual(new Set([4]));
-      expect(scannedSeries.length).toBeLessThan(4);
+      expect(scannedSeries.every((series) => series === 4)).toBe(true);
+      expect(context.rect.mock.calls.at(-1)?.[1]).toBe(5);
     } finally {
-      getContext.mockRestore();
+      restoreContext();
     }
   });
 
@@ -1839,7 +2154,7 @@ describe('CompactRenderController', () => {
     expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
   });
 
-  test('restores requested focus when a second series becomes visible', () => {
+  test('restores requested focus after the visible frame includes a second series', () => {
     const source = createSource(
       [
         [1, 2, 3],
@@ -1880,6 +2195,8 @@ describe('CompactRenderController', () => {
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
 
       controller.setSeries(1, { show: true });
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+      controller.draw(plot, 0, 2);
       expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
     } finally {
       getContext.mockRestore();
@@ -2439,4 +2756,20 @@ function createPlot(): {
     posToVal: (value: number) => value,
   } as unknown as uPlot;
   return { plot, context, gradient };
+}
+
+function installFocusOverlayContext(plot: uPlot, context: jest.Mocked<CanvasRenderingContext2D>): () => void {
+  const parent = document.createElement('div');
+  const mainCanvas = document.createElement('canvas');
+  const over = document.createElement('div');
+  parent.append(mainCanvas, over);
+  Object.defineProperty(context, 'canvas', { value: mainCanvas, configurable: true });
+  Reflect.set(plot, 'over', over);
+  const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+    this: HTMLCanvasElement
+  ) {
+    Object.defineProperty(context, 'canvas', { value: this, configurable: true });
+    return context;
+  });
+  return () => getContext.mockRestore();
 }

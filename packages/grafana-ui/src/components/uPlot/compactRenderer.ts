@@ -229,8 +229,8 @@ const enum ScanOperation {
   StackExtent,
   StackPresence,
   StackTotal,
-  StackCommit,
   StackSubtract,
+  StackCommit,
   ValueLabel,
   DecimatedLine,
 }
@@ -240,6 +240,10 @@ const PROGRESSIVE_SAMPLE_THRESHOLD = 1_000_000;
 const PROGRESSIVE_POINT_BUDGET = 32_000;
 const MAX_GROUPED_BAR_SPLITS = 2_048;
 const CURSOR_STACK_CACHE_SIZE = 4;
+const MAX_STACK_FOCUS_CHECKPOINTS = 32;
+const TARGET_STACK_FOCUS_CHECKPOINT_VALUES = (256 * 1024) / Float64Array.BYTES_PER_ELEMENT;
+const MAX_STACK_FOCUS_CHECKPOINT_VALUES = (320 * 1024) / Float64Array.BYTES_PER_ELEMENT;
+const MAX_SYNC_FOCUS_STACK_SAMPLES = 32_000;
 const BAR_VALUE_MIN_FONT_SIZE = 8;
 const BAR_VALUE_MAX_FONT_SIZE = 30;
 const BAR_VALUE_FIT_RATIO = 0.65;
@@ -399,6 +403,16 @@ export class CompactRenderController implements uPlot.CompactRenderController {
   private focusVisibleTo = 0;
   private stackScratch = new Float64Array(0);
   private focusStackScratch = new Float64Array(0);
+  private focusStackGroup = 0;
+  private focusStackSeries = -1;
+  private focusStackSuffixStable = true;
+  private focusFrameReady = false;
+  private focusStackCheckpoints = new Float64Array(0);
+  private focusStackCheckpointSeries = new Int32Array(0);
+  private focusStackCheckpointGroupOffsets = new Int32Array(0);
+  private focusStackCheckpointGroupCounts = new Int32Array(0);
+  private focusStackCheckpointGroupStrides = new Int32Array(0);
+  private focusStackCheckpointGroupProgress = new Int32Array(0);
   private stackPresence = new Uint8Array(0);
   private stackTotals = new Float64Array(0);
   private stackAreaIndexes = new Int32Array(0);
@@ -548,11 +562,11 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       case ScanOperation.StackTotal:
         this.visitStackTotal(index, value);
         break;
-      case ScanOperation.StackCommit:
-        this.visitStackCommit(index, value);
-        break;
       case ScanOperation.StackSubtract:
         this.visitStackSubtract(index, value);
+        break;
+      case ScanOperation.StackCommit:
+        this.visitStackCommit(index, value);
         break;
       case ScanOperation.ValueLabel:
         this.visitValueLabel(index, value, xValue);
@@ -733,7 +747,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     const visibleSeriesCount = transferCompactVisibilityState(this.source, nextSource);
     this.cancelProgressiveDraw();
     const previousSource = this.source;
-    controllers.delete(previousSource);
+    if (controllers.get(previousSource) === this) {
+      controllers.delete(previousSource);
+    }
     this.source = nextSource;
     this.sourceRevision++;
     this.groupedBarLookupIndex = 0;
@@ -749,6 +765,13 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.removeFocusOverlay();
     this.stackScratch = new Float64Array(0);
     this.focusStackScratch = new Float64Array(0);
+    this.focusStackCheckpoints = new Float64Array(0);
+    this.focusStackCheckpointSeries = new Int32Array(0);
+    this.focusStackCheckpointGroupOffsets = new Int32Array(0);
+    this.focusStackCheckpointGroupCounts = new Int32Array(0);
+    this.focusStackCheckpointGroupStrides = new Int32Array(0);
+    this.focusStackCheckpointGroupProgress = new Int32Array(0);
+    this.invalidateFocusFrame();
     this.stackPresence = new Uint8Array(0);
     this.stackTotals = new Float64Array(0);
     this.stackAreaIndexes = new Int32Array(0);
@@ -774,6 +797,13 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.context = null;
     this.stackScratch = new Float64Array(0);
     this.focusStackScratch = new Float64Array(0);
+    this.focusStackCheckpoints = new Float64Array(0);
+    this.focusStackCheckpointSeries = new Int32Array(0);
+    this.focusStackCheckpointGroupOffsets = new Int32Array(0);
+    this.focusStackCheckpointGroupCounts = new Int32Array(0);
+    this.focusStackCheckpointGroupStrides = new Int32Array(0);
+    this.focusStackCheckpointGroupProgress = new Int32Array(0);
+    this.invalidateFocusFrame();
     this.stackPresence = new Uint8Array(0);
     this.stackAreaIndexes = new Int32Array(0);
     this.stackAreaLength = 0;
@@ -790,7 +820,9 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     this.cursorSnapshotDataIndexes = null;
     this.invalidateCursorSnapshot();
     this.gradientCache.length = 0;
-    controllers.delete(this.source);
+    if (controllers.get(this.source) === this) {
+      controllers.delete(this.source);
+    }
     this.source = releasedSource;
     this.bufferView = new DataView(releasedBuffer);
     this.bufferBytes = new Uint8Array(releasedBuffer);
@@ -878,6 +910,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       this.context = null;
       return this.drawProgressively(plot, scanFrom, scanTo, from, to).then((completed) => {
         if (completed) {
+          this.focusFrameReady = true;
           this.drawFocusOverlay();
         }
         this.barLabelBounds.clear();
@@ -886,8 +919,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
 
     this.prepareStackScratch(scanFrom, scanTo);
+    this.prepareFocusStackCheckpoints();
     this.prepareGroupedBarAutoValueFontSize(scanFrom, scanTo);
-    this.drawSeriesRange(plot, 0, this.source.seriesCount, scanFrom, scanTo, from, to);
+    this.drawSeriesRange(plot, 0, this.source.seriesCount, scanFrom, scanTo, from, to, plot.ctx, true);
+    this.focusFrameReady = true;
     this.barLabelBounds.clear();
     this.drawFocusOverlay();
     this.barLabelBounds.clear();
@@ -901,7 +936,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     scanTo: number,
     visibleFrom: number,
     visibleTo: number,
-    context: CanvasRenderingContext2D = plot.ctx
+    context: CanvasRenderingContext2D = plot.ctx,
+    captureStackCheckpoints = false
   ): void {
     this.plot = plot;
     this.context = context;
@@ -912,10 +948,12 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       context.clip();
 
       for (let series = seriesFrom; series < seriesTo; series++) {
-        if (!this.isVisible(series)) {
-          continue;
+        if (this.isVisible(series)) {
+          this.drawSeries(series, scanFrom, scanTo, visibleFrom, visibleTo);
         }
-        this.drawSeries(series, scanFrom, scanTo, visibleFrom, visibleTo);
+        if (captureStackCheckpoints) {
+          this.captureFocusStackCheckpoint(series);
+        }
       }
     } finally {
       context.restore();
@@ -981,6 +1019,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         }
         if (preparationStage === 2) {
           if (prepareBarValueLabels()) {
+            this.prepareFocusStackCheckpoints();
             preparationStage = 3;
           }
           this.progressiveTimer = window.setTimeout(drawChunk, 0);
@@ -988,7 +1027,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         }
         const firstSeries = nextSeries;
         nextSeries = Math.min(this.source.seriesCount, firstSeries + seriesPerChunk);
-        this.drawSeriesRange(plot, firstSeries, nextSeries, scanFrom, scanTo, visibleFrom, visibleTo);
+        this.drawSeriesRange(plot, firstSeries, nextSeries, scanFrom, scanTo, visibleFrom, visibleTo, plot.ctx, true);
 
         if (nextSeries >= this.source.seriesCount) {
           this.progressiveTimer = undefined;
@@ -1010,6 +1049,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
     this.resolveProgressiveDraw?.(false);
     this.resolveProgressiveDraw = undefined;
+    this.invalidateFocusFrame();
   }
 
   setSeries(seriesIndex: number | null, options: { show?: boolean; focus?: boolean }): boolean {
@@ -1045,6 +1085,8 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         this.removeFocusOverlay();
       }
       if (redraw) {
+        this.invalidateFocusFrame();
+        this.removeFocusOverlay();
         this.initializeBarSlots();
         this.invalidateBarWidthSamples();
       }
@@ -1858,7 +1900,7 @@ export class CompactRenderController implements uPlot.CompactRenderController {
 
   private drawFocusOverlay(): void {
     const plot = this.renderedPlot;
-    if (this.resolveProgressiveDraw) {
+    if (this.resolveProgressiveDraw || !this.focusFrameReady) {
       this.removeFocusOverlay();
       return;
     }
@@ -1879,55 +1921,16 @@ export class CompactRenderController implements uPlot.CompactRenderController {
     }
 
     const renderStackScratch = this.stackScratch;
+    const focusedSeries = this.focusedSeries;
+    const focusedStacked = (this.source.columns.flags[focusedSeries] & CompactSeriesFlag.Stack) !== 0;
+    const focusedStackGroup = focusedStacked ? this.getStackGroup(focusedSeries) : 0;
     try {
-      if ((this.source.columns.flags[this.focusedSeries] & CompactSeriesFlag.Stack) !== 0) {
-        const required = this.stackPointCount * this.source.stackGroupCount;
-        if (this.focusStackScratch.length < required) {
-          this.focusStackScratch = new Float64Array(required);
-        } else {
-          this.focusStackScratch.fill(0, 0, required);
-        }
+      if (focusedStacked) {
         this.stackScratch = this.focusStackScratch;
-        const focusedGroup = this.getStackGroup(this.focusedSeries);
-        let prefixCount = 0;
-        let suffixCount = 0;
-        for (let series = 0; series < this.source.seriesCount; series++) {
-          if (
-            this.isVisible(series) &&
-            (this.source.columns.flags[series] & CompactSeriesFlag.Stack) !== 0 &&
-            this.getStackGroup(series) === focusedGroup
-          ) {
-            if (series < this.focusedSeries) {
-              prefixCount++;
-            } else {
-              suffixCount++;
-            }
-          }
+        if (!this.prepareFocusStack(focusedSeries, focusedStackGroup)) {
+          this.removeFocusOverlay();
+          return;
         }
-        const useSuffix = suffixCount < prefixCount;
-        if (useSuffix) {
-          const groupOffset = (focusedGroup - 1) * this.stackPointCount;
-          this.focusStackScratch.set(
-            this.stackTotals.subarray(groupOffset, groupOffset + this.stackPointCount),
-            groupOffset
-          );
-        }
-        this.operation = useSuffix ? ScanOperation.StackSubtract : ScanOperation.StackCommit;
-        const firstSeries = useSuffix ? this.focusedSeries : 0;
-        const lastSeries = useSuffix ? this.source.seriesCount : this.focusedSeries;
-        for (let series = firstSeries; series < lastSeries; series++) {
-          if (
-            !this.isVisible(series) ||
-            (this.source.columns.flags[series] & CompactSeriesFlag.Stack) === 0 ||
-            this.getStackGroup(series) !== focusedGroup
-          ) {
-            continue;
-          }
-          this.seriesIndex = series;
-          this.flags = this.source.columns.flags[series];
-          this.source.scan(series, this.focusScanFrom, this.focusScanTo, this.visitPoint);
-        }
-        this.operation = ScanOperation.None;
       }
 
       context.clearRect(0, 0, context.canvas.width, context.canvas.height);
@@ -1946,10 +1949,278 @@ export class CompactRenderController implements uPlot.CompactRenderController {
         this.focusVisibleTo,
         context
       );
+      if (focusedStacked) {
+        this.focusStackGroup = focusedStackGroup;
+        this.focusStackSeries = focusedSeries;
+      }
+    } catch (error) {
+      this.invalidateFocusStack();
+      throw error;
     } finally {
       this.stackScratch = renderStackScratch;
       this.operation = ScanOperation.None;
     }
+  }
+
+  private prepareFocusStack(focusedSeries: number, focusedGroup: number): boolean {
+    const required = this.stackPointCount * this.source.stackGroupCount;
+    if (this.focusStackScratch.length < required) {
+      this.focusStackScratch = new Float64Array(required);
+      this.stackScratch = this.focusStackScratch;
+      this.invalidateFocusStack();
+    }
+
+    type Baseline = {
+      cost: number;
+      source: 'current' | 'empty' | 'checkpoint' | 'suffix';
+      checkpoint?: number;
+      from: number;
+      to: number;
+    };
+    const baselines: Baseline[] = [];
+    const canUseCurrent = this.focusStackGroup === focusedGroup && this.focusStackSeries >= 0;
+    if (canUseCurrent && this.focusStackSeries < focusedSeries) {
+      baselines.push(
+        this.createFocusStackBaseline('current', this.focusStackSeries + 1, focusedSeries - 1, focusedGroup)
+      );
+    }
+
+    const checkpointOffset = (this.focusStackCheckpointGroupOffsets[focusedGroup] ?? 0) - 1;
+    const checkpointCount = this.focusStackCheckpointGroupCounts[focusedGroup] ?? 0;
+    let lowerCheckpoint = -1;
+    for (let checkpoint = checkpointOffset; checkpoint < checkpointOffset + checkpointCount; checkpoint++) {
+      const checkpointSeries = this.focusStackCheckpointSeries[checkpoint];
+      if (checkpointSeries >= focusedSeries) {
+        break;
+      }
+      lowerCheckpoint = checkpoint;
+    }
+    if (lowerCheckpoint >= 0) {
+      const checkpointSeries = this.focusStackCheckpointSeries[lowerCheckpoint];
+      baselines.push({
+        ...this.createFocusStackBaseline('checkpoint', checkpointSeries + 1, focusedSeries - 1, focusedGroup),
+        checkpoint: lowerCheckpoint,
+      });
+    }
+
+    if (checkpointCount === 0) {
+      baselines.push(this.createFocusStackBaseline('empty', 0, focusedSeries - 1, focusedGroup));
+      baselines.push(this.createFocusStackBaseline('suffix', focusedSeries, this.source.seriesCount - 1, focusedGroup));
+    }
+
+    if (baselines.length === 0) {
+      baselines.push(this.createFocusStackBaseline('empty', 0, focusedSeries - 1, focusedGroup));
+    }
+    let baseline = baselines.reduce((best, candidate) => (candidate.cost < best.cost ? candidate : best));
+    const groupOffset = (focusedGroup - 1) * this.stackPointCount;
+    if (baseline.source === 'suffix') {
+      if (this.prepareFocusStackFromSuffix(baseline.from, baseline.to, focusedGroup)) {
+        return true;
+      }
+      this.invalidateFocusStack();
+      const fallback = baselines
+        .filter((candidate) => candidate.source !== 'suffix' && candidate.source !== 'current')
+        .reduce<
+          Baseline | undefined
+        >((best, candidate) => (best == null || candidate.cost < best.cost ? candidate : best), undefined);
+      if (fallback == null || fallback.cost * this.stackPointCount > MAX_SYNC_FOCUS_STACK_SAMPLES) {
+        return false;
+      }
+      baseline = fallback;
+    }
+    if (baseline.source === 'empty') {
+      this.focusStackScratch.fill(0, groupOffset, groupOffset + this.stackPointCount);
+    } else if (baseline.source === 'checkpoint') {
+      const checkpointValueOffset = baseline.checkpoint! * this.stackPointCount;
+      this.focusStackScratch.set(
+        this.focusStackCheckpoints.subarray(checkpointValueOffset, checkpointValueOffset + this.stackPointCount),
+        groupOffset
+      );
+    }
+    this.adjustFocusStack(baseline.from, baseline.to, focusedGroup);
+    return true;
+  }
+
+  private createFocusStackBaseline(
+    source: 'current' | 'empty' | 'checkpoint' | 'suffix',
+    from: number,
+    to: number,
+    group: number
+  ) {
+    let cost = 0;
+    for (let series = from; series <= to; series++) {
+      if (this.isVisibleStackSeries(series, group)) {
+        cost++;
+      }
+    }
+    return { cost, source, from, to };
+  }
+
+  private prepareFocusStackFromSuffix(from: number, to: number, group: number): boolean {
+    const groupOffset = (group - 1) * this.stackPointCount;
+    this.focusStackScratch.set(this.stackTotals.subarray(groupOffset, groupOffset + this.stackPointCount), groupOffset);
+    this.focusStackSuffixStable = true;
+    this.operation = ScanOperation.StackSubtract;
+    try {
+      for (let series = to; series >= from; series--) {
+        if (!this.isVisibleStackSeries(series, group)) {
+          continue;
+        }
+        this.seriesIndex = series;
+        this.flags = this.source.columns.flags[series];
+        this.source.scan(series, this.focusScanFrom, this.focusScanTo, this.visitPoint);
+      }
+    } finally {
+      this.operation = ScanOperation.None;
+    }
+    return this.focusStackSuffixStable;
+  }
+
+  private adjustFocusStack(from: number, to: number, group: number): void {
+    if (from > to) {
+      return;
+    }
+    this.operation = ScanOperation.StackCommit;
+    try {
+      for (let series = from; series <= to; series++) {
+        if (!this.isVisibleStackSeries(series, group)) {
+          continue;
+        }
+        this.seriesIndex = series;
+        this.flags = this.source.columns.flags[series];
+        this.source.scan(series, this.focusScanFrom, this.focusScanTo, this.visitPoint);
+      }
+    } finally {
+      this.operation = ScanOperation.None;
+    }
+  }
+
+  private isVisibleStackSeries(series: number, group: number): boolean {
+    return (
+      this.isVisible(series) &&
+      (this.source.columns.flags[series] & CompactSeriesFlag.Stack) !== 0 &&
+      this.getStackGroup(series) === group
+    );
+  }
+
+  private invalidateFocusStack(): void {
+    this.focusStackGroup = 0;
+    this.focusStackSeries = -1;
+  }
+
+  private invalidateFocusFrame(): void {
+    this.focusFrameReady = false;
+    this.focusStackCheckpointGroupOffsets.fill(0);
+    this.focusStackCheckpointGroupCounts.fill(0);
+    this.invalidateFocusStack();
+  }
+
+  private prepareFocusStackCheckpoints(): void {
+    const metadataLength = this.source.stackGroupCount + 1;
+    if (this.focusStackCheckpointGroupOffsets.length < metadataLength) {
+      this.focusStackCheckpointGroupOffsets = new Int32Array(metadataLength);
+      this.focusStackCheckpointGroupCounts = new Int32Array(metadataLength);
+      this.focusStackCheckpointGroupStrides = new Int32Array(metadataLength);
+      this.focusStackCheckpointGroupProgress = new Int32Array(metadataLength);
+    } else {
+      this.focusStackCheckpointGroupOffsets.fill(0, 0, metadataLength);
+      this.focusStackCheckpointGroupCounts.fill(0, 0, metadataLength);
+      this.focusStackCheckpointGroupStrides.fill(0, 0, metadataLength);
+      this.focusStackCheckpointGroupProgress.fill(0, 0, metadataLength);
+    }
+    if (
+      this.source.focusOverlayColor == null ||
+      this.visibleSeriesCount < 2 ||
+      this.stackPointCount === 0 ||
+      this.source.stackGroupCount === 0
+    ) {
+      return;
+    }
+
+    const groupCounts = new Uint32Array(this.source.stackGroupCount + 1);
+    for (let series = 0; series < this.source.seriesCount; series++) {
+      if (this.isVisible(series) && (this.source.columns.flags[series] & CompactSeriesFlag.Stack) !== 0) {
+        groupCounts[this.getStackGroup(series)]++;
+      }
+    }
+    const targetBudget = Math.floor(TARGET_STACK_FOCUS_CHECKPOINT_VALUES / this.stackPointCount);
+    const checkpointBudget = Math.min(
+      MAX_STACK_FOCUS_CHECKPOINTS,
+      targetBudget > 0 ? targetBudget : Number(this.stackPointCount <= MAX_STACK_FOCUS_CHECKPOINT_VALUES)
+    );
+    if (checkpointBudget === 0) {
+      return;
+    }
+
+    const allocations = new Int32Array(metadataLength);
+    for (let checkpoint = 0; checkpoint < checkpointBudget; checkpoint++) {
+      let selectedGroup = 0;
+      let selectedSpan = 1;
+      for (let group = 1; group < metadataLength; group++) {
+        const count = groupCounts[group];
+        if (allocations[group] >= count - 1) {
+          continue;
+        }
+        const span = Math.ceil(count / (allocations[group] + 1));
+        if (span > selectedSpan) {
+          selectedSpan = span;
+          selectedGroup = group;
+        }
+      }
+      if (selectedGroup === 0) {
+        break;
+      }
+      allocations[selectedGroup]++;
+    }
+
+    let checkpointCount = 0;
+    for (let group = 1; group < metadataLength; group++) {
+      const allocation = allocations[group];
+      if (allocation === 0) {
+        continue;
+      }
+      const stride = Math.ceil(groupCounts[group] / (allocation + 1));
+      const count = Math.min(allocation, Math.floor((groupCounts[group] - 1) / stride));
+      this.focusStackCheckpointGroupOffsets[group] = checkpointCount + 1;
+      this.focusStackCheckpointGroupCounts[group] = count;
+      this.focusStackCheckpointGroupStrides[group] = stride;
+      checkpointCount += count;
+    }
+
+    const required = checkpointCount * this.stackPointCount;
+    if (this.focusStackCheckpoints.length < required) {
+      this.focusStackCheckpoints = new Float64Array(required);
+    }
+    if (this.focusStackCheckpointSeries.length < checkpointCount) {
+      this.focusStackCheckpointSeries = new Int32Array(checkpointCount);
+    }
+  }
+
+  private captureFocusStackCheckpoint(series: number): void {
+    if (!this.isVisibleStackSeries(series, this.getStackGroup(series))) {
+      return;
+    }
+    const group = this.getStackGroup(series);
+    const stride = this.focusStackCheckpointGroupStrides[group] ?? 0;
+    if (stride === 0) {
+      return;
+    }
+    const progress = ++this.focusStackCheckpointGroupProgress[group];
+    if (progress % stride !== 0) {
+      return;
+    }
+    const groupCheckpoint = progress / stride - 1;
+    if (groupCheckpoint >= this.focusStackCheckpointGroupCounts[group]) {
+      return;
+    }
+    const checkpoint = this.focusStackCheckpointGroupOffsets[group] - 1 + groupCheckpoint;
+    const sourceOffset = (group - 1) * this.stackPointCount;
+    const checkpointOffset = checkpoint * this.stackPointCount;
+    this.focusStackCheckpointSeries[checkpoint] = series;
+    this.focusStackCheckpoints.set(
+      this.stackScratch.subarray(sourceOffset, sourceOffset + this.stackPointCount),
+      checkpointOffset
+    );
   }
 
   private clearFocusOverlay(): void {
@@ -3644,19 +3915,39 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       return;
     }
     const scratchIndex = this.getStackScratchIndex(index);
-    this.stackPresence[scratchIndex] = 1;
-    this.stackTotals[scratchIndex] += rawValue;
+    const total = this.stackTotals[scratchIndex];
+    const next = total + rawValue;
+    const exact =
+      this.stackPresence[scratchIndex] !== 2 &&
+      Number.isSafeInteger(total) &&
+      Number.isSafeInteger(rawValue) &&
+      Number.isSafeInteger(next);
+    this.stackPresence[scratchIndex] = exact ? 1 : 2;
+    this.stackTotals[scratchIndex] = next;
+  }
+
+  private visitStackSubtract(index: number, rawValue: CompactPlotValue): void {
+    if (rawValue == null || rawValue === 0) {
+      return;
+    }
+    const scratchIndex = this.getStackScratchIndex(index);
+    const total = this.focusStackScratch[scratchIndex];
+    const baseline = total - rawValue;
+    if (
+      this.stackPresence[scratchIndex] !== 1 ||
+      !Number.isSafeInteger(total) ||
+      !Number.isSafeInteger(rawValue) ||
+      !Number.isSafeInteger(baseline)
+    ) {
+      this.focusStackSuffixStable = false;
+      return;
+    }
+    this.focusStackScratch[scratchIndex] = baseline;
   }
 
   private visitStackCommit(index: number, rawValue: CompactPlotValue): void {
     if (rawValue != null) {
       this.commitStackValue(index, rawValue);
-    }
-  }
-
-  private visitStackSubtract(index: number, rawValue: CompactPlotValue): void {
-    if (rawValue != null) {
-      this.stackScratch[this.getStackScratchIndex(index)] -= rawValue;
     }
   }
 

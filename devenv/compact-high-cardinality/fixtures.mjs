@@ -103,9 +103,6 @@ export async function createFullDashboardFixture(filePath, pointCount, { preserv
 
 function getCompactTransportIneligibility(panel, targets) {
   const reasons = [];
-  if (usesBarRendering(panel.fieldConfig)) {
-    reasons.push('bar-rendering');
-  }
   if (targets.length === 0) {
     reasons.push('no-enabled-targets');
     return reasons;
@@ -129,15 +126,6 @@ function getCompactTransportIneligibility(panel, targets) {
     }
   }
   return [...new Set(reasons)];
-}
-
-function usesBarRendering(fieldConfig) {
-  if (fieldConfig?.defaults?.custom?.drawStyle === 'bars') {
-    return true;
-  }
-  return (fieldConfig?.overrides ?? []).some((override) =>
-    (override.properties ?? []).some((property) => property.id === 'custom.drawStyle' && property.value === 'bars')
-  );
 }
 
 function createBuiltInDashboard(scenarioName, pointCount) {

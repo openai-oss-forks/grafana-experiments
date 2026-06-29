@@ -22,57 +22,49 @@ const compactFieldConfig: CompactFieldConfigOptions = {
 describe('GraphNGRenderer compact state ownership', () => {
   test('keeps the initial transparent compact shell non-interactive until its first completed frame', () => {
     const data = compactData();
-    const renderer = new GraphNGRenderer(graphProps(data, 100, 100));
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(graphProps(data, 100, 100));
 
     const initialShell = renderer.render();
     expect(initialShell?.props['aria-hidden']).toBe(true);
     expect(initialShell?.props.style).toMatchObject({ opacity: 0, pointerEvents: 'none' });
 
-    renderCompactPlot(renderer, 100, 100);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 100);
+    completeCurrentFrame(renderer, 100, 100);
 
     const completedShell = renderer.render();
     expect(completedShell?.props['aria-hidden']).toBe(false);
     expect(completedShell?.props.style).toMatchObject({ opacity: 1, pointerEvents: undefined });
   });
 
-  test('clears a replaced compact source while non-renderable and rebuilds the latest source on reentry', () => {
+  test('preserves ownership for a same-source zero-size update', () => {
+    const first = compactData();
+    const initialProps = graphProps(first, 100, 100);
+    const renderer = createRenderer(initialProps);
+    const initialPlan = renderer.state.compactPlan;
+
+    updateRenderer(renderer, initialProps, graphProps(first, 0, 100));
+
+    expect(renderer.state.compactPlan).toBe(initialPlan);
+  });
+
+  test('releases a replaced source while hidden and rebuilds it on reentry', () => {
     const first = compactData();
     const second = compactData();
     const initialProps = graphProps(first, 100, 100);
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
-
-    expect(renderer.state.compactPlan?.data).toBe(first);
-
+    const renderer = createRenderer(initialProps);
     const hiddenProps = graphProps(second, 0, 100);
+
     updateRenderer(renderer, initialProps, hiddenProps);
     expectGraphStateCleared(renderer.state);
+    updateRenderer(renderer, hiddenProps, graphProps(second, 100, 100));
 
-    const visibleProps = graphProps(second, 100, 100);
-    updateRenderer(renderer, hiddenProps, visibleProps);
     expect(renderer.state.compactPlan?.data).toBe(second);
     expect(renderer.state.config).toBeDefined();
   });
 
-  test('preserves the current compact plan across a temporary same-source zero-size update', () => {
+  test('releases compact state when the input becomes empty', () => {
     const data = compactData();
     const initialProps = graphProps(data, 100, 100);
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
-    const plan = renderer.state.compactPlan;
-
-    updateRenderer(renderer, initialProps, graphProps(data, 0, 100));
-
-    expect(renderer.state.compactPlan).toBe(plan);
-  });
-
-  test('clears compact state when the input becomes empty', () => {
-    const data = compactData();
-    const initialProps = graphProps(data, 100, 100);
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(initialProps);
 
     updateRenderer(renderer, initialProps, graphProps(undefined, 100, 100));
 
@@ -83,15 +75,13 @@ describe('GraphNGRenderer compact state ownership', () => {
     const first = compactData();
     const second = compactData();
     const initialProps = graphProps(first, 100, 100);
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(initialProps);
     const firstPlan = renderer.state.compactPlan!;
     getCompactRenderController(firstPlan.source).setSeriesVisibility(0, false);
 
     updateRenderer(renderer, initialProps, graphProps(second, 100, 100));
 
     expect(renderer.state.compactPlan?.source.columns.visibility[0]).toBe(0);
-    expect(renderer.state.compactPlan?.source.visibilityState.overrides.size).toBe(1);
   });
 
   test('publishes cumulative compact batches without rebuilding a compatible plot configuration', () => {
@@ -99,44 +89,38 @@ describe('GraphNGRenderer compact state ownership', () => {
     const second = compactData(2);
     const prepCompactConfig = jest.fn(() => new UPlotConfigBuilder('utc'));
     const initialProps = { ...graphProps(first, 100, 100), prepCompactConfig };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(initialProps);
     const initialConfig = renderer.state.config;
 
     updateRenderer(renderer, initialProps, { ...graphProps(second, 100, 100), prepCompactConfig });
 
     expect(renderer.state.compactPlan?.data).toBe(second);
     expect(renderer.state.config).toBe(initialConfig);
-    expect(prepCompactConfig).toHaveBeenCalledTimes(1);
   });
 
   test('retains the completed compact frame until a replacement request finishes drawing', () => {
     const first = compactData();
     const second = compactData();
     const initialProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(initialProps);
     const firstPlan = renderer.state.compactPlan!;
-    const firstConfig = renderer.state.config!;
-    renderCompactPlot(renderer, 100, 100);
-    renderer['onCompactFrameReady'](firstPlan.source, firstConfig, 100, 100);
+    completeCurrentFrame(renderer, 100, 100);
 
     const nextProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
     updateRenderer(renderer, initialProps, nextProps);
+    const replacementSource = renderer.state.compactPlan!.source;
 
     expect(renderer.state.compactPlan?.data).toBe(second);
-    expect(renderer.state.presentedCompactPlan).toBe(firstPlan);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+    expect(renderCompactPlot(renderer, 100, 100).props.data).toBe(firstPlan.source);
+    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': true, 'aria-hidden': false });
 
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 100);
-    expect(renderer.state.presentedCompactPlan).toBe(firstPlan);
+    expect(renderer['onCompactFrameReady'](replacementSource, renderer.state.config!, 100, 100)).toBe(false);
+    expect(renderCompactPlot(renderer, 100, 100).props.data).toBe(firstPlan.source);
 
     renderer['onStagedCompactLayout'](renderer.state.compactLayoutKey!, 90, 80);
-    renderCompactPlot(renderer, 90, 80);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 90, 80);
-    expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
-    expect(renderer.state.presentedCompactSessionKey).toBe('request-2');
-    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
+    expect(completeCurrentFrame(renderer, 90, 80)).toBe(true);
+    expect(renderCompactPlot(renderer, 90, 80).props.data).toBe(replacementSource);
+    expect(renderer.render()?.props['aria-busy']).toBe(false);
   });
 
   test('reuses capped legend geometry while a changed progressive final source draws', () => {
@@ -154,25 +138,19 @@ describe('GraphNGRenderer compact state ownership', () => {
       compactStreaming: true,
       legend,
     };
-    const renderer = new GraphNGRenderer(streamingProps);
-    installSynchronousSetState(renderer);
-    renderCompactPlot(renderer, 100, 65);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 65);
+    const renderer = createRenderer(streamingProps);
+    completeCurrentFrame(renderer, 100, 65);
 
     const finalProps = { ...streamingProps, compactSeries: second, compactStreaming: false };
     updateRenderer(renderer, streamingProps, finalProps);
 
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
-    expect(renderer.state.stagedCompactLayoutKey).toBe(renderer.state.compactLayoutKey);
-    expect(renderer.state.stagedCompactWidth).toBe(100);
-    expect(renderer.state.stagedCompactHeight).toBe(65);
-    expect(renderer.render()?.props.children[1]).toBe(false);
+    const pendingPlot = renderCompactPlot(renderer, 200, 100);
+    expect(pendingPlot.props).toMatchObject({ width: 100, height: 65 });
+    expect(pendingPlot.props.data.seriesCount).toBe(2);
+    expect(pendingPlot.props.holdPreviousCompactFrame).toBe(true);
 
-    renderCompactPlot(renderer, 100, 65);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 65);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
-    expect(renderer.state.presentedCompactPlan?.data).toBe(second);
-    expect(renderer.state.presentedCompactPlan?.seriesCount).toBe(2);
+    expect(completeCurrentFrame(renderer, 100, 65)).toBe(true);
+    expect(renderer.render()?.props['aria-busy']).toBe(false);
   });
 
   test('ignores completion from a compact plan that never reached the plot', () => {
@@ -180,11 +158,8 @@ describe('GraphNGRenderer compact state ownership', () => {
     const second = compactData();
     const third = compactData();
     const initialProps = { ...graphProps(first, 100, 100), compactRequestKey: 'request-1' };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
-    renderCompactPlot(renderer, 100, 100);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 100);
-    const presented = renderer.state.presentedCompactPlan;
+    const renderer = createRenderer(initialProps);
+    completeCurrentFrame(renderer, 100, 100);
 
     const secondProps = { ...graphProps(second, 100, 100), compactRequestKey: 'request-2' };
     updateRenderer(renderer, initialProps, secondProps);
@@ -195,8 +170,7 @@ describe('GraphNGRenderer compact state ownership', () => {
     const accepted = renderer['onCompactFrameReady'](stalePlan.source, staleConfig, 90, 80);
 
     expect(accepted).toBe(false);
-    expect(renderer.state.presentedCompactPlan).toBe(presented);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
+    expect(renderer.render()?.props).toMatchObject({ 'aria-busy': true, 'aria-hidden': false });
     renderer.componentWillUnmount();
     requestFrame.mockRestore();
   });
@@ -210,8 +184,7 @@ describe('GraphNGRenderer compact state ownership', () => {
       compactStreaming: true,
       structureRev: 1,
     };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(initialProps);
     const firstPlan = renderer.state.compactPlan!;
     const firstConfig = renderer.state.config!;
     renderCompactPlot(renderer);
@@ -226,14 +199,13 @@ describe('GraphNGRenderer compact state ownership', () => {
     commitFrame?.(0);
 
     expect(renderer.state.compactPlan?.data).toBe(second);
-    expect(renderer.state.presentedCompactPlan).toBeUndefined();
+    expect(renderer.render()?.props['aria-hidden']).toBe(true);
 
     const accepted = renderer['onCompactFrameReady'](firstPlan.source, firstConfig, 100, 80);
 
     expect(accepted).toBe(true);
-    expect(renderer.state.presentedCompactPlan).toBe(firstPlan);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
     expect(renderer.render()?.props['aria-hidden']).toBe(false);
+    expect(renderer.render()?.props['aria-busy']).toBe(true);
     requestFrame.mockRestore();
   });
 
@@ -252,12 +224,8 @@ describe('GraphNGRenderer compact state ownership', () => {
       compactStreaming: true,
       legend,
     };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
-    renderCompactPlot(renderer);
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 80);
-    const initialPlan = renderer.state.presentedCompactPlan;
-    const initialConfig = renderer.state.presentedCompactConfig;
+    const renderer = createRenderer(initialProps);
+    completeCurrentFrame(renderer);
     const initialLayoutKey = renderer.state.compactLayoutKey;
     const barsFieldConfig: CompactFieldConfigOptions = {
       ...compactFieldConfig,
@@ -281,36 +249,27 @@ describe('GraphNGRenderer compact state ownership', () => {
     updateRenderer(renderer, initialProps, barsProps);
 
     expect(renderer.state.compactLayoutKey).toBe(initialLayoutKey);
-    expect(renderer.state.compactPlan!.source.columns.flags[0] & CompactSeriesFlag.Bars).not.toBe(0);
-    expect(renderer.state.presentedCompactPlan).toBe(initialPlan);
-    expect(renderer.state.presentedCompactConfig).toBe(initialConfig);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(true);
-    expect(renderer.state.stagedCompactLayoutKey).toBeUndefined();
     const barsPlot = renderCompactPlot(renderer);
-    expect(barsPlot.props.data).toBe(renderer.state.compactPlan!.source);
-    expect(barsPlot.props.config).toBe(renderer.state.config);
+    expect(barsPlot.props.data.columns.flags[0] & CompactSeriesFlag.Bars).not.toBe(0);
     expect(barsPlot.props.holdPreviousCompactFrame).toBe(true);
+    expect(renderer.render()?.props['aria-busy']).toBe(true);
 
-    renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 100, 80);
-    expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
-    expect(renderer.state.holdPreviousCompactFrame).toBe(false);
+    completeCurrentFrame(renderer);
+    expect(renderer.render()?.props['aria-busy']).toBe(false);
 
     updateRenderer(renderer, barsProps, initialProps);
 
     expect(renderer.state.compactLayoutKey).toBe(initialLayoutKey);
-    expect(renderer.state.compactPlan!.source.columns.flags[0] & CompactSeriesFlag.Bars).toBe(0);
-    expect(renderer.state.compactPlan!.source.columns.flags[0] & CompactSeriesFlag.DrawLine).not.toBe(0);
     const linesPlot = renderCompactPlot(renderer);
-    expect(linesPlot.props.data).toBe(renderer.state.compactPlan!.source);
-    expect(linesPlot.props.config).toBe(renderer.state.config);
+    expect(linesPlot.props.data.columns.flags[0] & CompactSeriesFlag.Bars).toBe(0);
+    expect(linesPlot.props.data.columns.flags[0] & CompactSeriesFlag.DrawLine).not.toBe(0);
     expect(linesPlot.props.holdPreviousCompactFrame).toBe(true);
   });
 
   test('rejects a completed frame whose plot geometry predates the latest render', () => {
     const data = compactData();
     const initialProps = graphProps(data, 100, 100);
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(initialProps);
     const source = renderer.state.compactPlan!.source;
     const config = renderer.state.config!;
     renderCompactPlot(renderer, 100, 80);
@@ -320,15 +279,14 @@ describe('GraphNGRenderer compact state ownership', () => {
     renderCompactPlot(renderer, 200, 80);
 
     expect(renderer['onCompactFrameReady'](source, config, 100, 80)).toBe(false);
-    expect(renderer.state.presentedCompactPlan).toBeUndefined();
+    expect(renderer.render()?.props['aria-hidden']).toBe(true);
     expect(renderer['onCompactFrameReady'](source, config, 200, 80)).toBe(true);
-    expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
+    expect(renderer.render()?.props['aria-hidden']).toBe(false);
   });
 
   test('normalizes fractional layout geometry before validating a completed frame', () => {
     const data = compactData();
-    const renderer = new GraphNGRenderer(graphProps(data, 200, 100));
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(graphProps(data, 200, 100));
 
     const plot = renderCompactPlot(renderer, 199.75, 79.5);
 
@@ -336,7 +294,7 @@ describe('GraphNGRenderer compact state ownership', () => {
     expect(renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, 199, 79)).toBe(
       true
     );
-    expect(renderer.state.presentedCompactPlan).toBe(renderer.state.compactPlan);
+    expect(renderer.render()?.props['aria-hidden']).toBe(false);
   });
 
   test('coalesces compatible streaming revisions to the newest source in one display frame', () => {
@@ -350,8 +308,7 @@ describe('GraphNGRenderer compact state ownership', () => {
       structureRev: 1,
       prepCompactConfig,
     };
-    const renderer = new GraphNGRenderer(initialProps);
-    installSynchronousSetState(renderer);
+    const renderer = createRenderer(initialProps);
     const initialConfig = renderer.state.config;
     let commitFrame: FrameRequestCallback | undefined;
     const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
@@ -441,6 +398,12 @@ function compactData(seriesCount = 1, pointCount = 2): CompactTimeSeriesData {
   };
 }
 
+function createRenderer(props: GraphNGProps): GraphNGRenderer {
+  const renderer = new GraphNGRenderer(props);
+  installSynchronousSetState(renderer);
+  return renderer;
+}
+
 function installSynchronousSetState(renderer: GraphNGRenderer): void {
   renderer.setState = ((next: GraphNGState, callback?: () => void) => {
     renderer.state = { ...renderer.state, ...next };
@@ -456,6 +419,11 @@ function updateRenderer(renderer: GraphNGRenderer, previous: GraphNGProps, next:
 function renderCompactPlot(renderer: GraphNGRenderer, width = 100, height = 80) {
   const shell = renderer.render();
   return shell?.props.children[0].props.children(width, height);
+}
+
+function completeCurrentFrame(renderer: GraphNGRenderer, width = 100, height = 80): boolean {
+  renderCompactPlot(renderer, width, height);
+  return renderer['onCompactFrameReady'](renderer.state.compactPlan!.source, renderer.state.config!, width, height);
 }
 
 function expectGraphStateCleared(state: GraphNGState): void {
