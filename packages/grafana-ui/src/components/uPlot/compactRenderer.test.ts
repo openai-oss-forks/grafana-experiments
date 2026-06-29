@@ -334,6 +334,55 @@ describe('CompactRenderController', () => {
     }
   });
 
+  test('prepares bounded stacked-bar hover before progressive drawing completes', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    try {
+      const seriesCount = 1_000;
+      const source = createVirtualSource(seriesCount, 40);
+      Reflect.set(
+        source.columns,
+        'flags',
+        new Uint16Array(seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
+      );
+      Reflect.set(source.columns, 'stackGroupIds', new Uint8Array(seriesCount).fill(1));
+      Reflect.set(source, 'stackGroupCount', 1);
+      Reflect.set(source, 'stackDirections', new Int8Array([1]));
+      Reflect.set(source, 'styles', [{ stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }]);
+      const yAt = jest.fn(source.yAt);
+      source.yAt = yAt;
+      const controller = new CompactRenderController(source);
+      const { plot, context } = createPlot();
+      plot.cursor.left = 20;
+      const completed = controller.draw(plot, 0, 39);
+      let bounded = false;
+
+      for (let turn = 0; turn < 50 && !bounded; turn++) {
+        runNextTimer(callbacks);
+        yAt.mockClear();
+        controller.updateCursor(plot, 20, 50, 'local');
+        bounded = yAt.mock.calls.length < seriesCount;
+      }
+
+      expect(bounded).toBe(true);
+      expect(controller.isProgressiveDrawInFlight()).toBe(true);
+      expect(context.fill).not.toHaveBeenCalled();
+      controller.destroy(source);
+      await expect(completed).resolves.toBe(false);
+    } finally {
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
+  });
+
   test('keeps long low-cardinality sources on the existing synchronous path', () => {
     const source = createVirtualSource(1, 40_000);
     source.scan.mockImplementation(() => undefined);
@@ -1489,6 +1538,33 @@ describe('CompactRenderController', () => {
     expect(secondSnapshot.valueAt(1)).toBe(40);
   });
 
+  test('reuses a multi-tooltip snapshot when vertical movement stays at the same bar index', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[40], [40]], [flags, flags], 1, 'series', 'multi', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 0,
+      barWidthFactor: 0.8,
+    });
+    const cursorValueAt = jest.fn(source.cursorValueAt);
+    source.cursorValueAt = cursorValueAt;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+    controller.draw(plot, 0, 0);
+
+    controller.updateCursor(plot, 0, 20, 'local');
+    const snapshot = controller.getCursorSnapshot(0, plot);
+    const revision = snapshot.revision;
+    const populatedCallCount = cursorValueAt.mock.calls.length;
+    expect(populatedCallCount).toBeGreaterThan(0);
+
+    controller.updateCursor(plot, 0, 60, 'local');
+    expect(controller.getCursorSnapshot(0, plot)).toBe(snapshot);
+    expect(snapshot.revision).toBe(revision);
+    expect(cursorValueAt).toHaveBeenCalledTimes(populatedCallCount);
+  });
+
   test('uses the rendered horizontal Time series bar body as the hover target', () => {
     const source = createSource([[100, 100]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
       stroke: '#00f',
@@ -1885,6 +1961,133 @@ describe('CompactRenderController', () => {
     } finally {
       restoreContext();
     }
+  });
+
+  test.each([
+    { name: 'Time series bars', lineWidth: 0, grouped: false, transparent: false },
+    { name: 'stroked Time series bars', lineWidth: 1, grouped: false, transparent: false },
+    { name: 'stacked grouped bars', lineWidth: 1, grouped: true, transparent: false },
+    { name: 'stacks with transparent segments', lineWidth: 0, grouped: false, transparent: true },
+  ])('matches exhaustive $name selection across bodies and spacing', ({ lineWidth, grouped, transparent }) => {
+    const seriesCount = 129;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array.from({ length: seriesCount }, (_, series) => [
+      1 + (series % 3),
+      series % 7 === 0 ? null : 2,
+      1,
+    ]);
+    const createController = () => {
+      const source = createSource(values, Array(seriesCount).fill(flags), 1, 'series', 'single', {
+        stroke: '#f00',
+        areaFill: '#fcc',
+        lineWidth,
+        barWidthFactor: 0.6,
+      });
+      if (grouped) {
+        Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+      }
+      if (transparent) {
+        Reflect.set(source, 'styles', [...source.styles, { ...source.styles[0], alpha: 0 }]);
+        source.columns.styleIds[64] = 1;
+      }
+      const yAt = jest.fn(source.yAt);
+      source.yAt = yAt;
+      return { controller: new CompactRenderController(source), source, yAt };
+    };
+    const bounded = createController();
+    const exhaustive = createController();
+    const { plot: boundedPlot } = createPlot();
+    const { plot: exhaustivePlot } = createPlot();
+    bounded.controller.draw(boundedPlot, 0, 2);
+
+    for (const { index, x, y } of [
+      { index: 0, x: 0, y: 50.5 },
+      { index: 1, x: 0.5, y: 80.5 },
+      { index: 1, x: 1, y: 160.5 },
+      { index: 2, x: 1.5, y: 100.5 },
+      { index: 2, x: 2, y: 20.5 },
+    ]) {
+      boundedPlot.cursor.left = x;
+      exhaustivePlot.cursor.left = x;
+      bounded.yAt.mockClear();
+      expect({ ...bounded.controller.updateCursor(boundedPlot, index, y, 'local') }).toEqual({
+        ...exhaustive.controller.updateCursor(exhaustivePlot, index, y, 'local'),
+      });
+      if (transparent) {
+        expect(bounded.yAt.mock.calls.length).toBeGreaterThan(seriesCount);
+      } else {
+        expect(bounded.yAt.mock.calls.length).toBeLessThan(seriesCount);
+      }
+    }
+  });
+
+  test('keeps bounded grouped stack selection across visibility and source changes', () => {
+    const seriesCount = 129;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const createStackSource = () => {
+      const source = createSource(
+        Array.from({ length: seriesCount }, () => [1, 1, 1]),
+        Array(seriesCount).fill(flags),
+        1,
+        'series',
+        'single',
+        { stroke: '#f00', areaFill: '#fcc', lineWidth: 1, barWidthFactor: 0.6 }
+      );
+      Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+      const yAt = jest.fn(source.yAt);
+      source.yAt = yAt;
+      return { source, yAt };
+    };
+    const first = createStackSource();
+    const second = createStackSource();
+    const controller = new CompactRenderController(first.source);
+    const { plot } = createPlot();
+    plot.cursor.left = 1;
+    const expectBoundedHover = ({ yAt }: ReturnType<typeof createStackSource>) => {
+      yAt.mockClear();
+      expect(controller.updateCursor(plot, 1, 80.5, 'local')).toMatchObject({ hasPoint: true });
+      expect(yAt.mock.calls.length).toBeLessThan(seriesCount);
+    };
+
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(first);
+
+    controller.extent(plot, 'y', 0, 2);
+    first.yAt.mockClear();
+    expect(controller.updateCursor(plot, 1, 80.5, 'local')).toMatchObject({ hasPoint: true });
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(first);
+
+    expect(controller.setSeries(0, { show: false })).toBe(true);
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(first);
+
+    controller.replaceSource(first.source, second.source);
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(second);
+  });
+
+  test('falls back when opposing values are hidden inside one checkpoint span', () => {
+    const seriesCount = 129;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array.from({ length: seriesCount }, (_, series) => [series === 50 ? -100 : series === 51 ? 100 : 1]);
+    const source = createSource(values, Array(seriesCount).fill(flags), 1, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 0,
+      barWidthFactor: 0.6,
+    });
+    const yAt = jest.fn(source.yAt);
+    source.yAt = yAt;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+
+    controller.draw(plot, 0, 0);
+    yAt.mockClear();
+
+    expect(controller.updateCursor(plot, 0, 0.5, 'local')).toMatchObject({ hasPoint: true });
+    expect(yAt.mock.calls.length).toBeGreaterThan(seriesCount);
   });
 
   test('bounds tail focus scans for many short stacked series', () => {

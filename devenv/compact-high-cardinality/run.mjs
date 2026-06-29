@@ -946,7 +946,7 @@ async function verifyPanelInteractions(page, responseFormat, seriesCount) {
     : undefined;
   const scrollReachedLastRow =
     responseFormat === 'compact-v1' && tooltip.listTotalRows > tooltip.mountedRows - tooltip.focusedRows
-      ? await verifyVirtualTooltipScroll(page, tooltip.listTotalRows)
+      ? await verifyVirtualTooltipScroll(page)
       : null;
   const pinning = await verifyCompactTooltipPinning(page, bounds, responseFormat);
   const interactionResult = {
@@ -1093,30 +1093,32 @@ async function collectTooltipRowDigests(page, responseFormat, listTotalRows, foc
   );
 }
 
-async function verifyVirtualTooltipScroll(page, totalRows) {
-  const lastMountedIndex = await page.evaluate(async () => {
+async function verifyVirtualTooltipScroll(page) {
+  const result = await page.evaluate(async () => {
     const tooltip = document.querySelector('[data-testid="data-testid viz-tooltip-wrapper"]');
     const rows = tooltip?.querySelector('[role="list"]');
     if (!(rows instanceof HTMLElement)) {
-      return -1;
+      return { lastMountedIndex: -1, totalRows: 0 };
     }
     rows.scrollTop = rows.scrollHeight;
     const deadline = performance.now() + 2_000;
     let lastIndex = -1;
+    let totalRows = 0;
     while (performance.now() < deadline) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
       const mounted = Array.from(rows.querySelectorAll('[data-index]'));
       lastIndex = Number(mounted.at(-1)?.getAttribute('data-index'));
-      if (lastIndex === Number(mounted[0]?.getAttribute('aria-setsize')) - 1) {
+      totalRows = Number(mounted[0]?.getAttribute('aria-setsize'));
+      if (lastIndex === totalRows - 1) {
         break;
       }
     }
     rows.scrollTop = 0;
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    return lastIndex;
+    return { lastMountedIndex: lastIndex, totalRows };
   });
-  if (lastMountedIndex !== totalRows - 1) {
-    throw new Error(`Compact tooltip stopped at row ${lastMountedIndex}; expected ${totalRows - 1}`);
+  if (result.totalRows <= 0 || result.lastMountedIndex !== result.totalRows - 1) {
+    throw new Error(`Compact tooltip stopped at row ${result.lastMountedIndex}; expected ${result.totalRows - 1}`);
   }
   return true;
 }
