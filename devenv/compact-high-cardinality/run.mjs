@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
@@ -10,6 +11,7 @@ import {
   summarizeGrafanaJsonResponse,
 } from './compact-v1.mjs';
 import { createDashboardFixture, DASHBOARD_UID, DATASOURCE_UID } from './fixtures.mjs';
+import { seekCompactFocusOverlay } from './focus-overlay.mjs';
 import { buildJsonResponse } from './json-response.mjs';
 import { runPanelFsm } from './panel-fsm.mjs';
 
@@ -18,6 +20,10 @@ const COMPACT_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact;version=1'
 const COMPACT_BASE_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact';
 const JSON_MEDIA_TYPE = 'application/json';
 const verifyPanelFsm = process.env.VERIFY_PANEL_FSM === '1';
+const panelFsmPhase = process.env.PANEL_FSM_PHASE ?? 'all';
+if (!['all', 'transitions', 'crud'].includes(panelFsmPhase)) {
+  throw new Error(`PANEL_FSM_PHASE must be all, transitions, or crud; received ${panelFsmPhase}`);
+}
 
 const options = {
   baseUrl: process.env.GRAFANA_URL ?? 'http://127.0.0.1:3000',
@@ -52,12 +58,14 @@ const options = {
   editPanel: process.env.EDIT_PANEL === '1',
   verifyPanelEditor: process.env.VERIFY_PANEL_EDITOR === '1',
   verifyPanelFsm,
+  panelFsmPhase,
+  panelFsmScreenshots: process.env.PANEL_FSM_SCREENSHOTS !== '0',
   highlightSeriesOnHover: readOptionalBoolean('HIGHLIGHT_SERIES_ON_HOVER'),
   preservePanelGrid: process.env.PRESERVE_PANEL_GRID === '1',
   deviceScaleFactor: readPositiveNumber('DEVICE_SCALE_FACTOR', 1),
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-high-cardinality',
   chromiumPath: process.env.CHROMIUM_PATH,
-  dashboardUid: process.env.DASHBOARD_UID ?? `${DASHBOARD_UID}-${process.pid}`,
+  dashboardUid: process.env.DASHBOARD_UID ?? `${DASHBOARD_UID.slice(0, 30)}-${randomUUID().slice(0, 8)}`,
 };
 
 if (process.argv.includes('--help')) {
@@ -99,6 +107,8 @@ Environment:
                           toggle, including compact highlight removal/restoration
   VERIFY_PANEL_FSM        Set to 1 to traverse dashboard, editor visualization/style changes,
                           save, dashboard return, and refresh with compact/full UI assertions
+  PANEL_FSM_PHASE         all, transitions, or crud (default: all)
+  PANEL_FSM_SCREENSHOTS   Set to 0 to keep only the final dashboard screenshot
   HIGHLIGHT_SERIES_ON_HOVER
                           Override the selected panel's hover highlighting with true or false
   CHROMIUM_PATH           Optional Chromium executable
@@ -171,7 +181,10 @@ page.on('response', (response) => {
 await context.route('**/api/ds/query**', async (route) => {
   const request = route.request();
   const headers = request.headers();
-  if (headers['x-dashboard-uid'] !== options.dashboardUid || !interceptedPanelIds.has(headers['x-panel-id'])) {
+  if (
+    headers['x-dashboard-uid'] !== options.dashboardUid ||
+    (!options.verifyPanelFsm && !interceptedPanelIds.has(headers['x-panel-id']))
+  ) {
     await route.continue();
     return;
   }
@@ -303,11 +316,16 @@ const report = {
   samples: [],
   pageErrors,
 };
+let dashboardCreated = false;
 
 try {
   await login(context, options);
   await ensureDatasource(context, options.baseUrl);
+  if (options.verifyPanelFsm) {
+    await assertDashboardAbsent(context, options.baseUrl, options.dashboardUid);
+  }
   await putDashboard(context, options.baseUrl, fixture.dashboard);
+  dashboardCreated = true;
   report.baseline = await collectBrowserSample(cdp, page, 'pre-dashboard');
 
   const dashboardRange =
@@ -339,6 +357,8 @@ try {
       dashboardUid: options.dashboardUid,
       pageErrors,
       fixture: panelFsmFixture,
+      phase: options.panelFsmPhase,
+      captureScreenshots: options.panelFsmScreenshots,
     });
   }
   await captureChart(page, path.join(options.outputDir, 'chart.png'));
@@ -429,6 +449,23 @@ try {
   }
   process.exitCode = 1;
 } finally {
+  if (options.verifyPanelFsm && dashboardCreated) {
+    try {
+      report.fixtureCleanup = await deleteDashboard(context, options.baseUrl, options.dashboardUid);
+    } catch (error) {
+      report.fixtureCleanup = {
+        deleted: false,
+        error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+      };
+    }
+    if (!report.fixtureCleanup.deleted && report.status === 'passed') {
+      const cleanupError =
+        report.fixtureCleanup.error ?? `${report.fixtureCleanup.status} ${report.fixtureCleanup.body}`;
+      report.status = 'failed';
+      report.error = `Disposable dashboard cleanup failed: ${cleanupError}`;
+      process.exitCode = 1;
+    }
+  }
   const reportPath = path.join(options.outputDir, 'metrics.json');
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   printReport(report, reportPath);
@@ -765,6 +802,26 @@ async function putDashboard(context, baseUrl, dashboard) {
   if (!response.ok()) {
     throw new Error(`Dashboard creation failed: ${response.status()} ${await response.text()}`);
   }
+}
+
+async function assertDashboardAbsent(context, baseUrl, dashboardUid) {
+  const response = await context.request.get(`${baseUrl}/api/dashboards/uid/${dashboardUid}`);
+  if (response.status() !== 404) {
+    throw new Error(
+      response.ok()
+        ? `VERIFY_PANEL_FSM refuses to overwrite existing dashboard ${dashboardUid}`
+        : `Dashboard preflight failed: ${response.status()} ${await response.text()}`
+    );
+  }
+}
+
+async function deleteDashboard(context, baseUrl, dashboardUid) {
+  const response = await context.request.delete(`${baseUrl}/api/dashboards/uid/${dashboardUid}`);
+  return {
+    deleted: response.ok() || response.status() === 404,
+    status: response.status(),
+    body: await response.text(),
+  };
 }
 
 function parseQueryRequest(postData) {
@@ -1514,27 +1571,7 @@ function summarizeHoverStages(stages) {
 async function verifyFocusOverlay(page, bounds, responseFormat, expectFocusOverlay) {
   let overlayCount = await page.locator('.u-compact-focus-overlay').count();
   if (responseFormat === 'compact-v1' && expectFocusOverlay && overlayCount === 0) {
-    const cursorPoint = await page.locator('.u-cursor-pt').first().boundingBox();
-    if (
-      cursorPoint &&
-      cursorPoint.x >= bounds.x &&
-      cursorPoint.x <= bounds.x + bounds.width &&
-      cursorPoint.y >= bounds.y &&
-      cursorPoint.y <= bounds.y + bounds.height
-    ) {
-      await page.mouse.move(cursorPoint.x + cursorPoint.width / 2, cursorPoint.y + cursorPoint.height / 2);
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      overlayCount = await page.locator('.u-compact-focus-overlay').count();
-    }
-    for (let xStep = 1; xStep < 10 && overlayCount === 0; xStep++) {
-      for (let yStep = 1; yStep < 20 && overlayCount === 0; yStep++) {
-        await page.mouse.move(bounds.x + (bounds.width * xStep) / 10, bounds.y + (bounds.height * yStep) / 20);
-        await page.evaluate(
-          () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-        );
-        overlayCount = await page.locator('.u-compact-focus-overlay').count();
-      }
-    }
+    overlayCount = (await seekCompactFocusOverlay(page, page, bounds)).overlayCount;
   }
   if (responseFormat === 'compact-v1' && expectFocusOverlay && overlayCount !== 1) {
     throw new Error(`Compact hover expected one focus overlay, found ${overlayCount}`);
@@ -1767,8 +1804,10 @@ function printReport(report, reportPath) {
     );
   }
   if (report.panelFsm) {
+    const saved = report.panelFsm.saved ? ` saved=${report.panelFsm.saved.plugin}/${report.panelFsm.saved.style}` : '';
+    const crud = report.panelFsm.crud ? ` crudDuplicate=${report.panelFsm.crud.duplicatePanelId}` : '';
     console.log(
-      `panel FSM: transitions=${report.panelFsm.transitions.length} hoverOptionQueries=${report.panelFsm.hoverOptionQueryCount} saved=${report.panelFsm.saved.plugin}/${report.panelFsm.saved.style}`
+      `panel FSM: transitions=${report.panelFsm.transitions.length} hoverOptionQueries=${report.panelFsm.hoverOptionQueryCount}${saved}${crud}`
     );
   }
   if (report.error) {
