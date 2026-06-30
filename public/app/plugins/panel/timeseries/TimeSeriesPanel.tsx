@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 
 import {
+  CompactTimeSeriesData,
   PanelProps,
   DataFrameType,
   DashboardCursorSync,
@@ -8,7 +9,9 @@ import {
   alignTimeRangeCompareData,
   shouldAlignTimeCompare,
   useDataLinksContext,
+  FieldConfigSource,
   FieldType,
+  LoadingState,
 } from '@grafana/data';
 import { config, getPluginImportUtils, PanelDataErrorView } from '@grafana/runtime';
 import { TooltipDisplayMode, VizOrientation } from '@grafana/schema';
@@ -22,6 +25,10 @@ import {
 } from '@grafana/ui';
 import { FILTER_OUT_OPERATOR, TimeRange2, TooltipHoverMode } from '@grafana/ui/internal';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
+import {
+  getCompactTimeSeriesCapability,
+  isCompactTimeSeriesPanelConfigurationSupported,
+} from 'app/features/query/state/compactQueryPolicy';
 
 import { CompactTooltipPlugin } from './CompactTooltipPlugin';
 import { TimeSeriesTooltip } from './TimeSeriesTooltip';
@@ -36,6 +43,24 @@ import { getPrepareTimeseriesSuggestion } from './suggestions';
 import { getGroupedFilters, getTimezones, prepareGraphableFields } from './utils';
 
 interface TimeSeriesPanelProps extends PanelProps<Options> {}
+
+export function getRenderableCompactSeries(
+  compactSeries: CompactTimeSeriesData | undefined,
+  fieldConfig: FieldConfigSource,
+  options: Options,
+  hasFullFormatRequest = false
+): CompactTimeSeriesData | undefined {
+  return compactSeries &&
+    compactSeries.series.length > 0 &&
+    !hasFullFormatRequest &&
+    isCompactTimeSeriesPanelConfigurationSupported({
+      fieldConfig,
+      legendCalcs: Array.isArray(options.legend?.calcs) ? options.legend.calcs : undefined,
+      panelOptions: options,
+    })
+    ? compactSeries
+    : undefined;
+}
 
 export const TimeSeriesPanel = ({
   data,
@@ -66,12 +91,14 @@ export const TimeSeriesPanel = ({
   const theme = useTheme2();
 
   const userCanExecuteActions = useMemo(() => canExecuteActions?.() ?? false, [canExecuteActions]);
-  const hasCompactSeries = Boolean(data.compactSeries);
+  const hasFullFormatRequest = data.request != null && data.request.preferredQueryResultFormat !== 'compact-v1';
+  const compactSeries = getRenderableCompactSeries(data.compactSeries, fieldConfig, options, hasFullFormatRequest);
+  const hasCompactSeries = Boolean(compactSeries);
   // Vertical orientation is not available for users through config.
   // It is simplified version of horizontal time series panel and it does not support all plugins.
   const isVerticallyOriented = options.orientation === VizOrientation.Vertical;
   const { frames, compareDiffMs } = useMemo(() => {
-    if (data.compactSeries) {
+    if (compactSeries) {
       return { frames: [] };
     }
     let frames = prepareGraphableFields(data.series, theme, timeRange);
@@ -102,7 +129,7 @@ export const TimeSeriesPanel = ({
     }
 
     return { frames };
-  }, [data.compactSeries, data.series, theme, timeRange]);
+  }, [compactSeries, data.series, theme, timeRange]);
 
   const compactFieldConfig = useMemo(() => {
     if (!hasCompactSeries) {
@@ -121,6 +148,7 @@ export const TimeSeriesPanel = ({
       dataLinkPostProcessor,
       cursorMode: options.tooltip.mode,
       highlightSeriesOnHover: options.highlightSeriesOnHover !== false,
+      capability: getCompactTimeSeriesCapability(fieldConfig),
     };
   }, [
     dataLinkPostProcessor,
@@ -149,7 +177,7 @@ export const TimeSeriesPanel = ({
   const [newAnnotationRange, setNewAnnotationRange] = useState<TimeRange2 | null>(null);
   const cursorSync = sync?.() ?? DashboardCursorSync.Off;
 
-  if ((!frames && !data.compactSeries) || suggestions) {
+  if ((!frames && !compactSeries) || suggestions) {
     return (
       <PanelDataErrorView
         panelId={id}
@@ -166,8 +194,10 @@ export const TimeSeriesPanel = ({
   return (
     <TimeSeries
       frames={frames ?? []}
-      compactSeries={data.compactSeries}
+      compactSeries={compactSeries}
       compactFieldConfig={compactFieldConfig}
+      compactStreaming={Boolean(compactSeries && data.state === LoadingState.Streaming)}
+      compactRequestKey={data.request?.requestId}
       structureRev={data.structureRev}
       timeRange={timeRange}
       timeZone={timezones}
@@ -186,28 +216,26 @@ export const TimeSeriesPanel = ({
             <EventBusPlugin config={uplotConfig} eventBus={eventBus} compact />
           )}
           <XAxisInteractionAreaPlugin config={uplotConfig} queryZoom={onChangeTimeRange} />
-          {options.tooltip.mode !== TooltipDisplayMode.None && (
-            <CompactTooltipPlugin
-              config={uplotConfig}
-              plan={plan}
-              mode={options.tooltip.mode}
-              sortOrder={options.tooltip.sort}
-              hideZeros={options.tooltip.hideZeros}
-              maxHeight={options.tooltip.maxHeight}
-              maxWidth={options.tooltip.maxWidth}
-              syncMode={cursorSync}
-              syncScope={eventsScope}
-              timeZone={timeZone}
-              queryZoom={onChangeTimeRange}
-              onAnnotationRange={
-                enableAnnotationCreation
-                  ? (range) => {
-                      setNewAnnotationRange(range);
-                    }
-                  : undefined
-              }
-            />
-          )}
+          <CompactTooltipPlugin
+            config={uplotConfig}
+            plan={plan}
+            mode={options.tooltip.mode}
+            sortOrder={options.tooltip.sort}
+            hideZeros={options.tooltip.hideZeros}
+            maxHeight={options.tooltip.maxHeight}
+            maxWidth={options.tooltip.maxWidth}
+            syncMode={cursorSync}
+            syncScope={eventsScope}
+            timeZone={timeZone}
+            queryZoom={onChangeTimeRange}
+            onAnnotationRange={
+              enableAnnotationCreation
+                ? (range) => {
+                    setNewAnnotationRange(range);
+                  }
+                : undefined
+            }
+          />
           {!isVerticallyOriented && (
             <>
               <AnnotationsPlugin2

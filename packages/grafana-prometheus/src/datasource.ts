@@ -25,6 +25,7 @@ import {
   DataSourceWithQueryExportSupport,
   DataSourceWithQueryImportSupport,
   dateTime,
+  FieldType,
   getDefaultTimeRange,
   LegacyMetricFindQueryOptions,
   Labels,
@@ -62,11 +63,11 @@ import {
 } from './language_provider';
 import { expandRecordingRules, getPrometheusTime, getRangeSnapInterval } from './language_utils';
 import { PrometheusMetricFindQuery } from './metric_find_query';
+import { getPrometheusMultiBatchIntervals, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { getQueryHints } from './query_hints';
 import { renderLabelsWithoutBrackets } from './querybuilder/shared/rendering/labels';
 import { QueryBuilderLabelFilter, QueryEditorMode } from './querybuilder/shared/types';
 import { CacheRequestInfo, defaultPrometheusQueryOverlapWindow, QueryCache } from './querycache/QueryCache';
-import { getPrometheusMultiBatchIntervals, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { transformV2 } from './result_transformer';
 import { trackQuery } from './tracking';
 import {
@@ -82,6 +83,8 @@ import {
 } from './types';
 import { utf8Support, wrapUtf8Filters } from './utf8_support';
 import { PrometheusVariableSupport } from './variables';
+
+const MULTI_TARGET_BATCH_PUBLISH_DELAY_MS = 16;
 
 export class PrometheusDatasource
   extends DataSourceWithBackend<PromQuery, PromOptions>
@@ -571,32 +574,32 @@ export class PrometheusDatasource
       const completedTargets = new Set<string>();
       const targetKeys = targets.map((target, index) => target.refId ?? String(index));
       const responseKey = `${request.requestId}-prometheus-multibatch`;
+      let pendingResponse: DataQueryResponse | undefined;
+      let publishScheduled = false;
+      let cancelScheduledPublish: (() => void) | undefined;
+      let completeAfterPublish = false;
 
-      const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
-        latestDataByTarget.set(targetKey, response.data);
-        if (response.compactSeries) {
-          latestCompactSeriesByTarget.set(targetKey, response.compactSeries);
-        }
-        const targetError = response.error ?? response.errors?.[0];
-        if (targetError) {
-          errorsByTarget.set(targetKey, targetError);
-        }
-        if (response.state === LoadingState.Done) {
-          completedTargets.add(targetKey);
-        }
-
+      const publishCombinedResponse = (response: DataQueryResponse) => {
         const allTargetsDone = completedTargets.size === targets.length;
         const errors = targetKeys.flatMap((key) => {
           const error = errorsByTarget.get(key);
           return error ? [error] : [];
         });
-        const combinedCompactSeries = combineCompactTimeSeries(
-          targetKeys.map((key) => latestCompactSeriesByTarget.get(key))
+        const hasFullTarget = targetKeys.some(
+          (key) => latestDataByTarget.has(key) && !latestCompactSeriesByTarget.has(key)
         );
+        const combinedCompactSeries = hasFullTarget
+          ? undefined
+          : combineCompactTimeSeries(targetKeys.map((key) => latestCompactSeriesByTarget.get(key)));
         const rawCombinedResponse: DataQueryResponse = {
           ...response,
           compactSeries: combinedCompactSeries,
-          data: targetKeys.flatMap((key) => latestDataByTarget.get(key) ?? []),
+          data: targetKeys.flatMap((key) => {
+            const compactSeries = latestCompactSeriesByTarget.get(key);
+            return hasFullTarget && compactSeries
+              ? materializeCompactTimeSeries(compactSeries)
+              : (latestDataByTarget.get(key) ?? []);
+          }),
           error: errors[0],
           errors: errors.length > 0 ? errors : undefined,
           key: responseKey,
@@ -614,6 +617,60 @@ export class PrometheusDatasource
         subscriber.next(combinedResponse);
       };
 
+      const flushCombinedResponse = () => {
+        publishScheduled = false;
+        cancelScheduledPublish = undefined;
+        const response = pendingResponse;
+        pendingResponse = undefined;
+        if (response) {
+          publishCombinedResponse(response);
+        }
+        if (completeAfterPublish) {
+          subscriber.complete();
+        }
+      };
+
+      const scheduleCombinedResponse = (response: DataQueryResponse) => {
+        pendingResponse = response;
+        if (publishScheduled) {
+          return;
+        }
+        publishScheduled = true;
+        const timer = setTimeout(flushCombinedResponse, MULTI_TARGET_BATCH_PUBLISH_DELAY_MS);
+        cancelScheduledPublish = () => clearTimeout(timer);
+      };
+
+      const completeWhenPublished = () => {
+        if (completedTargets.size !== targets.length) {
+          return;
+        }
+        if (pendingResponse || publishScheduled) {
+          completeAfterPublish = true;
+        } else {
+          subscriber.complete();
+        }
+      };
+
+      const emitCombinedResponse = (targetKey: string, response: DataQueryResponse) => {
+        latestDataByTarget.set(targetKey, response.data);
+        if (response.compactSeries) {
+          latestCompactSeriesByTarget.set(targetKey, response.compactSeries);
+        } else {
+          latestCompactSeriesByTarget.delete(targetKey);
+        }
+        const targetError = response.error ?? response.errors?.[0];
+        if (targetError) {
+          errorsByTarget.set(targetKey, targetError);
+        } else {
+          errorsByTarget.delete(targetKey);
+        }
+        if (response.state === LoadingState.Done) {
+          completedTargets.add(targetKey);
+        }
+
+        scheduleCombinedResponse(response);
+      };
+
       const subscriptions = targets.map((target, index) =>
         queryPrometheusMultiBatch(this.uid, request, target, {
           httpMethod: this.queryHttpMethod,
@@ -623,9 +680,7 @@ export class PrometheusDatasource
         }).subscribe({
           complete: () => {
             completedTargets.add(targetKeys[index]);
-            if (completedTargets.size === targets.length) {
-              subscriber.complete();
-            }
+            completeWhenPublished();
           },
           error: (error) => {
             emitCombinedResponse(targetKeys[index], {
@@ -633,15 +688,15 @@ export class PrometheusDatasource
               error: this.toDataQueryError(error, target.refId),
               state: LoadingState.Done,
             });
-            if (completedTargets.size === targets.length) {
-              subscriber.complete();
-            }
+            completeWhenPublished();
           },
           next: (response) => emitCombinedResponse(targetKeys[index], response),
         })
       );
 
       return () => {
+        cancelScheduledPublish?.();
+        pendingResponse = undefined;
         for (const subscription of subscriptions) {
           subscription.unsubscribe();
         }
@@ -774,7 +829,7 @@ export class PrometheusDatasource
   protected shouldRequestCompactQueryResponse(request: DataQueryRequest<PromQuery>, queries: PromQuery[]): boolean {
     return (
       request.app === CoreApp.Dashboard &&
-      request.panelPluginId === 'timeseries' &&
+      (request.panelPluginId === 'timeseries' || request.panelPluginId === 'barchart') &&
       !config.publicDashboardAccessToken &&
       queries.every((query) => query.datasource?.type === this.type && isCompactTimeSeriesRangeQuery(query))
     );
@@ -1146,6 +1201,44 @@ function isCompactTimeSeriesRangeQuery(query: PromQuery): boolean {
   const responseFormat = format || 'time_series';
 
   return instant !== true && range !== false && exemplar !== true && responseFormat === 'time_series';
+}
+
+export function materializeCompactTimeSeries(compact: CompactTimeSeriesData): DataFrame[] {
+  const view = new DataView(compact.buffer);
+  const bytes = new Uint8Array(compact.buffer);
+  return compact.series.map((series) => {
+    const axis = compact.axes[series.axisId];
+    const times = new Array<number>(axis.count);
+    const values = new Array<number | null>(axis.count);
+    let packedIndex = 0;
+    for (let index = 0; index < axis.count; index++) {
+      times[index] = axis.start + axis.step * index;
+      const present =
+        series.presenceByteLength === 0 || (bytes[series.presenceByteOffset + (index >> 3)] & (1 << (index & 7))) !== 0;
+      if (!present) {
+        values[index] = null;
+        continue;
+      }
+      values[index] = view.getFloat64(series.valuesByteOffset + packedIndex * Float64Array.BYTES_PER_ELEMENT, true);
+      packedIndex++;
+    }
+    return {
+      name: series.frameName,
+      refId: series.refId,
+      meta: series.meta,
+      length: axis.count,
+      fields: [
+        { name: 'Time', type: FieldType.time, config: { interval: axis.step }, values: times },
+        {
+          name: series.valueName,
+          type: FieldType.number,
+          config: series.displayNameFromDS ? { displayNameFromDS: series.displayNameFromDS } : {},
+          labels: compact.metadata.materializeLabels(series),
+          values,
+        },
+      ],
+    };
+  });
 }
 
 export function combineCompactTimeSeries(

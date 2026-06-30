@@ -1,5 +1,6 @@
 import * as H from 'history';
 import { debounce } from 'lodash';
+import { Unsubscribable } from 'rxjs';
 
 import { LoadingState, NavIndex, PanelPlugin } from '@grafana/data';
 import { t } from '@grafana/i18n';
@@ -20,6 +21,7 @@ import { Panel } from '@grafana/schema';
 import { OptionFilter } from 'app/features/dashboard/components/PanelEditor/OptionsPaneOptions';
 import { getLastUsedDatasourceFromStorage } from 'app/features/dashboard/utils/dashboard';
 import { saveLibPanel } from 'app/features/library-panels/state/api';
+import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSource';
 
 import { DashboardEditActionEvent } from '../edit-pane/shared';
 import { DashboardSceneChangeTracker } from '../saving/DashboardSceneChangeTracker';
@@ -121,10 +123,176 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       })
     );
 
+    let activeRunner: SceneQueryRunner | undefined;
+    let runnerSubscription: Unsubscribable | undefined;
+    let activeTransformer: SceneDataTransformer | undefined;
+    let transformerSubscription: Unsubscribable | undefined;
+    let pendingFormat: 'compact-v1' | 'full' | undefined;
+    let suppressQueryFormatReconciliation = false;
+
+    // Invariant: after the panel configuration settles, the latest prepared request and the
+    // network request it starts use compact-v1 whenever that final configuration supports it.
+    const reconcileQueryFormat = (currentRunner: SceneQueryRunner) => {
+      if (suppressQueryFormatReconciliation || currentRunner !== getQueryRunnerFor(panel)) {
+        return;
+      }
+
+      if (panel.getPlugin()?.meta.skipDataQuery) {
+        pendingFormat = undefined;
+        return;
+      }
+
+      const datasource = currentRunner.state.datasource;
+      const isMixedDatasource = datasource?.type === 'mixed' || datasource?.uid === MIXED_DATASOURCE_NAME;
+      const requiredFormat =
+        !isMixedDatasource && dashboard.enrichDataRequest(currentRunner).preferredQueryResultFormat === 'compact-v1'
+          ? 'compact-v1'
+          : 'full';
+      const currentData = currentRunner.state.data;
+      const preparedRequest =
+        currentRunner instanceof DashboardSceneQueryRunner ? currentRunner.getLastPreparedRequest() : undefined;
+      const latestRequest = preparedRequest ?? currentData?.request;
+      const requestIsInFlight =
+        currentData?.state === LoadingState.Loading || currentData?.state === LoadingState.Streaming;
+      let currentFormat: 'compact-v1' | 'full' | undefined;
+      if (latestRequest) {
+        currentFormat = latestRequest.preferredQueryResultFormat === 'compact-v1' ? 'compact-v1' : 'full';
+      } else if (currentData?.compactSeries !== undefined) {
+        currentFormat = 'compact-v1';
+      } else if (currentData && !requestIsInFlight) {
+        currentFormat = 'full';
+      }
+      const hasUnknownInFlightRequest = latestRequest === undefined && requestIsInFlight;
+
+      if (hasUnknownInFlightRequest) {
+        return;
+      }
+
+      if (currentFormat === requiredFormat) {
+        pendingFormat = undefined;
+        return;
+      }
+
+      if (!currentFormat || pendingFormat === requiredFormat) {
+        return;
+      }
+
+      const replacementData =
+        currentData && (requestIsInFlight || (requiredFormat === 'full' && currentData.compactSeries !== undefined))
+          ? {
+              ...currentData,
+              state: LoadingState.Loading,
+              compactSeries: requiredFormat === 'full' ? undefined : currentData.compactSeries,
+            }
+          : undefined;
+      pendingFormat = requiredFormat;
+      currentRunner.cancelQuery();
+      if (replacementData) {
+        currentRunner.setState({ data: replacementData });
+      }
+      currentRunner.runQueries();
+    };
+
+    const reconcileTransformationChange = (currentRunner: SceneQueryRunner) => {
+      if (!(currentRunner instanceof DashboardSceneQueryRunner)) {
+        reconcileQueryFormat(currentRunner);
+        return;
+      }
+
+      const runQueriesRevision = currentRunner.getRunQueriesRevision();
+      queueMicrotask(() => {
+        const latestRunner = getQueryRunnerFor(panel);
+        if (
+          !this.isActive ||
+          !latestRunner ||
+          !Object.is(currentRunner, latestRunner) ||
+          currentRunner.getRunQueriesRevision() !== runQueriesRevision
+        ) {
+          return;
+        }
+        reconcileQueryFormat(latestRunner);
+      });
+    };
+
+    const updateRunner = () => {
+      const currentRunner = getQueryRunnerFor(panel);
+      if (currentRunner === activeRunner) {
+        return currentRunner;
+      }
+
+      runnerSubscription?.unsubscribe();
+      activeRunner = currentRunner;
+      pendingFormat = undefined;
+      if (currentRunner) {
+        runnerSubscription = currentRunner.subscribeToState((newState, previousState) => {
+          if (newState.data !== previousState.data) {
+            reconcileQueryFormat(currentRunner);
+          }
+        });
+        this._subs.add(runnerSubscription);
+      }
+      return currentRunner;
+    };
+
+    const updateTransformer = () => {
+      const dataProvider = panel.state.$data;
+      const currentTransformer = dataProvider instanceof SceneDataTransformer ? dataProvider : undefined;
+      if (currentTransformer === activeTransformer) {
+        return;
+      }
+
+      transformerSubscription?.unsubscribe();
+      activeTransformer = currentTransformer;
+      if (currentTransformer) {
+        transformerSubscription = currentTransformer.subscribeToState((newState, previousState) => {
+          if (newState.transformations !== previousState.transformations || newState.$data !== previousState.$data) {
+            const currentRunner = updateRunner();
+            if (currentRunner) {
+              reconcileTransformationChange(currentRunner);
+            }
+          }
+        });
+        this._subs.add(transformerSubscription);
+      }
+    };
+
+    updateRunner();
+    updateTransformer();
+    this._subs.add(
+      panel.subscribeToState((newState, previousState) => {
+        const compatibilityChanged =
+          newState.pluginId !== previousState.pluginId ||
+          newState.options !== previousState.options ||
+          newState.fieldConfig !== previousState.fieldConfig ||
+          newState.$data !== previousState.$data;
+        if (!compatibilityChanged) {
+          return;
+        }
+
+        if (newState.$data !== previousState.$data) {
+          updateTransformer();
+        }
+        const currentRunner = updateRunner();
+        if (currentRunner) {
+          reconcileQueryFormat(currentRunner);
+        }
+      })
+    );
+
     const deactivateParents = activateSceneObjectAndParentTree(panel);
     if (queryRunner && (hasCompactData || queryRunner.state.data?.state === LoadingState.Loading)) {
-      queryRunner.cancelQuery();
-      queryRunner.runQueries();
+      suppressQueryFormatReconciliation = true;
+      try {
+        queryRunner.cancelQuery();
+        queryRunner.runQueries();
+      } finally {
+        suppressQueryFormatReconciliation = false;
+      }
+    } else {
+      const currentRunner = updateRunner();
+      if (currentRunner) {
+        reconcileQueryFormat(currentRunner);
+      }
     }
 
     this.waitForPlugin();

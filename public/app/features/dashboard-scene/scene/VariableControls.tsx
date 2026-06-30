@@ -151,6 +151,7 @@ export function VariableValueSelectWrapper({ variable, inMenu, isEditingNewLayou
     <div
       className={cx(
         styles.container,
+        styles.focusContext,
         shouldShowHiddenVariables && styles.hidden,
         isSelected && 'dashboard-selected-element',
         isSelectable && !isSelected && 'dashboard-selectable-element'
@@ -208,6 +209,12 @@ const getStyles = (theme: GrafanaTheme2) => ({
     }),
     marginBottom: theme.spacing(1),
     marginRight: theme.spacing(1),
+  }),
+  focusContext: css({
+    '&:focus-within > label': {
+      backgroundColor: theme.colors.action.focus,
+      borderColor: theme.colors.primary.border,
+    },
   }),
   verticalContainer: css({
     display: 'flex',

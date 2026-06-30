@@ -1,11 +1,14 @@
 import { SortOrder } from '@grafana/schema';
+import { CompactNativeSeriesFlag } from 'app/core/components/GraphNG/compactNativePlan';
 
 import {
+  buildStandaloneRestTooltipIndexes,
   filterTooltipIndexes,
   findTooltipIndex,
   getTooltipTransform,
   isCompactTooltipPlotVisible,
   resolveMultiTooltipValue,
+  resolveSingleTooltipRowValue,
   resolveTooltipValue,
   sortTooltipIndexes,
 } from './CompactTooltipPlugin';
@@ -97,6 +100,8 @@ describe('compact tooltip indexes', () => {
     expect(filtered.valueAt(0)).toBe(1);
     expect(filtered.valueAt(1)).toBe(11);
     expect(resolveTooltipValue(source, 0, 1)).toBe(1);
+    expect(resolveSingleTooltipRowValue(source, 0, 1, undefined)).toBeNull();
+    expect(resolveSingleTooltipRowValue(source, 0, 1, 2)).toBe(3);
   });
 
   it.each([
@@ -132,6 +137,16 @@ describe('compact tooltip indexes', () => {
     const hiddenFocusedSeries = 7;
 
     expect(findTooltipIndex(indexes, hiddenFocusedSeries)).toBe(-1);
+  });
+
+  it('retains tooltip-visible standalone fields excluded from the bar layout', () => {
+    const rest = buildStandaloneRestTooltipIndexes({
+      seriesCount: 3,
+      source: { barLayoutVisibility: new Uint8Array([1, 0, 0]) },
+      columns: { flags: new Uint8Array([0, 0, CompactNativeSeriesFlag.HiddenFromTooltip]) },
+    });
+
+    expect(readIndexes(rest)).toEqual([1]);
   });
 });
 

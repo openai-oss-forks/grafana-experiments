@@ -320,19 +320,16 @@ function decodeCompactQueryDataResponse(response: unknown, queries?: DataQuery[]
 
   return {
     data: [],
-    compactSeries:
-      series.length > 0
-        ? {
-            kind: 'compact-response-view',
-            format: COMPACT_TIME_SERIES_FORMAT,
-            buffer: response,
-            axes: decoded.axes,
-            series,
-            metadata: decoded.metadata,
-            notices: orderedResults.flatMap((result) => result.notices),
-            decodeStats: decoded.stats,
-          }
-        : undefined,
+    compactSeries: {
+      kind: 'compact-response-view',
+      format: COMPACT_TIME_SERIES_FORMAT,
+      buffer: response,
+      axes: decoded.axes,
+      series,
+      metadata: decoded.metadata,
+      notices: orderedResults.flatMap((result) => result.notices),
+      decodeStats: decoded.stats,
+    },
     state: errors.length > 0 ? LoadingState.Error : LoadingState.Done,
     error: errors[0],
     errors: errors.length > 0 ? errors : undefined,

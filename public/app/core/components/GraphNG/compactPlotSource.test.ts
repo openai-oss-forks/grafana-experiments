@@ -56,7 +56,7 @@ describe('CompactPlotSource', () => {
     expect(plot.extent(0, 0, 4, 'all')).toEqual([-4, -2]);
     expect(plot.extent(0, 0, 4, 'positive')).toEqual([null, null]);
 
-    options[0] = { transform: GraphTransform.Constant };
+    options[0] = { noValue: '3', transform: GraphTransform.Constant };
     const constant = createCompactPlotSource(source, (index) => options[index]);
     expect(Array.from({ length: 5 }, (_, index) => constant.yAt(0, index))).toEqual([
       2,
@@ -65,6 +65,7 @@ describe('CompactPlotSource', () => {
       undefined,
       undefined,
     ]);
+    expect(Array.from({ length: 5 }, (_, index) => constant.barWidthValueAt!(0, index))).toEqual([2, 3, 3, 3, 4]);
     expect(constant.prepareBufferScan(0, 0, emptyBufferScan())).toBe(false);
 
     options[0] = { spanNulls: 50 };
@@ -87,6 +88,7 @@ describe('CompactPlotSource', () => {
 
   test.each([
     { insertNulls: 50, spanNulls: false, expected: [2, undefined, undefined, undefined, 4] },
+    { insertNulls: 50, spanNulls: -1, expected: [2, null, null, null, 4] },
     { insertNulls: 20, spanNulls: false, expected: [2, null, null, null, 4] },
     { insertNulls: 20, spanNulls: -1, expected: [2, null, null, null, 4] },
     { insertNulls: 20, spanNulls: true, expected: [2, undefined, undefined, undefined, 4] },
@@ -194,6 +196,57 @@ describe('CompactPlotSource', () => {
     ]);
   });
 
+  test('classifies connectivity between neighboring rendered vertices without scanning the gap', () => {
+    const source = compactSource(
+      [{ start: 0, step: 10, count: 5 }],
+      [{ axisId: 0, values: [2, 4], positions: [0, 4] }]
+    );
+
+    expect(createCompactPlotSource(source).isDirectSegmentConnected(0, 0, 4)).toBe(false);
+    expect(createCompactPlotSource(source, () => ({ spanNulls: true })).isDirectSegmentConnected(0, 0, 4)).toBe(true);
+    expect(createCompactPlotSource(source, () => ({ spanNulls: 50 })).isDirectSegmentConnected(0, 0, 4)).toBe(true);
+    expect(createCompactPlotSource(source, () => ({ insertNulls: 50 })).isDirectSegmentConnected(0, 0, 4)).toBe(true);
+  });
+
+  test('retains an explicit local null when span-null insertion is disabled', () => {
+    const source = compactSource(
+      [
+        { start: 0, step: 10, count: 3 },
+        { start: 5, step: 10, count: 2 },
+      ],
+      [
+        { axisId: 0, values: [1, 3], positions: [0, 2] },
+        { axisId: 1, values: [4, 5] },
+      ]
+    );
+    const plot = createCompactPlotSource(source, (seriesIndex) =>
+      seriesIndex === 0 ? { insertNulls: 50, spanNulls: -1 } : undefined
+    );
+
+    expect(plot.yAt(0, 2)).toBeNull();
+    expect(plot.isDirectSegmentConnected(0, 0, 4)).toBe(false);
+  });
+
+  test('finds a source gap between vertices supplied by other aligned series', () => {
+    const source = compactSource(
+      [
+        { start: 0, step: 100, count: 3 },
+        { start: 40, step: 20, count: 2 },
+        { start: 50, step: 1, count: 1 },
+      ],
+      [
+        { axisId: 0, values: [80, 80], positions: [0, 2] },
+        { axisId: 1, values: [20, 20] },
+        { axisId: 2, values: [1] },
+      ]
+    );
+    const plot = createCompactPlotSource(source);
+
+    expect(Array.from({ length: plot.pointCount }, (_, index) => plot.xAt(index))).toEqual([0, 40, 50, 60, 100, 200]);
+    expect(plot.yAt(0, 2)).toBeNull();
+    expect(plot.isDirectSegmentConnected(0, 1, 3)).toBe(false);
+  });
+
   test('supports random access deep into a long gapped bitmap', () => {
     const count = 1025;
     const positions = Array.from({ length: count }, (_, index) => index).filter((index) => index % 3 === 0);
@@ -205,6 +258,19 @@ describe('CompactPlotSource', () => {
     expect(plot.yAt(0, 1000)).toBeNull();
     expect(plot.yAt(0, 1023)).toBe(2046);
     expect(plot.extent(0, 768, 1024, 'all')).toEqual([1536, 2046]);
+  });
+
+  test('selects neighboring values across a large sparse bitmap', () => {
+    const count = 70_001;
+    const source = compactSource(
+      [{ start: 0, step: 1, count }],
+      [{ axisId: 0, values: [1, 2], positions: [0, count - 1] }]
+    );
+    const plot = createCompactPlotSource(source);
+
+    expect(plot.nearestPresent(0, 35_000, -1)).toBe(0);
+    expect(plot.nearestPresent(0, 35_000, 1)).toBe(count - 1);
+    expect(plot.isDirectSegmentConnected(0, 0, count - 1)).toBe(false);
   });
 
   test('finds distant packed endpoints without probing aligned values', () => {

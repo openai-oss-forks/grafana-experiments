@@ -36,6 +36,15 @@ Environment:
   AUTO_REFRESHES          Automatic refresh batches to observe before scrolling (default: 0)
   AUTO_REFRESH_PANEL_ID   Panel kept visible while observing automatic refreshes
   AUTO_REFRESH_TIMEOUT_MS Maximum wait for each automatic refresh batch (default: 120000)
+  HOVER_DURING_LOAD_PANEL_ID
+                           Panel to hover while a manual dashboard refresh is rendering
+  HOVER_DURING_LOAD_STAGGER_MS
+                           Delay successive non-target responses during that refresh (default: 75)
+  HOVER_DURING_LOAD_STEPS Mouse moves across the target during that refresh (default: 80)
+  HOVER_DURING_LOAD_MAX_FRAME_P95_MS
+                           Maximum browser animation-frame p95 during hover (default: 150)
+  HOVER_DURING_LOAD_MAX_FRAME_MS
+                           Maximum individual browser frame during hover (default: 500)
   VERIFY_INTERACTIONS     Set to 0 to skip tooltip checks in refresh-only stress runs
   VERIFY_SYNCED_CURSOR_MARKERS
                            Require every visible synchronized receiver to render a cursor marker
@@ -45,6 +54,7 @@ Environment:
   OFFSCREEN_SETTLE_MS     Wait at the bottom before the final sample (default: 0)
   HEAP_SNAPSHOT           Set to 1 to capture the active dashboard heap
   HEADLESS                Set to 1 for headless Chromium
+  DEVICE_SCALE_FACTOR     Browser device scale factor (default: 1)
   CHROMIUM_PATH           Optional Chromium executable
   OUTPUT_DIR              Artifact directory (default: /tmp/grafana-compact-full-dashboard)`);
   process.exit(dashboardJson ? 0 : 1);
@@ -72,6 +82,11 @@ const options = {
   autoRefreshes: readNonNegativeInteger('AUTO_REFRESHES', 0),
   autoRefreshPanelId: process.env.AUTO_REFRESH_PANEL_ID,
   autoRefreshTimeoutMs: readPositiveInteger('AUTO_REFRESH_TIMEOUT_MS', 120_000),
+  hoverDuringLoadPanelId: process.env.HOVER_DURING_LOAD_PANEL_ID,
+  hoverDuringLoadStaggerMs: readNonNegativeInteger('HOVER_DURING_LOAD_STAGGER_MS', 75),
+  hoverDuringLoadSteps: readPositiveInteger('HOVER_DURING_LOAD_STEPS', 80),
+  hoverDuringLoadMaxFrameP95Ms: readPositiveNumber('HOVER_DURING_LOAD_MAX_FRAME_P95_MS', 150),
+  hoverDuringLoadMaxFrameMs: readPositiveNumber('HOVER_DURING_LOAD_MAX_FRAME_MS', 500),
   verifyInteractions: process.env.VERIFY_INTERACTIONS !== '0',
   verifySyncedCursorMarkers: process.env.VERIFY_SYNCED_CURSOR_MARKERS === '1',
   requireAllTimeSeriesCompact: process.env.REQUIRE_ALL_TIMESERIES_COMPACT === '1',
@@ -79,6 +94,7 @@ const options = {
   offscreenSettleMs: readNonNegativeInteger('OFFSCREEN_SETTLE_MS', 0),
   heapSnapshot: process.env.HEAP_SNAPSHOT === '1',
   headless: process.env.HEADLESS === '1',
+  deviceScaleFactor: readPositiveNumber('DEVICE_SCALE_FACTOR', 1),
   chromiumPath: process.env.CHROMIUM_PATH,
   outputDir: process.env.OUTPUT_DIR ?? '/tmp/grafana-compact-full-dashboard',
   dashboardUid: process.env.DASHBOARD_UID ?? `${DASHBOARD_UID}-${process.pid}`,
@@ -104,7 +120,10 @@ const browser = await chromium.launch({
   headless: options.headless,
   args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
 });
-const context = await browser.newContext({ viewport: { width: 1800, height: 1100 } });
+const context = await browser.newContext({
+  viewport: { width: 1800, height: 1100 },
+  deviceScaleFactor: options.deviceScaleFactor,
+});
 await installCanvasActivityProbe(context);
 await installDashboardScrollProbe(context);
 const page = await context.newPage();
@@ -114,7 +133,10 @@ await cdp.send('Performance.enable');
 const queryRequests = [];
 const pageErrors = [];
 let activeRequests = 0;
+let activeNonTargetRequests = 0;
 let lastRequestActivityAt = performance.now();
+let hoverDuringLoadActive = false;
+let hoverDuringLoadRequestStart = 0;
 
 page.on('pageerror', (error) => pageErrors.push(error.stack ?? error.message));
 page.on('console', (message) => {
@@ -131,7 +153,11 @@ await context.route('**/api/ds/query**', async (route) => {
     return;
   }
 
+  const isHoverNonTargetRequest = hoverDuringLoadActive && headers['x-panel-id'] !== options.hoverDuringLoadPanelId;
   activeRequests++;
+  if (isHoverNonTargetRequest) {
+    activeNonTargetRequests++;
+  }
   lastRequestActivityAt = performance.now();
   const requestNumber = queryRequests.length + 1;
   try {
@@ -162,7 +188,7 @@ await context.route('**/api/ds/query**', async (route) => {
     const responseBody = Buffer.from(response);
     const rawResponseBytes = responseBody.byteLength;
 
-    queryRequests.push({
+    const queryRecord = {
       requestNumber,
       panelId: headers['x-panel-id'],
       panelTitle: headers['x-panel-title'],
@@ -177,8 +203,21 @@ await context.route('**/api/ds/query**', async (route) => {
       pointCount: options.pointCount,
       rawResponseBytes,
       generationMs: round(generatedAt - startedAt),
-    });
+    };
+    queryRequests.push(queryRecord);
 
+    if (
+      hoverDuringLoadActive &&
+      options.hoverDuringLoadStaggerMs > 0 &&
+      headers['x-panel-id'] !== options.hoverDuringLoadPanelId
+    ) {
+      const phaseRequestNumber = requestNumber - hoverDuringLoadRequestStart;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(1_500, phaseRequestNumber * options.hoverDuringLoadStaggerMs))
+      );
+    }
+
+    queryRecord.fulfilledAtWallTime = Date.now();
     await route.fulfill({
       status: 200,
       headers: {
@@ -202,6 +241,9 @@ await context.route('**/api/ds/query**', async (route) => {
     });
   } finally {
     activeRequests--;
+    if (isHoverNonTargetRequest) {
+      activeNonTargetRequests--;
+    }
     lastRequestActivityAt = performance.now();
   }
 });
@@ -247,6 +289,18 @@ try {
         initial: await verifyVisibleChartInteraction(page),
       }
     : {};
+  if (options.hoverDuringLoadPanelId != null) {
+    report.hoverDuringLoadTarget = await focusAutoRefreshPanel(page, options.hoverDuringLoadPanelId);
+    hoverDuringLoadRequestStart = queryRequests.length;
+    hoverDuringLoadActive = true;
+    try {
+      report.hoverDuringLoad = await verifyHoverDuringDashboardLoad(page, options.hoverDuringLoadPanelId);
+    } finally {
+      hoverDuringLoadActive = false;
+    }
+    await waitForQueryIdle(120_000);
+    await waitForCanvasIdle(page, 120_000);
+  }
   if (options.verifySyncedCursorMarkers) {
     report.synchronizedCursorMarkers = await verifySynchronizedCursorMarkers(page);
   }
@@ -608,6 +662,175 @@ async function verifyVisibleChartInteraction(page, requireTooltip = true) {
   };
 }
 
+async function verifyHoverDuringDashboardLoad(page, panelId) {
+  const panel = fixture.source.replayTimeSeriesPanels.find((candidate) => candidate.id === panelId);
+  if (!panel) {
+    throw new Error(`HOVER_DURING_LOAD_PANEL_ID ${panelId} is not a replayed time-series panel`);
+  }
+
+  const overlay = page.locator(`[data-panelid="${panelId}"] .u-over:visible`).first();
+  let bounds = (await overlay.count()) > 0 ? await overlay.boundingBox() : null;
+  if (!bounds) {
+    bounds = await page.evaluate((title) => {
+      const expected = `data-testid Panel header ${title}`;
+      const header = Array.from(document.querySelectorAll('[data-testid^="data-testid Panel header "]')).find(
+        (candidate) => candidate.getAttribute('data-testid') === expected
+      );
+      let container = header?.parentElement;
+      let plotOverlay;
+      while (container && container !== document.body) {
+        plotOverlay = container.querySelector('.u-over');
+        if (plotOverlay) {
+          break;
+        }
+        container = container.parentElement;
+      }
+      const rect = plotOverlay?.getBoundingClientRect();
+      return rect && rect.width > 0 && rect.height > 0
+        ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+        : null;
+    }, panel.title);
+  }
+  if (!bounds) {
+    throw new Error(`Could not find a visible plot overlay for ${panelId} (${panel.title})`);
+  }
+
+  await page.evaluate(() => {
+    const probe = {
+      inputEvents: 0,
+      animationFrameMs: [],
+      longTasks: [],
+    };
+    const onMouseMove = () => {
+      probe.inputEvents++;
+    };
+    document.addEventListener('mousemove', onMouseMove, true);
+
+    let previousFrameAt = performance.now();
+    let frame = 0;
+    const onFrame = (now) => {
+      probe.animationFrameMs.push(now - previousFrameAt);
+      previousFrameAt = now;
+      frame = requestAnimationFrame(onFrame);
+    };
+    frame = requestAnimationFrame(onFrame);
+
+    let longTaskObserver;
+    if (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes.includes('longtask')) {
+      longTaskObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          probe.longTasks.push({ startTime: entry.startTime, duration: entry.duration });
+        }
+      });
+      longTaskObserver.observe({ type: 'longtask' });
+    }
+
+    window.__hoverDuringLoadProbe = {
+      probe,
+      stop() {
+        document.removeEventListener('mousemove', onMouseMove, true);
+        cancelAnimationFrame(frame);
+        longTaskObserver?.disconnect();
+        return probe;
+      },
+    };
+  });
+
+  const requestStart = queryRequests.length;
+  await page.mouse.move(1, 1);
+  await page.getByTestId('data-testid RefreshPicker run button').click();
+  const requestWaitStartedAt = performance.now();
+  while (queryRequests.length === requestStart && performance.now() - requestWaitStartedAt < 5_000) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (queryRequests.length === requestStart) {
+    throw new Error('Manual dashboard refresh did not issue any queries');
+  }
+
+  await page.evaluate(() => window.__dashboardCanvasActivity.arm());
+  const commandLatencyMs = [];
+  let movesDuringLoad = 0;
+  const sweepStartedAtWallTime = Date.now();
+  const sweepStartedAt = performance.now();
+  for (let step = 0; step < options.hoverDuringLoadSteps; step++) {
+    const phase = (step % 20) / 19;
+    const fraction = Math.floor(step / 20) % 2 === 0 ? phase : 1 - phase;
+    if (activeNonTargetRequests > 0) {
+      movesDuringLoad++;
+    }
+    const startedAt = performance.now();
+    await page.mouse.move(bounds.x + bounds.width * (0.08 + fraction * 0.84), bounds.y + bounds.height * 0.7);
+    commandLatencyMs.push(performance.now() - startedAt);
+    await page.waitForTimeout(8);
+  }
+  const sweepDurationMs = performance.now() - sweepStartedAt;
+  const panelRendersDuringSweep = await collectPanelRenderDiagnostics(page);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const browserProbe = await page.evaluate(() => window.__hoverDuringLoadProbe.stop());
+  const tooltipVisible = await page.evaluate(hasVisibleTooltip);
+  const animationFrameP95Ms = round(percentile(browserProbe.animationFrameMs, 0.95));
+  const animationFrameMaxMs = round(Math.max(...browserProbe.animationFrameMs, 0));
+  await page.screenshot({ path: path.join(options.outputDir, 'hover-during-load.png') });
+  const minimumInputEvents = Math.ceil(options.hoverDuringLoadSteps / 2);
+  if (browserProbe.inputEvents < minimumInputEvents) {
+    throw new Error(
+      `Hover-under-load delivered ${browserProbe.inputEvents}/${minimumInputEvents} required pointer events`
+    );
+  }
+  if (!tooltipVisible) {
+    throw new Error(`Hover-under-load did not render a tooltip for ${panelId} (${panel.title})`);
+  }
+  if (movesDuringLoad === 0) {
+    throw new Error('Hover-under-load completed without overlapping a non-target dashboard request');
+  }
+  const fulfilledNonTargetRequests = queryRequests
+    .slice(requestStart)
+    .filter(
+      (request) =>
+        request.panelId !== panelId && request.panelTitle && request.fulfilledAtWallTime >= sweepStartedAtWallTime
+    );
+  const nonTargetRenderAfterResponse = panelRendersDuringSweep.some((render) =>
+    fulfilledNonTargetRequests.some(
+      (request) =>
+        request.panelTitle === render.panelTitle && render.lastOperationAtWallTime >= request.fulfilledAtWallTime
+    )
+  );
+  if (!nonTargetRenderAfterResponse) {
+    throw new Error('Hover-under-load completed without a non-target response rendering during the sweep');
+  }
+  if (animationFrameP95Ms > options.hoverDuringLoadMaxFrameP95Ms) {
+    throw new Error(
+      `Hover-under-load animation-frame p95 ${animationFrameP95Ms}ms exceeded ${options.hoverDuringLoadMaxFrameP95Ms}ms`
+    );
+  }
+  if (animationFrameMaxMs > options.hoverDuringLoadMaxFrameMs) {
+    throw new Error(
+      `Hover-under-load maximum frame ${animationFrameMaxMs}ms exceeded ${options.hoverDuringLoadMaxFrameMs}ms`
+    );
+  }
+
+  return {
+    panelId,
+    panelTitle: panel.title,
+    queryRequestCount: queryRequests.length - requestStart,
+    activeRequestsAtSweepEnd: activeRequests,
+    movesDuringLoad,
+    panelRendersDuringSweep,
+    sweepDurationMs: round(sweepDurationMs),
+    dispatchedMoves: options.hoverDuringLoadSteps + 1,
+    observedInputEvents: browserProbe.inputEvents,
+    tooltipVisible,
+    commandLatencyP50Ms: round(percentile(commandLatencyMs, 0.5)),
+    commandLatencyP95Ms: round(percentile(commandLatencyMs, 0.95)),
+    commandLatencyMaxMs: round(Math.max(...commandLatencyMs)),
+    animationFrameP95Ms,
+    animationFrameMaxMs,
+    longTaskCount: browserProbe.longTasks.length,
+    longTaskTotalMs: round(browserProbe.longTasks.reduce((total, task) => total + task.duration, 0)),
+    longestTaskMs: round(Math.max(...browserProbe.longTasks.map((task) => task.duration), 0)),
+  };
+}
+
 async function verifySynchronizedCursorMarkers(page) {
   const overlays = page.locator('.uplot .u-over:visible');
   const count = await overlays.count();
@@ -887,16 +1110,18 @@ async function installCanvasActivityProbe(context) {
     const activity = {
       epoch: 1,
       armedAt: 0,
+      armedAtWallTime: 0,
       lastOperationAt: 0,
       arm() {
         this.epoch++;
         this.armedAt = performance.now();
+        this.armedAtWallTime = Date.now();
         this.lastOperationAt = this.armedAt;
       },
       snapshot() {
         const headers = Array.from(document.querySelectorAll('[data-testid^="data-testid Panel header "]'));
         const renders = new Map();
-        for (const canvas of document.querySelectorAll('.uplot canvas')) {
+        for (const canvas of document.querySelectorAll('.uplot canvas:not(.u-compact-focus-overlay)')) {
           const bounds = canvas.getBoundingClientRect();
           if (bounds.width <= 0 || bounds.height <= 0 || bounds.bottom <= 0 || bounds.top >= window.innerHeight) {
             continue;
@@ -920,11 +1145,21 @@ async function installCanvasActivityProbe(context) {
           const existing = renders.get(key);
           const firstOperationAt = Math.min(existing?.firstOperationAt ?? Infinity, record.firstOperationAt);
           const lastOperationAt = Math.max(existing?.lastOperationAt ?? -Infinity, record.lastOperationAt);
+          const firstOperationAtWallTime = Math.min(
+            existing?.firstOperationAtWallTime ?? Infinity,
+            record.firstOperationAtWallTime
+          );
+          const lastOperationAtWallTime = Math.max(
+            existing?.lastOperationAtWallTime ?? -Infinity,
+            record.lastOperationAtWallTime
+          );
           renders.set(key, {
             panelKey: key,
             panelTitle: headerTestId.replace('data-testid Panel header ', ''),
             firstOperationAt,
             lastOperationAt,
+            firstOperationAtWallTime,
+            lastOperationAtWallTime,
             canvasCount: (existing?.canvasCount ?? 0) + 1,
           });
         }
@@ -934,6 +1169,8 @@ async function installCanvasActivityProbe(context) {
           canvasCount: render.canvasCount,
           firstDrawLatencyMs: Math.round((render.firstOperationAt - this.armedAt) * 100) / 100,
           completeLatencyMs: Math.round((render.lastOperationAt - this.armedAt) * 100) / 100,
+          firstOperationAtWallTime: render.firstOperationAtWallTime,
+          lastOperationAtWallTime: render.lastOperationAtWallTime,
         }));
       },
     };
@@ -942,12 +1179,20 @@ async function installCanvasActivityProbe(context) {
       const original = CanvasRenderingContext2D.prototype[method];
       CanvasRenderingContext2D.prototype[method] = function (...args) {
         const now = performance.now();
+        const wallTime = Date.now();
         activity.lastOperationAt = now;
         const current = canvasRecords.get(this.canvas);
         if (!current || current.epoch !== activity.epoch) {
-          canvasRecords.set(this.canvas, { epoch: activity.epoch, firstOperationAt: now, lastOperationAt: now });
+          canvasRecords.set(this.canvas, {
+            epoch: activity.epoch,
+            firstOperationAt: now,
+            lastOperationAt: now,
+            firstOperationAtWallTime: wallTime,
+            lastOperationAtWallTime: wallTime,
+          });
         } else {
           current.lastOperationAt = now;
+          current.lastOperationAtWallTime = wallTime;
         }
         return original.apply(this, args);
       };

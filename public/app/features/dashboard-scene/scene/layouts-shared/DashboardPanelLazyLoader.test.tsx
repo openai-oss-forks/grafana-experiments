@@ -1,92 +1,72 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
-import { ReactNode, Ref, useEffect } from 'react';
+import { act, render, screen } from '@testing-library/react';
+import { ReactNode, useEffect } from 'react';
 
-import type { SceneObject } from '@grafana/scenes';
 import { useGraphNGRenderVisibility } from 'app/core/components/GraphNG/GraphNGRenderVisibility';
 
 import {
   DashboardPanelLazyLoader,
-  DashboardPanelRenderSuspender,
   FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY,
   GRAPHNG_RETENTION_MARGIN_VIEWPORTS,
   MIN_GRAPHNG_PREWARM_MARGIN,
-  OFFSCREEN_GRAPHNG_SUSPEND_DELAY,
 } from './DashboardPanelLazyLoader';
+import {
+  PANEL_RENDER_PREPARATION_BUDGET,
+  PanelLifecycleCoordinator,
+  PanelLifecycleProvider,
+  PanelLifecycleSnapshot,
+} from './PanelLifecycleCoordinator';
 
-let mockOnChange: (isInView: boolean) => void = () => {};
-let mockOnRetentionChange: (isInView: boolean) => void = () => {};
-
-jest.mock('@grafana/scenes', () => {
-  const React = jest.requireActual('react');
-  return {
-    LazyLoader: React.forwardRef(
-      (
-        {
-          children,
-          activationTarget,
-          ...props
-        }: {
-          children: ReactNode;
-          activationTarget?: SceneObject;
-          onFocusCapture?: () => void;
-          onBlurCapture?: () => void;
-        },
-        ref: Ref<HTMLDivElement>
-      ) => (
-        <div ref={ref} data-activation-target={activationTarget ? 'true' : undefined} {...props}>
-          {children}
-        </div>
-      )
-    ),
-  };
-});
+type Boundary = 'visible' | 'prefetch' | 'retention';
 
 describe('DashboardPanelLazyLoader', () => {
+  const callbacks = new Map<Boundary, (isIntersecting: boolean) => void>();
+  const animationFrames: FrameRequestCallback[] = [];
   const onPanelMount = jest.fn();
   const onPanelUnmount = jest.fn();
 
   beforeEach(() => {
     jest.useFakeTimers();
-    let observerIndex = 0;
-    jest.spyOn(global, 'IntersectionObserver').mockImplementation((callback, options) => {
-      const currentObserverIndex = observerIndex++;
-      let target: Element = document.body;
-      const observer: IntersectionObserver = {
-        root: null,
-        rootMargin: options?.rootMargin ?? '0px',
-        thresholds: [],
-        disconnect: jest.fn(),
-        observe: jest.fn((element) => {
-          target = element;
-        }),
-        takeRecords: jest.fn(() => []),
-        unobserve: jest.fn(),
-      };
-      const onChange = (isIntersecting: boolean) => {
-        const rect = target.getBoundingClientRect();
+    jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      animationFrames.push(callback);
+      return animationFrames.length;
+    });
+    jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    const intersectionObserver = jest.spyOn(global, 'IntersectionObserver').mockImplementation((callback, options) => {
+      const margin = options?.rootMargin;
+      const boundary: Boundary = !margin
+        ? 'visible'
+        : margin === `${Math.max(window.innerHeight, MIN_GRAPHNG_PREWARM_MARGIN)}px 0px`
+          ? 'prefetch'
+          : 'retention';
+      const targets = new Set<Element>();
+      callbacks.set(boundary, (isIntersecting) => {
         callback(
-          [
-            {
-              boundingClientRect: rect,
-              intersectionRatio: isIntersecting ? 1 : 0,
-              intersectionRect: rect,
-              isIntersecting,
-              rootBounds: null,
-              target,
-              time: 0,
-            },
-          ],
+          [...targets].map((target) => ({
+            boundingClientRect: target.getBoundingClientRect(),
+            intersectionRatio: isIntersecting ? 1 : 0,
+            intersectionRect: target.getBoundingClientRect(),
+            isIntersecting,
+            rootBounds: null,
+            target,
+            time: 0,
+          })) as IntersectionObserverEntry[],
           observer
         );
+      });
+      const observer: IntersectionObserver = {
+        root: null,
+        rootMargin: margin ?? '0px',
+        thresholds: [],
+        disconnect: jest.fn(),
+        observe: jest.fn((target) => targets.add(target)),
+        takeRecords: jest.fn(() => []),
+        unobserve: jest.fn((target) => targets.delete(target)),
       };
-      if (currentObserverIndex === 0) {
-        mockOnChange = onChange;
-      } else {
-        mockOnRetentionChange = onChange;
-      }
       return observer;
     });
-    jest.clearAllMocks();
+    intersectionObserver.mockClear();
+    callbacks.clear();
+    animationFrames.length = 0;
     onPanelMount.mockClear();
     onPanelUnmount.mockClear();
   });
@@ -96,69 +76,38 @@ describe('DashboardPanelLazyLoader', () => {
     jest.restoreAllMocks();
   });
 
+  function flushAnimationFrame() {
+    const callbacks = animationFrames.splice(0);
+    act(() => callbacks.forEach((callback) => callback(performance.now())));
+  }
+
+  function flushNextAnimationFrame() {
+    const callback = animationFrames.shift();
+    act(() => callback?.(performance.now()));
+  }
+
+  function renderPanel(children: ReactNode) {
+    return render(
+      <PanelLifecycleProvider>
+        <DashboardPanelLazyLoader>{children}</DashboardPanelLazyLoader>
+      </PanelLifecycleProvider>
+    );
+  }
+
   function PanelLifecycleProbe() {
     const graphNGRendererActive = useGraphNGRenderVisibility();
-
     useEffect(() => {
       onPanelMount();
-      return () => {
-        onPanelUnmount();
-      };
+      return () => onPanelUnmount();
     }, []);
-
-    return (
-      <div data-testid="panel" data-graphng-active={graphNGRendererActive}>
-        panel
-      </div>
-    );
+    return <div data-testid="panel" data-graphng-active={graphNGRendererActive} />;
   }
 
-  function FocusedControlProbe() {
-    const graphNGRendererActive = useGraphNGRenderVisibility();
-    return <button data-graphng-active={graphNGRendererActive}>focused control</button>;
-  }
+  test('keeps the lazy shell mounted while renderer work is admitted through shared observers', () => {
+    renderPanel(<PanelLifecycleProbe />);
 
-  test('forwards the scene activation target to the lazy loader', () => {
-    const activationTarget = {} as SceneObject;
-    const { container } = render(
-      <DashboardPanelLazyLoader activationTarget={activationTarget}>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    expect(container.firstElementChild).toHaveAttribute('data-activation-target', 'true');
-  });
-
-  test('suspends GraphNG without unmounting the panel and restores it on reentry', () => {
-    render(
-      <DashboardPanelLazyLoader>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    act(() => mockOnChange(false));
-    expect(screen.getByTestId('panel')).toBeInTheDocument();
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
-
-    act(() => jest.advanceTimersByTime(OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
     expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'false');
-    expect(onPanelMount).toHaveBeenCalledTimes(1);
-    expect(onPanelUnmount).not.toHaveBeenCalled();
-
-    act(() => mockOnChange(true));
-    expect(screen.getByTestId('panel')).toBeInTheDocument();
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
-    expect(onPanelMount).toHaveBeenCalledTimes(1);
-    expect(onPanelUnmount).not.toHaveBeenCalled();
-  });
-
-  test('prewarms GraphNG by at least one viewport before reentry', () => {
-    render(
-      <DashboardPanelLazyLoader>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-
+    expect(IntersectionObserver).toHaveBeenCalledTimes(3);
     expect(IntersectionObserver).toHaveBeenCalledWith(expect.any(Function), {
       rootMargin: `${Math.max(window.innerHeight, MIN_GRAPHNG_PREWARM_MARGIN)}px 0px`,
     });
@@ -167,179 +116,76 @@ describe('DashboardPanelLazyLoader', () => {
         Math.max(window.innerHeight, MIN_GRAPHNG_PREWARM_MARGIN) * GRAPHNG_RETENTION_MARGIN_VIEWPORTS
       }px 0px`,
     });
-  });
 
-  test('shares the prewarm and retention observers across dashboard panels', () => {
-    render(
-      <>
-        <DashboardPanelLazyLoader>
-          <PanelLifecycleProbe />
-        </DashboardPanelLazyLoader>
-        <DashboardPanelLazyLoader>
-          <PanelLifecycleProbe />
-        </DashboardPanelLazyLoader>
-      </>
-    );
-
-    expect(IntersectionObserver).toHaveBeenCalledTimes(2);
-  });
-
-  test('suspends far-away GraphNG quickly and prewarms it before reentry', () => {
-    render(
-      <DashboardPanelLazyLoader>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    act(() => mockOnChange(false));
-    act(() => mockOnRetentionChange(false));
-    act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY - 1));
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
-
-    act(() => jest.advanceTimersByTime(1));
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'false');
-
-    act(() => mockOnRetentionChange(true));
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'false');
-
-    act(() => mockOnChange(true));
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
-  });
-
-  test('keeps GraphNG active when offscreen suspension is disabled', () => {
-    render(
-      <DashboardPanelLazyLoader suspendGraphNGOffscreen={false}>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    act(() => mockOnChange(false));
-    act(() => jest.advanceTimersByTime(OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
-
-    expect(screen.getByTestId('panel')).toBeInTheDocument();
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
-  });
-
-  test('cancels suspension when the panel returns during the grace period', () => {
-    render(
-      <DashboardPanelLazyLoader>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    act(() => mockOnChange(false));
-    act(() => jest.advanceTimersByTime(OFFSCREEN_GRAPHNG_SUSPEND_DELAY - 1));
-    act(() => mockOnChange(true));
-    act(() => jest.advanceTimersByTime(1));
-
+    flushNextAnimationFrame();
     expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
     expect(onPanelMount).toHaveBeenCalledTimes(1);
-    expect(onPanelUnmount).not.toHaveBeenCalled();
   });
 
-  test('starts suspension when it is enabled while the panel is already offscreen', () => {
-    const { rerender } = render(
-      <DashboardPanelLazyLoader suspendGraphNGOffscreen={false}>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
+  test('suspends the renderer without unmounting the panel', () => {
+    renderPanel(<PanelLifecycleProbe />);
+    flushAnimationFrame();
 
-    act(() => mockOnChange(false));
-    rerender(
-      <DashboardPanelLazyLoader suspendGraphNGOffscreen={true}>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
-    act(() => jest.advanceTimersByTime(OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
+    act(() => callbacks.get('visible')?.(false));
+    act(() => callbacks.get('prefetch')?.(false));
+    act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
+    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
 
+    act(() => callbacks.get('retention')?.(false));
+    act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
+    flushAnimationFrame();
     expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'false');
     expect(onPanelMount).toHaveBeenCalledTimes(1);
     expect(onPanelUnmount).not.toHaveBeenCalled();
+
+    act(() => callbacks.get('prefetch')?.(true));
+    flushAnimationFrame();
+    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
+    expect(onPanelMount).toHaveBeenCalledTimes(1);
   });
 
-  test('does not suspend while focus remains inside the panel', () => {
-    render(
-      <DashboardPanelLazyLoader>
-        <FocusedControlProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    act(() => screen.getByRole('button').focus());
-    act(() => mockOnChange(false));
-    act(() => jest.advanceTimersByTime(OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
-
-    expect(screen.getByRole('button')).toBeInTheDocument();
-    expect(screen.getByRole('button')).toHaveFocus();
-    expect(screen.getByRole('button')).toHaveAttribute('data-graphng-active', 'true');
-  });
-
-  test('does not suspend a compact renderer while its tooltip is pinned', () => {
-    render(
-      <DashboardPanelLazyLoader>
-        <PanelLifecycleProbe />
-      </DashboardPanelLazyLoader>
-    );
+  test('retains an interactive panel outside the retention boundary', () => {
+    renderPanel(<PanelLifecycleProbe />);
+    flushAnimationFrame();
     const panel = screen.getByTestId('panel');
     panel.setAttribute('data-compact-tooltip-pinned', 'true');
-
-    act(() => mockOnChange(false));
-    act(() => mockOnRetentionChange(false));
+    act(() => panel.dispatchEvent(new CustomEvent('grafana-compact-tooltip-pin-change', { bubbles: true })));
+    act(() => callbacks.get('visible')?.(false));
+    act(() => callbacks.get('prefetch')?.(false));
+    act(() => callbacks.get('retention')?.(false));
     act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
-
+    flushAnimationFrame();
     expect(panel).toHaveAttribute('data-graphng-active', 'true');
 
     panel.removeAttribute('data-compact-tooltip-pinned');
     act(() => panel.dispatchEvent(new CustomEvent('grafana-compact-tooltip-pin-change', { bubbles: true })));
     act(() => jest.advanceTimersByTime(FAR_OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
-
-    expect(panel).toHaveAttribute('data-graphng-active', 'false');
-  });
-
-  test('reactivates GraphNG when focus enters a suspended panel', () => {
-    render(
-      <DashboardPanelLazyLoader>
-        <FocusedControlProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    act(() => mockOnChange(false));
-    act(() => jest.advanceTimersByTime(OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
-    expect(screen.getByRole('button')).toHaveAttribute('data-graphng-active', 'false');
-
-    act(() => screen.getByRole('button').focus());
-    expect(screen.getByRole('button')).toHaveAttribute('data-graphng-active', 'true');
-  });
-
-  test('cancels deferred blur work when the panel wrapper unmounts', () => {
-    const { container, unmount } = render(
-      <DashboardPanelLazyLoader>
-        <FocusedControlProbe />
-      </DashboardPanelLazyLoader>
-    );
-
-    fireEvent.blur(container.firstElementChild!);
-    expect(jest.getTimerCount()).toBeGreaterThan(0);
-
-    unmount();
-
-    expect(jest.getTimerCount()).toBe(0);
-  });
-
-  test('suspends a preloaded renderer without lazy mounting the panel', () => {
-    render(
-      <DashboardPanelRenderSuspender>
-        <PanelLifecycleProbe />
-      </DashboardPanelRenderSuspender>
-    );
-
-    expect(onPanelMount).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'true');
-
-    act(() => mockOnChange(false));
-    act(() => jest.advanceTimersByTime(OFFSCREEN_GRAPHNG_SUSPEND_DELAY));
-
+    flushAnimationFrame();
     expect(screen.getByTestId('panel')).toHaveAttribute('data-graphng-active', 'false');
-    expect(onPanelMount).toHaveBeenCalledTimes(1);
     expect(onPanelUnmount).not.toHaveBeenCalled();
+  });
+
+  test('prepares only the renderer budget per frame and prioritizes visible work', () => {
+    const coordinator = new PanelLifecycleCoordinator();
+    const snapshots: PanelLifecycleSnapshot[][] = Array.from({ length: PANEL_RENDER_PREPARATION_BUDGET + 1 }, () => []);
+
+    snapshots.forEach((values, index) => {
+      const element = document.createElement('div');
+      element.getBoundingClientRect = () =>
+        ({
+          top: index === snapshots.length - 1 ? 0 : window.innerHeight + 100,
+          bottom: index === snapshots.length - 1 ? 100 : window.innerHeight + 101,
+        }) as DOMRect;
+      coordinator.register(element, (snapshot) => values.push(snapshot));
+    });
+
+    flushNextAnimationFrame();
+    const prepared = snapshots.map((values) => values.at(-1)?.rendererActive ?? false);
+    expect(prepared.filter(Boolean)).toHaveLength(PANEL_RENDER_PREPARATION_BUDGET);
+    expect(prepared.at(-1)).toBe(true);
+
+    flushNextAnimationFrame();
+    expect(snapshots.every((values) => values.at(-1)?.rendererActive)).toBe(true);
+    coordinator.destroy();
   });
 });

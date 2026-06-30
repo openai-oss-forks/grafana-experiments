@@ -275,6 +275,9 @@ func TestIsCompactDashboardQuery(t *testing.T) {
 		valid  bool
 	}{
 		{name: "eligible", valid: true},
+		{name: "eligible bar chart", mutate: func(req *http.Request, _ *simplejson.Json) {
+			req.Header.Set(query.HeaderPanelPluginId, "barchart")
+		}, valid: true},
 		{name: "missing dashboard", mutate: func(req *http.Request, _ *simplejson.Json) {
 			req.Header.Del(query.HeaderDashboardUID)
 		}},

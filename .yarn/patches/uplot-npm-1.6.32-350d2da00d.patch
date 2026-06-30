@@ -2,6 +2,9 @@ diff --git a/dist/uPlot.cjs.js b/dist/uPlot.cjs.js
 index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072e593f68c 100644
 --- a/dist/uPlot.cjs.js
 +++ b/dist/uPlot.cjs.js
+@@ -154 +154 @@ function elSize(el, newWid, newHgt, centered) {
+-	let newSize = newWid + "" + newHgt;
++	let newSize = newWid + "" + newHgt + centered;
 @@ -2907,11 +2907,15 @@ function syncFontSize(axis) {
  	}
  }
@@ -51,12 +54,13 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  	const drawOrderMap = {
  		axes: drawAxesGrid,
  		series: drawSeries,
-@@ -3826,9 +3835,43 @@ function uPlot(opts, data, then) {
+@@ -3826,9 +3835,44 @@ function uPlot(opts, data, then) {
  
  	let data0 = null;
  
 +	const xAt = index => compactSource == null ? data0[index] : compactSource.xAt(index);
-+	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data0, lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data[0], lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const scaleXAt = index => compactSource == null ? data[0][index] : compactSource.xAt(index);
 +
 +	function validateCompactSource(source) {
 +		if (source == null || source.kind != "compact-v1" || !(source.buffer instanceof ArrayBuffer) ||
@@ -95,7 +99,7 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  		data = _data == null ? [] : _data;
  
  		self.data = self._data = data;
-@@ -3896,6 +3939,37 @@ function uPlot(opts, data, then) {
+@@ -3896,6 +3939,39 @@ function uPlot(opts, data, then) {
  
  	self.setData = setData;
  
@@ -113,6 +117,8 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
 +		dataLen = source.pointCount;
 +		resetYSeries(true);
 +		fire("setData");
++		if (scaleX.distr == 100)
++			shouldConvergeSize = true;
 +		if (_resetScales !== false) {
 +			let xsc = scaleX;
 +			if (xsc.auto(self, viaAutoScaleX))
@@ -157,10 +163,10 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  						if (i1 - i0 > 1) {
  							// closest indices can be outside of view
 -							if (data[0][i0] < wsc.min)
-+							if (xAt(i0) < wsc.min)
++							if (scaleXAt(i0) < wsc.min)
  								i0++;
 -							if (data[0][i1] > wsc.max)
-+							if (xAt(i1) > wsc.max)
++							if (scaleXAt(i1) > wsc.max)
  								i1--;
  						}
  
@@ -358,11 +364,11 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
 -				idx = cursor.idx = closestIdx(valAtPosX, data[0], i0, i1);
 -				xPos = valToPosX(data[0][idx], scaleX, xDim, 0);
 +				idx = cursor.idx = closestX(valAtPosX, i0, i1);
-+				xPos = valToPosX(xAt(idx), scaleX, xDim, 0);
++				xPos = valToPosX(scaleXAt(idx), scaleX, xDim, 0);
  			}
  
  			// closest pt values
-@@ -5478,6 +5618,22 @@ function uPlot(opts, data, then) {
+@@ -5478,6 +5618,30 @@ function uPlot(opts, data, then) {
  				}
  			}
  
@@ -375,10 +381,18 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
 +					closestSeries = compactCursor.seriesIndex + 1;
 +					_ptLft = compactCursor.left;
 +					_ptTop = compactCursor.top;
-+					_ptWid = _ptHgt = compactCursor.size;
++					_ptWid = compactCursor.width ?? compactCursor.size;
++					_ptHgt = compactCursor.height ?? compactCursor.size;
 +					_ptFill = compactCursor.fill;
 +					_ptStroke = compactCursor.stroke;
-+					_centered = true;
++					_centered = compactCursor.centered ?? true;
++				}
++				if (cursorOnePt && cursorPts[0] != null) {
++					let point = cursorPts[0];
++					let rectangular = compactCursor?.hasPoint && compactCursor.centered === false;
++					point.dataset.compactBorderWidth ??= point.style.borderWidth;
++					point.style.borderRadius = rectangular ? '0' : '';
++					point.style.borderWidth = rectangular ? '0' : point.dataset.compactBorderWidth;
 +				}
 +			}
 +
@@ -505,7 +519,7 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 @@ -105 +134 @@ declare class uPlot {
 -	setCursor(opts: {left: number, top: number}, fireHook?: boolean): void;
 +	setCursor(opts: {left: number, top: number}, fireHook?: boolean, publish?: boolean, compactOrigin?: uPlot.CompactCursorOrigin): void;
-@@ -167,6 +196,58 @@ declare class uPlot {
+@@ -167,6 +196,61 @@ declare class uPlot {
  export = uPlot;
  
  declare namespace uPlot {
@@ -548,6 +562,9 @@ index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751
 +		left: number;
 +		top: number;
 +		size: number;
++		width?: number;
++		height?: number;
++		centered?: boolean;
 +		fill: string;
 +		stroke: string;
 +	}
@@ -568,6 +585,9 @@ diff --git a/dist/uPlot.esm.js b/dist/uPlot.esm.js
 index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442dd37dde0 100644
 --- a/dist/uPlot.esm.js
 +++ b/dist/uPlot.esm.js
+@@ -154 +154 @@ function elSize(el, newWid, newHgt, centered) {
+-	let newSize = newWid + "" + newHgt;
++	let newSize = newWid + "" + newHgt + centered;
 @@ -2905,11 +2905,15 @@ function syncFontSize(axis) {
  	}
  }
@@ -617,12 +637,13 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  	const drawOrderMap = {
  		axes: drawAxesGrid,
  		series: drawSeries,
-@@ -3824,9 +3833,43 @@ function uPlot(opts, data, then) {
+@@ -3824,9 +3833,44 @@ function uPlot(opts, data, then) {
  
  	let data0 = null;
  
 +	const xAt = index => compactSource == null ? data0[index] : compactSource.xAt(index);
-+	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data0, lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const closestX = (value, lo = 0, hi = dataLen - 1) => compactSource == null ? closestIdx(value, data[0], lo, hi) : compactSource.closestXIndex(value, lo, hi);
++	const scaleXAt = index => compactSource == null ? data[0][index] : compactSource.xAt(index);
 +
 +	function validateCompactSource(source) {
 +		if (source == null || source.kind != "compact-v1" || !(source.buffer instanceof ArrayBuffer) ||
@@ -661,7 +682,7 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  		data = _data == null ? [] : _data;
  
  		self.data = self._data = data;
-@@ -3894,6 +3937,37 @@ function uPlot(opts, data, then) {
+@@ -3894,6 +3937,39 @@ function uPlot(opts, data, then) {
  
  	self.setData = setData;
  
@@ -679,6 +700,8 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
 +		dataLen = source.pointCount;
 +		resetYSeries(true);
 +		fire("setData");
++		if (scaleX.distr == 100)
++			shouldConvergeSize = true;
 +		if (_resetScales !== false) {
 +			let xsc = scaleX;
 +			if (xsc.auto(self, viaAutoScaleX))
@@ -723,10 +746,10 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
  						if (i1 - i0 > 1) {
  							// closest indices can be outside of view
 -							if (data[0][i0] < wsc.min)
-+							if (xAt(i0) < wsc.min)
++							if (scaleXAt(i0) < wsc.min)
  								i0++;
 -							if (data[0][i1] > wsc.max)
-+							if (xAt(i1) > wsc.max)
++							if (scaleXAt(i1) > wsc.max)
  								i1--;
  						}
  
@@ -924,11 +947,11 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
 -				idx = cursor.idx = closestIdx(valAtPosX, data[0], i0, i1);
 -				xPos = valToPosX(data[0][idx], scaleX, xDim, 0);
 +				idx = cursor.idx = closestX(valAtPosX, i0, i1);
-+				xPos = valToPosX(xAt(idx), scaleX, xDim, 0);
++				xPos = valToPosX(scaleXAt(idx), scaleX, xDim, 0);
  			}
  
  			// closest pt values
-@@ -5476,6 +5616,22 @@ function uPlot(opts, data, then) {
+@@ -5476,6 +5616,30 @@ function uPlot(opts, data, then) {
  				}
  			}
  
@@ -941,10 +964,18 @@ index 87473c9cfb3366f57883cb803114a87c64d4b6b8..a794a228d2d61149886592da776a4442
 +					closestSeries = compactCursor.seriesIndex + 1;
 +					_ptLft = compactCursor.left;
 +					_ptTop = compactCursor.top;
-+					_ptWid = _ptHgt = compactCursor.size;
++					_ptWid = compactCursor.width ?? compactCursor.size;
++					_ptHgt = compactCursor.height ?? compactCursor.size;
 +					_ptFill = compactCursor.fill;
 +					_ptStroke = compactCursor.stroke;
-+					_centered = true;
++					_centered = compactCursor.centered ?? true;
++				}
++				if (cursorOnePt && cursorPts[0] != null) {
++					let point = cursorPts[0];
++					let rectangular = compactCursor?.hasPoint && compactCursor.centered === false;
++					point.dataset.compactBorderWidth ??= point.style.borderWidth;
++					point.style.borderRadius = rectangular ? '0' : '';
++					point.style.borderWidth = rectangular ? '0' : point.dataset.compactBorderWidth;
 +				}
 +			}
 +

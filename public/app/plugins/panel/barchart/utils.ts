@@ -500,33 +500,37 @@ function getRotationPadding(
   btmSpace = 0
 ): Padding {
   const values = frame.fields[0].values;
-  const fontSize = UPLOT_AXIS_FONT_SIZE;
   const displayProcessor = frame.fields[0].display;
   const getProcessedValue = (i: number) => {
     return displayProcessor ? displayProcessor(values[i]) : values[i];
   };
+  const labels = Array.from({ length: values.length }, (_, index) =>
+    shortenValue(formattedValueToString(getProcessedValue(index)), valueMaxLength)
+  );
+
+  return calculateBarChartRotationPadding(labels, rotateLabel, lftSpace, btmSpace);
+}
+
+export function calculateBarChartRotationPadding(
+  labels: readonly string[],
+  rotateLabel: number,
+  lftSpace = 0,
+  btmSpace = 0
+): [number, number, number, number] {
+  const fontSize = UPLOT_AXIS_FONT_SIZE;
   let maxLength = 0;
-  for (let i = 0; i < values.length; i++) {
-    let size = measureText(shortenValue(formattedValueToString(getProcessedValue(i)), valueMaxLength), fontSize);
+  for (const label of labels) {
+    const size = measureText(label, fontSize);
     maxLength = size.width > maxLength ? size.width : maxLength;
   }
 
   // Add padding to the right if the labels are rotated in a way that makes the last label extend outside the graph.
   const paddingRight =
-    rotateLabel > 0
-      ? Math.cos((rotateLabel * Math.PI) / 180) *
-        measureText(
-          shortenValue(formattedValueToString(getProcessedValue(values.length - 1)), valueMaxLength),
-          fontSize
-        ).width
-      : 0;
+    rotateLabel > 0 ? Math.cos((rotateLabel * Math.PI) / 180) * measureText(labels.at(-1) ?? '', fontSize).width : 0;
 
   // Add padding to the left if the labels are rotated in a way that makes the first label extend outside the graph.
   const paddingLeft =
-    rotateLabel < 0
-      ? Math.cos((rotateLabel * -1 * Math.PI) / 180) *
-        measureText(shortenValue(formattedValueToString(getProcessedValue(0)), valueMaxLength), fontSize).width
-      : 0;
+    rotateLabel < 0 ? Math.cos((rotateLabel * -1 * Math.PI) / 180) * measureText(labels[0] ?? '', fontSize).width : 0;
 
   // Add padding to the bottom to avoid clipping the rotated labels.
   const paddingBottom =

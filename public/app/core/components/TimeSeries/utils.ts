@@ -1,8 +1,9 @@
 import { isNumber } from 'lodash';
-import uPlot from 'uplot';
+import uPlot, { Padding } from 'uplot';
 
 import {
   DataFrame,
+  dateTimeFormat,
   FieldConfig,
   FieldConfigTarget,
   FieldType,
@@ -12,6 +13,7 @@ import {
   getFieldSeriesColor,
   getFieldDisplayName,
   getDisplayProcessor,
+  systemDateFormats,
   FieldColorModeId,
   DecimalCount,
   Field,
@@ -73,7 +75,9 @@ import {
   AxisProps,
   ScaleProps,
   StackingGroup,
+  CompactSeriesFlag,
   installCompactRenderer,
+  timeUnitSize,
 } from '@grafana/ui/internal';
 
 import { ANNOTATION_LANE_SIZE } from '../../../plugins/panel/timeseries/plugins/utils';
@@ -152,7 +156,10 @@ export function prepareCompactPlotConfigBuilder(options: {
   getTimeRange: Parameters<UPlotConfigPrepFn>[0]['getTimeRange'];
   hoverProximity?: number;
   orientation?: VizOrientation;
-  xAxisConfig?: Pick<AxisProps, 'size' | 'gap' | 'ticks'>;
+  xAxisConfig?: Partial<AxisProps>;
+  valueAxisConfig?: Partial<AxisProps>;
+  padding?: Padding | ((controller: ReturnType<typeof installCompactRenderer>) => Padding);
+  groupedBarTickSpacing?: number;
 }) {
   const {
     plan,
@@ -162,44 +169,85 @@ export function prepareCompactPlotConfigBuilder(options: {
     hoverProximity,
     orientation = VizOrientation.Horizontal,
     xAxisConfig,
+    valueAxisConfig,
+    padding,
+    groupedBarTickSpacing = 0,
   } = options;
-  if (orientation === VizOrientation.Vertical) {
-    throw new Error('Compact rendering supports horizontal time-series orientation only');
-  }
+  const isHorizontal = orientation !== VizOrientation.Vertical;
+  const groupedBars = plan.source.barOptions?.mode === 'grouped';
+  let compactController: ReturnType<typeof installCompactRenderer>;
 
   const builder = new UPlotConfigBuilder(timeZones[0]);
   builder.addScale({
     scaleKey: 'x',
-    orientation: ScaleOrientation.Horizontal,
-    direction: ScaleDirection.Right,
-    isTime: true,
+    orientation: isHorizontal ? ScaleOrientation.Horizontal : ScaleOrientation.Vertical,
+    direction: isHorizontal ? ScaleDirection.Right : ScaleDirection.Down,
+    isTime: !groupedBars,
+    forward: groupedBars ? (value) => compactController.groupedBarIndexAt(value) : undefined,
+    inverse: groupedBars ? (index) => compactController.groupedBarValueAt(index) : undefined,
     range: () => {
       const state = builder.getState();
       if (state.isPanning) {
         return [state.min, state.max];
       }
+      if (groupedBars) {
+        return compactController.groupedBarRange();
+      }
       const range = getTimeRange();
-      return [range.from.valueOf(), range.to.valueOf()];
+      let minimum = range.from.valueOf();
+      let maximum = range.to.valueOf();
+      return [minimum, maximum];
     },
   });
 
   const filterTicks: uPlot.Axis.Filter | undefined =
     timeZones.length > 1 ? (_u, splits) => splits.map((value, index) => (index < 2 ? null : value)) : undefined;
+  const groupedBarFilter: uPlot.Axis.Filter | undefined = groupedBars ? (_plot, splits) => splits : undefined;
   for (const timeZone of timeZones) {
     builder.addAxis({
       scaleKey: 'x',
       isTime: true,
-      placement: AxisPlacement.Bottom,
+      placement: isHorizontal ? AxisPlacement.Bottom : AxisPlacement.Left,
       show: true,
       timeZone,
       theme,
       grid: { show: timeZone === timeZones[0] },
-      filter: filterTicks,
+      splits: groupedBars
+        ? (plot, _axisIndex, minimum, maximum) => {
+            if (groupedBarTickSpacing === 0) {
+              return compactController.groupedBarSplits(minimum, maximum);
+            }
+            const scale = plot.scales.x;
+            const dimension = plot.bbox.width / uPlot.pxRatio;
+            const maximumCount = Math.max(1, Math.abs(Math.floor(dimension / groupedBarTickSpacing)));
+            const direction = (scale.dir ?? 1) * (scale.ori === 1 ? -1 : 1);
+            return compactController.groupedBarSplits(minimum, maximum, {
+              maximumCount,
+              anchorEnd: groupedBarTickSpacing < 0,
+              reverse: direction !== 1,
+            });
+          }
+        : undefined,
+      formatValue: groupedBars
+        ? (value) =>
+            formatCompactBarTimeTicks([Number(value)], timeZone, compactController.groupedBarIncrement())[0] ?? ''
+        : undefined,
+      values: groupedBars
+        ? (_plot, splits) => formatCompactBarTimeTicks(splits, timeZone, compactController.groupedBarIncrement())
+        : undefined,
       ...xAxisConfig,
+      filter: xAxisConfig?.filter ?? filterTicks ?? groupedBarFilter,
     });
   }
 
-  installCompactRenderer(builder, plan.source);
+  compactController = installCompactRenderer(
+    builder,
+    plan.source,
+    isHorizontal ? ScaleOrientation.Vertical : ScaleOrientation.Horizontal
+  );
+  if (padding) {
+    builder.setPadding(typeof padding === 'function' ? padding(compactController) : padding);
+  }
   const configuredScales = new Uint8Array(plan.source.scales.length);
   for (let seriesIndex = 0; seriesIndex < plan.seriesCount; seriesIndex++) {
     const scaleId = plan.source.columns.scaleIds[seriesIndex];
@@ -210,16 +258,38 @@ export function prepareCompactPlotConfigBuilder(options: {
     const config = plan.getScale(seriesIndex).config;
     const custom = config.custom ?? {};
     const scale = plan.source.scales[scaleId];
+    let isPercentScale = false;
+    for (let candidate = 0; candidate < plan.seriesCount; candidate++) {
+      if (
+        plan.source.columns.scaleIds[candidate] === scaleId &&
+        (plan.source.columns.flags[candidate] & CompactSeriesFlag.PercentStack) !== 0
+      ) {
+        isPercentScale = true;
+        break;
+      }
+    }
     const display = getDisplayProcessor({
-      field: { name: 'Value', type: FieldType.number, config },
+      field: {
+        name: 'Value',
+        type: FieldType.number,
+        config: isPercentScale ? { ...config, unit: 'percentunit' } : config,
+      },
       theme,
       timeZone: timeZones[0],
     });
+    let placement = custom.axisPlacement ?? AxisPlacement.Auto;
+    if (!isHorizontal) {
+      if (placement === AxisPlacement.Left || placement === AxisPlacement.Auto) {
+        placement = AxisPlacement.Bottom;
+      } else if (placement === AxisPlacement.Right) {
+        placement = AxisPlacement.Top;
+      }
+    }
     builder.addAxis({
       scaleKey: scale.key,
       label: custom.axisLabel,
       size: custom.axisWidth,
-      placement: custom.axisPlacement ?? AxisPlacement.Auto,
+      placement,
       formatValue: (value, decimals) => formattedValueToString(display(value, decimals)),
       theme,
       grid: { show: custom.axisGridShow },
@@ -228,6 +298,7 @@ export function prepareCompactPlotConfigBuilder(options: {
       color: scale.axisColor,
       ticks: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
       border: { show: custom.axisBorderShow ?? false, stroke: scale.axisColor },
+      ...valueAxisConfig,
     });
 
     if (custom.thresholdsStyle && config.thresholds) {
@@ -249,6 +320,7 @@ export function prepareCompactPlotConfigBuilder(options: {
 
   builder.scaleKeys = ['x', plan.source.scales[0]?.key ?? ''];
   builder.setCursor({
+    drag: { x: isHorizontal, y: !isHorizontal },
     hover: {
       prox:
         hoverProximity ??
@@ -264,6 +336,29 @@ export function prepareCompactPlotConfigBuilder(options: {
     focus: { prox: hoverProximity ?? 30 },
   });
   return builder;
+}
+
+export function formatCompactBarTimeTicks(
+  splits: Array<number | null>,
+  timeZone: string,
+  increment: number
+): Array<string | null> {
+  const intervals = systemDateFormats.interval;
+  let format = intervals.year;
+  if (increment < timeUnitSize.second) {
+    format = intervals.millisecond;
+  } else if (increment < timeUnitSize.minute) {
+    format = intervals.second;
+  } else if (increment < timeUnitSize.hour) {
+    format = intervals.minute;
+  } else if (increment < timeUnitSize.day) {
+    format = intervals.hour;
+  } else if (increment < timeUnitSize.month) {
+    format = intervals.day;
+  } else if (increment < timeUnitSize.year) {
+    format = intervals.month;
+  }
+  return splits.map((value) => (value == null ? null : dateTimeFormat(value, { format, timeZone })));
 }
 
 function preparePlotConfigBuilderCore(

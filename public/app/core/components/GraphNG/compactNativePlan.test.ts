@@ -15,21 +15,25 @@ import {
   NullValueMode,
   ReducerID,
   reduceField,
+  ThresholdsMode,
 } from '@grafana/data';
 import {
   AxisColorMode,
   ComparisonOperation,
   GraphDrawStyle,
   GraphGradientMode,
+  GraphThresholdsStyleMode,
   GraphTransform,
   ScaleDistribution,
   StackingMode,
+  VisibilityMode,
 } from '@grafana/schema';
 import { CompactSeriesFlag } from '@grafana/ui/internal';
 
 import {
   CompactNativeSeriesFlag,
   createCompactNativeRenderPlan,
+  hasCompatibleCompactNativeConfig,
   hasSameCompactNativeTopology,
 } from './compactNativePlan';
 import { CompactFieldConfigOptions } from './compactTypes';
@@ -277,6 +281,41 @@ describe('CompactNativeRenderPlan', () => {
 
     expect(hasSameCompactNativeTopology(equivalent, first)).toBe(true);
     expect(hasSameCompactNativeTopology(changed, first)).toBe(false);
+  });
+
+  test('keeps the plot configuration while a cumulative response adds virtual series', () => {
+    const firstSource = columnarSource([series('A', 'requests', [1, 2])]).source;
+    const nextSource = columnarSource([series('A', 'requests', [1, 2]), series('A', 'errors', [2, 1])]).source;
+    const first = createCompactNativeRenderPlan(firstSource, baseOptions);
+    const next = createCompactNativeRenderPlan(nextSource, baseOptions);
+
+    expect(hasSameCompactNativeTopology(next, first)).toBe(false);
+    expect(hasCompatibleCompactNativeConfig(next, first)).toBe(true);
+  });
+
+  test('rebuilds the plot configuration when a later response adds a value scale', () => {
+    const options: CompactFieldConfigOptions = {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.axisLabel', 'axisLabel', true),
+      ]),
+      fieldConfig: {
+        defaults: { custom: { axisLabel: 'requests' } },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'errors' },
+            properties: [{ id: 'custom.axisLabel', value: 'errors' }],
+          },
+        ],
+      },
+    };
+    const first = createCompactNativeRenderPlan(columnarSource([series('A', 'requests', [1, 2])]).source, options);
+    const next = createCompactNativeRenderPlan(
+      columnarSource([series('A', 'requests', [1, 2]), series('A', 'errors', [2, 1])]).source,
+      options
+    );
+
+    expect(hasCompatibleCompactNativeConfig(next, first)).toBe(false);
   });
 
   test('rejects malformed value matcher options at the descriptor boundary', () => {
@@ -571,11 +610,229 @@ describe('CompactNativeRenderPlan', () => {
     expect(getSeries).not.toHaveBeenCalled();
   });
 
+  test('compiles TimeSeries bar geometry and percent stacks without materializing samples', () => {
+    const { source, getSeries } = columnarSource([
+      series('A', 'requests', [1, 2, 3]),
+      series('B', 'errors', [4, 5, 6]),
+    ]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.barAlignment', 'barAlignment', true),
+        compactProperty('custom.barWidthFactor', 'barWidthFactor', true),
+        compactProperty('custom.barMaxWidth', 'barMaxWidth', true),
+        compactProperty('custom.showPoints', 'showPoints', true),
+        compactProperty('custom.stacking', 'stacking', true),
+        compactProperty('custom.transform', 'transform', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            barAlignment: -1,
+            barWidthFactor: 0.75,
+            barMaxWidth: 48,
+            showPoints: VisibilityMode.Auto,
+            stacking: { mode: StackingMode.Percent, group: 'primary' },
+          },
+        },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byFrameRefID, options: 'B' },
+            properties: [
+              { id: 'custom.showPoints', value: VisibilityMode.Always },
+              { id: 'custom.transform', value: GraphTransform.Constant },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(plan.source.columns.flags).toBeInstanceOf(Uint16Array);
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Bars).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Stack).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.PercentStack).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.AutoPoints).toBe(0);
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.Points).toBeTruthy();
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.Constant).toBeTruthy();
+    expect(plan.source.styles[0]).toMatchObject({
+      barAlignment: -1,
+      barWidthFactor: 0.75,
+      barMaxWidth: 48,
+    });
+    expect(plan.source.stackGroupCount).toBe(1);
+    expect(plan.source.buffer).toBe(source.buffer);
+    expect(getSeries).not.toHaveBeenCalled();
+  });
+
+  test('applies a per-query line override over the default TimeSeries bar style', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2, 3]), series('B', 'errors', [4, 5, 6])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+      ]),
+      fieldConfig: {
+        defaults: { custom: { drawStyle: GraphDrawStyle.Bars } },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byFrameRefID, options: 'B' },
+            properties: [{ id: 'custom.drawStyle', value: GraphDrawStyle.Line }],
+          },
+        ],
+      },
+    });
+
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Bars).toBeTruthy();
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.DrawLine).toBe(0);
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.Bars).toBe(0);
+    expect(plan.source.columns.flags[1] & CompactSeriesFlag.DrawLine).toBeTruthy();
+  });
+
+  test.each([
+    {
+      name: 'percent',
+      mode: StackingMode.Percent,
+      transform: undefined,
+      expectedFlag: CompactSeriesFlag.PercentStack,
+    },
+    {
+      name: 'constant',
+      mode: StackingMode.Normal,
+      transform: GraphTransform.Constant,
+      expectedFlag: CompactSeriesFlag.Constant,
+    },
+  ])('retains $name metadata for a singleton bar stack', ({ mode, transform, expectedFlag }) => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2, 3])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'timeseries-bars',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.stacking', 'stacking', true),
+        compactProperty('custom.transform', 'transform', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            stacking: { mode, group: 'primary' },
+            transform,
+          },
+        },
+        overrides: [],
+      },
+    });
+
+    expect(plan.source.stackGroupCount).toBe(1);
+    expect(plan.source.columns.flags[0] & CompactSeriesFlag.Stack).toBeTruthy();
+    expect(plan.source.columns.flags[0] & expectedFlag).toBeTruthy();
+  });
+
+  test.each([
+    { name: 'single unstacked series', stacking: StackingMode.None, expectedStackGroupCount: 0 },
+    { name: 'single normally stacked series', stacking: StackingMode.Normal, expectedStackGroupCount: 1 },
+  ])('retains the topology for a $name', ({ stacking, expectedStackGroupCount }) => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2, 3])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'standalone-barchart',
+      barOptions: { mode: 'grouped', groupWidth: 0.7, barWidth: 0.9 },
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.stacking', 'stacking', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            stacking: { mode: stacking, group: 'primary' },
+          },
+        },
+        overrides: [],
+      },
+    });
+
+    expect(plan.source.barOptions).toMatchObject({ groupWidth: 0.7, barWidth: 0.9 });
+    expect(plan.source.stackGroupCount).toBe(expectedStackGroupCount);
+  });
+
+  test('separates configured hide rules from transient legend state', () => {
+    const { source } = columnarSource([
+      series('A', 'requests', [1, 2, 3]),
+      series('B', 'errors', [3, 2, 1]),
+      series('C', 'latency', [2, 3, 1]),
+    ]);
+    const systemOverride = {
+      matcher: { id: FieldMatcherID.byName, options: 'errors' },
+      properties: [{ id: 'custom.hideFrom', value: { viz: true, legend: false, tooltip: true } }],
+    };
+    Reflect.set(systemOverride, '__systemRef', 'hide-series');
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'standalone-barchart',
+      barOptions: { mode: 'grouped', groupWidth: 0.7, barWidth: 0.9 },
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('custom.drawStyle', 'drawStyle', true),
+        compactProperty('custom.hideFrom', 'hideFrom', true),
+      ]),
+      fieldConfig: {
+        defaults: {
+          custom: {
+            drawStyle: GraphDrawStyle.Bars,
+            hideFrom: { legend: false, tooltip: true, viz: false },
+          },
+        },
+        overrides: [
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'requests' },
+            properties: [{ id: 'custom.hideFrom', value: { legend: true } }],
+          },
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'errors' },
+            properties: [{ id: 'custom.hideFrom', value: { legend: true, tooltip: false } }],
+          },
+          {
+            matcher: { id: FieldMatcherID.byName, options: 'latency' },
+            properties: [{ id: 'custom.hideFrom', value: { tooltip: false, viz: true } }],
+          },
+          systemOverride,
+        ],
+      },
+    });
+
+    expect(plan.source.columns.visibility).toEqual(new Uint8Array([1, 0, 0]));
+    expect(plan.source.barLayoutVisibility).toEqual(new Uint8Array([1, 1, 0]));
+    expect(plan.columns.flags[0] & CompactNativeSeriesFlag.HiddenFromTooltip).not.toBe(0);
+    expect(plan.columns.flags[1] & CompactNativeSeriesFlag.HiddenFromViz).not.toBe(0);
+    expect(plan.columns.flags[1] & CompactNativeSeriesFlag.HiddenFromLegend).not.toBe(0);
+    expect(plan.columns.flags[1] & CompactNativeSeriesFlag.HiddenFromTooltip).not.toBe(0);
+    expect(plan.columns.flags[2] & CompactNativeSeriesFlag.HiddenFromViz).not.toBe(0);
+    expect(plan.columns.flags[2] & CompactNativeSeriesFlag.HiddenFromTooltip).toBe(0);
+    expect(plan.source.barOptions).toMatchObject({ groupWidth: 0.7, barWidth: 0.9 });
+  });
+
+  test('keeps standalone no-value display text without rendering missing bars', () => {
+    const { source } = columnarSource([seriesFromLogicalValues('A', 'requests', [1, null, 3])]);
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      capability: 'standalone-barchart',
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [compactProperty('noValue', 'noValue', false)]),
+      fieldConfig: { defaults: { noValue: '5' }, overrides: [] },
+    });
+
+    expect(plan.getStyle(0).config.noValue).toBe('5');
+    expect(plan.source.yAt(0, 1)).toBeNull();
+  });
+
   test('uses the original value direction for negative and constant transforms', () => {
     const { source } = columnarSource([
       series('A', 'positive', [1, 2, 3]),
       series('B', 'negative-rendered-positive', [-1, -2, -3]),
-      series('C', 'constant-positive', [4, 5, 6]),
+      series('C', 'constant-positive', [-4, 5, 6]),
     ]);
     const plan = createCompactNativeRenderPlan(source, {
       ...baseOptions,
@@ -600,6 +857,31 @@ describe('CompactNativeRenderPlan', () => {
 
     expect(plan.source.stackGroupCount).toBe(1);
     expect(plan.source.columns.stackGroupIds).toEqual(new Uint8Array([1, 1, 1]));
+    expect(plan.source.stackDirections).toEqual(new Int8Array([1]));
+  });
+
+  test('keeps threshold rendering configuration on the scale record', () => {
+    const { source } = columnarSource([series('A', 'requests', [1, 2])]);
+    const thresholds = {
+      mode: ThresholdsMode.Absolute,
+      steps: [
+        { color: 'green', value: -Infinity },
+        { color: 'red', value: 10 },
+      ],
+    };
+    const thresholdsStyle = { mode: GraphThresholdsStyleMode.Line };
+    const plan = createCompactNativeRenderPlan(source, {
+      ...baseOptions,
+      fieldConfigRegistry: new FieldConfigOptionsRegistry(() => [
+        compactProperty('thresholds', 'thresholds', false),
+        compactProperty('custom.thresholdsStyle', 'thresholdsStyle', true),
+      ]),
+      fieldConfig: { defaults: { thresholds, custom: { thresholdsStyle } }, overrides: [] },
+    });
+
+    expect(plan.getScale(0).config).toMatchObject({ thresholds, custom: { thresholdsStyle } });
+    expect(plan.getStyle(0).config.thresholds).toBeUndefined();
+    expect(plan.getStyle(0).config.custom?.thresholdsStyle).toBeUndefined();
   });
 
   test('does not allocate stack state for singleton groups', () => {

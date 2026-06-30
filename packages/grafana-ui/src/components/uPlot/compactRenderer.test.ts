@@ -8,7 +8,10 @@ import {
   CompactSeriesFlag,
   CompactStyleRecord,
   getCompactRenderController,
+  installCompactRenderer,
+  mayDrawCompactSourceProgressively,
 } from './compactRenderer';
+import { UPlotConfigBuilder } from './config/UPlotConfigBuilder';
 
 describe('CompactRenderController', () => {
   test('draws source-native lines, steps, points, splines, and gaps without dense arrays', () => {
@@ -38,6 +41,611 @@ describe('CompactRenderController', () => {
     expect(context.stroke).toHaveBeenCalled();
     expect(source.scan).toHaveBeenCalled();
     expect(source.buffer).toBe(source.samples.buffer);
+  });
+
+  test('draws grouped bars directly from the compact source without aligned value arrays', () => {
+    const source = createSource(
+      [
+        [1, undefined, 3],
+        [3, 2, 1],
+      ],
+      [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'single',
+      { stroke: '#f00', areaFill: '#fcc', lineWidth: 1, barWidthFactor: 0.8 }
+    );
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8, barRadius: 0 });
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+
+    controller.draw(plot, 0, 2);
+
+    expect(context.fill).toHaveBeenCalledTimes(5);
+    expect(context.stroke).toHaveBeenCalledTimes(5);
+    expect(source.scan).toHaveBeenCalledWith(0, 0, 2, expect.any(Function));
+    expect(source.scan).toHaveBeenCalledWith(1, 0, 2, expect.any(Function));
+    expect(source.buffer).toBe(source.samples.buffer);
+    const bars = context.rect.mock.calls.slice(1);
+    for (const [, , width] of bars) {
+      expect(width).toBeCloseTo((100 / 3) * 0.8 * 0.4 - 1);
+    }
+    expect(bars[2][0] - bars[0][0]).toBeCloseTo((100 / 3) * 0.8 * 0.6);
+  });
+
+  test('maps grouped Bar chart timestamps onto categorical positions', () => {
+    const source = createSource([[1, 2, 3]], [CompactSeriesFlag.Bars]);
+    source.xAt = (index) => [0, 10, 30][index];
+    source.closestXIndex = jest.fn((value) => (value < 5 ? 0 : value < 20 ? 1 : 2));
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+    const controller = new CompactRenderController(source);
+
+    expect([0, 10, 30].map((value) => controller.groupedBarIndexAt(value))).toEqual([0, 1, 2]);
+    expect(source.closestXIndex).not.toHaveBeenCalled();
+    expect(controller.groupedBarValueAt(1.5)).toBe(20);
+    const [minimum, maximum] = controller.groupedBarRange();
+    expect(controller.groupedBarIndexAt(minimum)).toBeCloseTo(-4 / 11);
+    expect(controller.groupedBarIndexAt(maximum)).toBeCloseTo(26 / 11);
+    expect(controller.groupedBarSplits(minimum, maximum)).toEqual([0, 10, 30]);
+
+    const { plot, context } = createPlot();
+    const minimumIndex = controller.groupedBarIndexAt(minimum);
+    const indexRange = controller.groupedBarIndexAt(maximum) - minimumIndex;
+    plot.valToPos = (value, scaleKey) =>
+      scaleKey === 'x' ? ((controller.groupedBarIndexAt(value) - minimumIndex) / indexRange) * 100 : 80 - value * 10;
+    controller.draw(plot, 0, 2);
+    const bars = context.rect.mock.calls.slice(1);
+    expect(bars).toHaveLength(3);
+    for (const [, , width] of bars) {
+      expect(width).toBeCloseTo(80 / 3 - 1);
+    }
+  });
+
+  test('returns each grouped Bar chart category for the axis spacing filter', () => {
+    const source = createSource([[1, 2, 3, 4, 5]], [CompactSeriesFlag.Bars]);
+    source.xAt = (index) => index;
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+    const controller = new CompactRenderController(source);
+    const [minimum, maximum] = controller.groupedBarRange();
+
+    expect(controller.groupedBarSplits(minimum, maximum)).toEqual([0, 1, 2, 3, 4]);
+    expect(controller.groupedBarSplits(minimum, maximum, { maximumCount: 2 })).toEqual([0, 3]);
+    expect(controller.groupedBarSplits(minimum, maximum, { maximumCount: 2, anchorEnd: true })).toEqual([1, 4]);
+    expect(controller.groupedBarSplits(minimum, maximum, { maximumCount: 3, anchorEnd: true })).toEqual([0, 2, 4]);
+    expect(controller.groupedBarSplits(minimum, maximum, { maximumCount: 2, reverse: true })).toEqual([3, 0]);
+
+    const largeSource = createVirtualSource(1, 1_000_001);
+    const largeSplits = new CompactRenderController(largeSource).groupedBarSplits(0, 1_000_000);
+    expect(largeSplits.length).toBeLessThanOrEqual(2_048);
+    expect(largeSplits[0]).toBe(0);
+  });
+
+  test('uses a precise grouped-bar time format for sparse and irregular samples', () => {
+    const single = createSource([[1]], [CompactSeriesFlag.Bars]);
+    const irregular = createSource([[1, 2, 3]], [CompactSeriesFlag.Bars]);
+    const longIrregular = createSource([new Array(66).fill(1)], [CompactSeriesFlag.Bars]);
+    irregular.xAt = (index) => [0, 100_000, 101_000][index];
+    longIrregular.xAt = (index) => (index < 65 ? index * 100_000 : 6_401_000);
+
+    expect(new CompactRenderController(single).groupedBarIncrement()).toBe(1000);
+    expect(new CompactRenderController(irregular).groupedBarIncrement()).toBe(1000);
+    expect(new CompactRenderController(longIrregular).groupedBarIncrement()).toBe(1000);
+  });
+
+  test('lays out currently visible grouped bars without exposing configured-hidden series', () => {
+    const source = createSource(
+      [[1], [2], [3]],
+      [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars, CompactSeriesFlag.Bars]
+    );
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.9, barWidth: 0.8 });
+    Reflect.set(source, 'barLayoutVisibility', new Uint8Array([1, 1, 0]));
+    source.columns.visibility[1] = 0;
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+
+    expect(source.columns.visibility).toEqual(new Uint8Array([1, 0, 0]));
+    controller.draw(plot, 0, 0);
+    const isolatedBars = context.rect.mock.calls.slice(1);
+
+    controller.setSeries(null, { show: true });
+    controller.setSeries(2, { show: true });
+    context.rect.mockClear();
+    controller.draw(plot, 0, 0);
+    const restoredBars = context.rect.mock.calls.slice(1);
+
+    expect(source.columns.visibility).toEqual(new Uint8Array([1, 1, 0]));
+    expect(isolatedBars).toHaveLength(1);
+    expect(restoredBars).toHaveLength(2);
+    expect(isolatedBars[0][2]).toBeGreaterThan(restoredBars[0][2]);
+  });
+
+  test('keeps configured point markers on TimeSeries bars', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Bars | CompactSeriesFlag.Points]);
+    const { plot, context } = createPlot();
+
+    new CompactRenderController(source).draw(plot, 0, 1);
+
+    expect(context.arc).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([
+    { middle: undefined, expectedWidth: 24 },
+    { middle: null, expectedWidth: 12 },
+  ])(
+    'matches uPlot TimeSeries bar width and pixel rounding for a $middle middle sample',
+    ({ middle, expectedWidth }) => {
+      const source = createSource([[1.45, middle, 2.25]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+        stroke: '#f00',
+        areaFill: '#fcc',
+        lineWidth: 0,
+        barWidthFactor: 0.6,
+      });
+      source.xAt = (index) => index * 10;
+      if (middle === null) {
+        source.scan.mockImplementation((_series, from, to, visitor) => {
+          const renderValues = [1.45, undefined, 2.25];
+          for (let index = from; index <= to; index++) {
+            visitor(index, renderValues[index]);
+          }
+        });
+      }
+      const cursorValueAt = jest.fn(source.cursorValueAt);
+      source.cursorValueAt = cursorValueAt;
+      const controller = new CompactRenderController(source);
+      const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 2 : 80 - value * 10);
+
+      controller.draw(plot, 0, 2);
+
+      const bars = context.rect.mock.calls.slice(1);
+      expect(bars).toEqual([
+        [-expectedWidth / 2, 66, expectedWidth, 14],
+        [40 - expectedWidth / 2, 58, expectedWidth, 22],
+      ]);
+      expect(context.fill).toHaveBeenCalledTimes(1);
+      expect(source.cursorValueAt).toHaveBeenCalledTimes(3);
+
+      cursorValueAt.mockClear();
+      controller.draw(plot, 0, 2);
+      expect(cursorValueAt).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    {
+      order: 'before',
+      values: [[50], [100]],
+      flags: [CompactSeriesFlag.Bars | CompactSeriesFlag.Points, CompactSeriesFlag.Bars],
+      expectedSeries: 0,
+    },
+    {
+      order: 'after',
+      values: [[100], [50]],
+      flags: [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars | CompactSeriesFlag.Points],
+      expectedSeries: 1,
+    },
+  ])('keeps a point painted $order another bar focusable inside its body', ({ values, flags, expectedSeries }) => {
+    const source = createSource(values, flags, 0, 'series', 'single', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 1,
+      pointSize: 5,
+      barWidthFactor: 0.6,
+    });
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+    plot.focus.prox = 1;
+    controller.draw(plot, 0, 0);
+
+    expect(controller.updateCursor(plot, 0, 50, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: expectedSeries,
+      distance: 0,
+      centered: true,
+    });
+  });
+
+  test('fills dense TimeSeries bars with the stroke color when uPlot suppresses their outlines', () => {
+    for (const showValue of ['never', 'always'] as const) {
+      const source = createSource([[1, 2]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+        stroke: '#f00',
+        lineWidth: 1,
+        barWidthFactor: 0.6,
+      });
+      Reflect.set(source, 'barOptions', { showValue });
+      const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 2.1 : 80 - value * 10);
+
+      new CompactRenderController(source).draw(plot, 0, 1);
+
+      expect(context.fill).toHaveBeenCalledTimes(showValue === 'never' ? 1 : 2);
+      expect(context.fillStyle).toBe('#f00');
+      expect(context.stroke).not.toHaveBeenCalled();
+    }
+  });
+
+  test('keeps dense TimeSeries value labels on the legacy 30px cadence', () => {
+    const source = createSource([[1, 2, 3, 4]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#f00',
+      lineWidth: 1,
+      showValues: true,
+    });
+    source.formatValueAt = (_series, _index, value) => String(value);
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? 10 + value * 20 : 80 - value * 10);
+
+    new CompactRenderController(source).draw(plot, 0, 3);
+
+    expect(context.fillText).not.toHaveBeenCalled();
+  });
+
+  test('admits large unstacked and stacked bars to the progressive renderer', () => {
+    const unstacked = createVirtualSource(1_000, 1_000);
+    Reflect.set(unstacked.columns, 'flags', new Uint16Array(unstacked.seriesCount).fill(CompactSeriesFlag.Bars));
+    Reflect.set(unstacked, 'styles', [{ ...unstacked.styles[0], showValues: true }]);
+    const stacked = createVirtualSource(1_000, 1_000);
+    Reflect.set(
+      stacked.columns,
+      'flags',
+      new Uint16Array(stacked.seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
+    );
+    Reflect.set(stacked.columns, 'stackGroupIds', new Uint8Array(stacked.seriesCount).fill(1));
+    Reflect.set(stacked, 'stackGroupCount', 1);
+    Reflect.set(stacked, 'stackDirections', new Int8Array([1]));
+    const grouped = createVirtualSource(1_000, 1_000);
+    Reflect.set(grouped.columns, 'flags', new Uint16Array(grouped.seriesCount).fill(CompactSeriesFlag.Bars));
+    Reflect.set(grouped, 'barOptions', { mode: 'grouped', showValue: 'auto' });
+    Reflect.set(grouped, 'formatValueAt', (_series: number, _index: number, value: number) => String(value));
+
+    expect(mayDrawCompactSourceProgressively(unstacked)).toBe(true);
+    expect(mayDrawCompactSourceProgressively(stacked)).toBe(true);
+    expect(mayDrawCompactSourceProgressively(grouped)).toBe(true);
+  });
+
+  test('skips time-series width preparation for progressive grouped bars', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    try {
+      const source = createVirtualSource(1_000, 1_000);
+      Reflect.set(source.columns, 'flags', new Uint16Array(source.seriesCount).fill(CompactSeriesFlag.Bars));
+      Reflect.set(source, 'barOptions', { mode: 'grouped', showValue: 'never' });
+      source.cursorValueAt = jest.fn(source.cursorValueAt);
+      const controller = new CompactRenderController(source);
+      const completed = controller.draw(createPlot().plot, 0, 999);
+      const [timer, callback] = callbacks.entries().next().value!;
+      callbacks.delete(timer);
+      (callback as () => void)();
+
+      expect(source.cursorValueAt).not.toHaveBeenCalled();
+      controller.destroy(source);
+      await expect(completed).resolves.toBe(false);
+    } finally {
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
+  });
+
+  test('prepares bounded stacked-bar hover before progressive drawing completes', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    try {
+      const seriesCount = 1_000;
+      const source = createVirtualSource(seriesCount, 40);
+      Reflect.set(
+        source.columns,
+        'flags',
+        new Uint16Array(seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
+      );
+      Reflect.set(source.columns, 'stackGroupIds', new Uint8Array(seriesCount).fill(1));
+      Reflect.set(source, 'stackGroupCount', 1);
+      Reflect.set(source, 'stackDirections', new Int8Array([1]));
+      Reflect.set(source, 'styles', [{ stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }]);
+      const yAt = jest.fn(source.yAt);
+      source.yAt = yAt;
+      const controller = new CompactRenderController(source);
+      const { plot, context } = createPlot();
+      plot.cursor.left = 20;
+      const completed = controller.draw(plot, 0, 39);
+      let bounded = false;
+
+      for (let turn = 0; turn < 50 && !bounded; turn++) {
+        runNextTimer(callbacks);
+        yAt.mockClear();
+        controller.updateCursor(plot, 20, 50, 'local');
+        bounded = yAt.mock.calls.length < seriesCount;
+      }
+
+      expect(bounded).toBe(true);
+      expect(controller.isProgressiveDrawInFlight()).toBe(true);
+      expect(context.fill).not.toHaveBeenCalled();
+      controller.destroy(source);
+      await expect(completed).resolves.toBe(false);
+    } finally {
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
+  });
+
+  test('keeps long low-cardinality sources on the existing synchronous path', () => {
+    const source = createVirtualSource(1, 40_000);
+    source.scan.mockImplementation(() => undefined);
+    const controller = new CompactRenderController(source);
+
+    const completed = controller.draw(createPlot().plot, 0, source.pointCount - 1);
+
+    expect(mayDrawCompactSourceProgressively(source)).toBe(false);
+    expect(completed).toBeUndefined();
+    expect(source.scan).toHaveBeenCalled();
+    controller.destroy(source);
+  });
+
+  test('predicts progressive drawing for a short viewport over a long source', async () => {
+    const source = createVirtualSource(5, 40_000);
+    source.scan.mockImplementation(() => undefined);
+    const controller = new CompactRenderController(source);
+
+    const completed = controller.draw(createPlot().plot, 0, 7_997);
+
+    expect(mayDrawCompactSourceProgressively(source)).toBe(true);
+    expect(completed).toBeInstanceOf(Promise);
+    controller.destroy(source);
+    await expect(completed).resolves.toBe(false);
+  });
+
+  test.each([
+    {
+      name: 'unstacked series',
+      flags: [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars],
+      stackGroupCount: 0,
+    },
+    {
+      name: 'stacked series',
+      flags: [CompactSeriesFlag.Bars | CompactSeriesFlag.Stack, CompactSeriesFlag.Bars | CompactSeriesFlag.Stack],
+      stackGroupCount: 1,
+    },
+  ])(
+    'matches global TimeSeries bar cadence for $name and refreshes it after hiding a series',
+    ({ flags, stackGroupCount }) => {
+      const source = createSource(
+        [
+          [1, undefined, 1],
+          [1, 1, 1],
+        ],
+        flags,
+        stackGroupCount,
+        'series',
+        'single',
+        { stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }
+      );
+      source.xAt = (index) => [0, 1, 10][index];
+      const controller = new CompactRenderController(source);
+      const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value * 10 : 80 - value * 10);
+
+      controller.draw(plot, 0, 2);
+
+      expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([6, 6, 6, 6, 6]);
+
+      controller.setSeries(1, { show: false });
+      context.rect.mockClear();
+      controller.draw(plot, 0, 2);
+      expect(context.rect.mock.calls.slice(1).map(([, , width]) => width)).toEqual([60, 60]);
+    }
+  );
+
+  test('normalizes percent-stacked bars for extents and cursor focus', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
+    const source = createSource(
+      [
+        [1, 1],
+        [3, 1],
+      ],
+      [flags, flags],
+      1,
+      'series',
+      'single',
+      { stroke: '#f00', areaFill: '#fcc', lineWidth: 1 }
+    );
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+
+    expect(controller.extent(plot, 'y', 0, 1)).toEqual([0, 1]);
+    expect(controller.updateCursor(plot, 0, 1, 'local')).toMatchObject({
+      seriesIndex: 1,
+      dataIndex: 0,
+      centered: false,
+      top: 0.25,
+      height: 0.75,
+    });
+  });
+
+  test('keeps a positive percent stack positive when one timestamp crosses below zero', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack;
+    const source = createSource(
+      [
+        [1, -2, 1],
+        [1, -1, 1],
+      ],
+      [flags, flags],
+      1
+    );
+    Reflect.set(source, 'stackDirections', new Int8Array([1]));
+
+    expect(new CompactRenderController(source).extent(createPlot().plot, 'y', 1, 1)).toEqual([0, 1]);
+  });
+
+  test('formats stacked bar labels from segment values and rounds only exposed normal stacks', () => {
+    const cases = [
+      {
+        flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack,
+        expected: [1, 1, 3, 1],
+        roundedCorners: 4,
+      },
+      {
+        flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+        expected: [0.25, 0.5, 0.75, 0.5],
+        roundedCorners: 0,
+      },
+      {
+        flags: CompactSeriesFlag.Bars | CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+        values: [
+          [-1, -1],
+          [-3, -1],
+        ],
+        expected: [0.25, 0.5, 0.75, 0.5],
+        roundedCorners: 0,
+      },
+    ];
+
+    for (const {
+      flags,
+      values = [
+        [1, 1],
+        [3, 1],
+      ],
+      expected,
+      roundedCorners,
+    } of cases) {
+      const source = createSource(values, [flags, flags], 1, 'series', 'single', {
+        stroke: '#f00',
+        areaFill: '#fcc',
+        lineWidth: 1,
+      });
+      const formatValueAt = jest.fn((_series: number, _index: number, _value: number) => 'value');
+      Reflect.set(source, 'formatValueAt', formatValueAt);
+      Reflect.set(source, 'barOptions', {
+        mode: 'grouped',
+        groupWidth: 0.8,
+        barWidth: 0.8,
+        barRadius: 0.2,
+        showValue: 'always',
+      });
+      const { plot, context } = createPlot();
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value * 10);
+
+      new CompactRenderController(source).draw(plot, 0, 1);
+
+      expect(formatValueAt.mock.calls.map(([, , value]) => value)).toEqual([...expected, ...expected]);
+      expect(context.quadraticCurveTo).toHaveBeenCalledTimes(roundedCorners);
+    }
+  });
+
+  test('formats TimeSeries stack labels from prepared cumulative values', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[1], [3]], [flags, flags], 1, 'series', 'single', {
+      stroke: '#f00',
+      lineWidth: 1,
+      showValues: true,
+    });
+    const formatValueAt = jest.fn((_series: number, _index: number, value: number) => String(value));
+    Reflect.set(source, 'formatValueAt', formatValueAt);
+
+    new CompactRenderController(source).draw(createPlot().plot, 0, 0);
+
+    expect(formatValueAt.mock.calls.map(([, , value]) => value)).toEqual([4]);
+  });
+
+  test('suppresses colliding auto labels within a stacked bar', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[1], [1]], [flags, flags], 1);
+    Reflect.set(source, 'formatValueAt', () => '1');
+    Reflect.set(source, 'barOptions', {
+      mode: 'grouped',
+      groupWidth: 0.8,
+      barWidth: 0.8,
+      showValue: 'auto',
+    });
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value);
+
+    new CompactRenderController(source).draw(plot, 0, 0);
+
+    expect(context.fillText).toHaveBeenCalledTimes(1);
+  });
+
+  test('auto-sizes standalone bar values up to the legacy 30-pixel maximum', () => {
+    const source = createSource([[1]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 0,
+    });
+    Reflect.set(source, 'formatValueAt', () => '1');
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1, showValue: 'always' });
+    const { plot, context } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : 80 - value * 10);
+
+    new CompactRenderController(source).draw(plot, 0, 0);
+
+    expect(context.font).toBe('30px sans-serif');
+  });
+
+  test('exposes a full bar-group cursor rectangle for standalone highlight mode', () => {
+    const source = createSource([[1], [3]], [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 1,
+    });
+    Reflect.set(source, 'barOptions', {
+      mode: 'grouped',
+      groupWidth: 0.8,
+      barWidth: 1,
+      fullHighlight: true,
+    });
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 0, 80, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      centered: false,
+      left: 0,
+      top: 0,
+      width: 40,
+      height: 100,
+    });
+  });
+
+  test.each([
+    { orientation: 'vertical', xOrientation: 0, expected: { width: 100, height: 0.5 } },
+    { orientation: 'horizontal', xOrientation: 1, expected: { width: 0.5, height: 100 } },
+  ])('keeps a $orientation zero-value grouped bar cursor visible', ({ xOrientation, expected }) => {
+    const source = createSource([[0]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#f00',
+      fill: null,
+      lineWidth: 1,
+    });
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1 });
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.scales.x.ori = xOrientation as 0 | 1;
+    plot.scales.y.ori = xOrientation === 0 ? 1 : 0;
+    plot.cursor.left = 0;
+    plot.cursor.top = 0;
+
+    expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      centered: false,
+      ...expected,
+    });
   });
 
   test('computes stacked extents with visible-window scratch and updates typed visibility', () => {
@@ -208,11 +816,34 @@ describe('CompactRenderController', () => {
     expect(first.buffer.byteLength).toBeGreaterThan(0);
     expect(second.buffer.byteLength).toBeGreaterThan(0);
     expect(() => controller.replaceSource(first, second)).toThrow('ownership mismatch');
-    expect(() => controller.replaceSource(second, createSource([[5, 6]], [CompactSeriesFlag.Stack], 1))).toThrow(
-      'stack topology'
+    const growing = createSource(
+      [
+        [5, 6],
+        [7, 8],
+      ],
+      [CompactSeriesFlag.Stack, CompactSeriesFlag.Stack],
+      1
     );
+    expect(() => controller.replaceSource(second, growing)).not.toThrow();
+    expect(growing.seriesCount).toBe(2);
+    expect(() =>
+      controller.replaceSource(
+        growing,
+        createSource(
+          [
+            [5, 6],
+            [7, 8],
+          ],
+          [
+            CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+            CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack,
+          ],
+          1
+        )
+      )
+    ).toThrow('percent scale usage');
 
-    controller.destroy(second);
+    controller.destroy(growing);
   });
 
   test('keeps shared response storage alive when replacing a source view', () => {
@@ -235,6 +866,18 @@ describe('CompactRenderController', () => {
     expect(second.buffer.byteLength).toBeGreaterThan(0);
     expect(getCompactRenderController(second)).toBe(controller);
     controller.destroy(second);
+  });
+
+  test('does not unregister a newer controller when an older plot is destroyed', () => {
+    const source = createSource([[1, 2]], [CompactSeriesFlag.Linear]);
+    const registry = { get: getCompactRenderController, install: installCompactRenderer };
+    const previousController = registry.get(source);
+    const replacementController = registry.install(new UPlotConfigBuilder('utc'), source);
+
+    previousController.destroy(source);
+
+    expect(registry.get(source)).toBe(replacementController);
+    replacementController.destroy(source);
   });
 
   test('drops response ownership from snapshots when the renderer is destroyed', () => {
@@ -274,8 +917,8 @@ describe('CompactRenderController', () => {
         const completed = controller.draw(plot, 0, 999);
 
         expect(completed).toBeInstanceOf(Promise);
-        expect(source.scan.mock.calls.length).toBeGreaterThan(0);
-        expect(source.scan.mock.calls.length).toBeLessThan(source.seriesCount);
+        expect(controller.isProgressiveDrawInFlight()).toBe(true);
+        expect(source.scan).not.toHaveBeenCalled();
         expect(callbacks.size).toBe(1);
 
         if (action === 'focused visibility change') {
@@ -287,6 +930,7 @@ describe('CompactRenderController', () => {
         }
 
         await expect(completed).resolves.toBe(false);
+        expect(controller.isProgressiveDrawInFlight()).toBe(false);
         expect(callbacks.size).toBe(0);
       } finally {
         setTimeout.mockRestore();
@@ -294,6 +938,107 @@ describe('CompactRenderController', () => {
       }
     }
   );
+
+  test('shares progressive turns and makes bounded progress while input remains pending', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    const schedulingDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'scheduling');
+    Object.defineProperty(window.navigator, 'scheduling', {
+      configurable: true,
+      value: { isInputPending: () => true },
+    });
+
+    const createStackedSource = () => {
+      const source = createVirtualSource(100, 400);
+      Reflect.set(
+        source.columns,
+        'flags',
+        new Uint16Array(source.seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
+      );
+      Reflect.set(source.columns, 'stackGroupIds', new Uint8Array(source.seriesCount).fill(1));
+      Reflect.set(source, 'stackGroupCount', 1);
+      Reflect.set(source, 'stackDirections', new Int8Array([1]));
+      return source;
+    };
+    const first = createStackedSource();
+    const second = createStackedSource();
+    const firstController = new CompactRenderController(first);
+    const secondController = new CompactRenderController(second);
+    const firstCompleted = firstController.draw(createPlot().plot, 0, 399);
+    const secondCompleted = secondController.draw(createPlot().plot, 0, 399);
+
+    try {
+      expect(callbacks.size).toBe(1);
+
+      for (let yieldCount = 0; yieldCount < 4; yieldCount++) {
+        runNextTimer(callbacks);
+        expect(first.scan).not.toHaveBeenCalled();
+        expect(second.scan).not.toHaveBeenCalled();
+        expect(callbacks.size).toBe(1);
+      }
+
+      runNextTimer(callbacks);
+      expect(first.scan).toHaveBeenCalled();
+      expect(second.scan).not.toHaveBeenCalled();
+      for (let turn = 0; turn < 5; turn++) {
+        runNextTimer(callbacks);
+      }
+      expect(second.scan).toHaveBeenCalled();
+      expect(firstController.isProgressiveDrawInFlight()).toBe(true);
+      expect(secondController.isProgressiveDrawInFlight()).toBe(true);
+    } finally {
+      firstController.destroy(first);
+      secondController.destroy(second);
+      await expect(firstCompleted).resolves.toBe(false);
+      await expect(secondCompleted).resolves.toBe(false);
+      expect(callbacks.size).toBe(0);
+      if (schedulingDescriptor) {
+        Object.defineProperty(window.navigator, 'scheduling', schedulingDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, 'scheduling');
+      }
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
+  });
+
+  test('settles a progressive draw when a scheduled task throws', async () => {
+    const callbacks = new Map<ReturnType<typeof window.setTimeout>, TimerHandler>();
+    let nextTimer = 0;
+    const setTimeout = jest.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+      const timer = ++nextTimer as unknown as ReturnType<typeof window.setTimeout>;
+      callbacks.set(timer, callback);
+      return timer;
+    });
+    const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
+    });
+    const source = createVirtualSource(100, 400);
+    source.scan.mockImplementation(() => {
+      throw new Error('scan failed');
+    });
+    const controller = new CompactRenderController(source);
+    const completed = controller.draw(createPlot().plot, 0, source.pointCount - 1);
+
+    try {
+      expect(() => runNextTimer(callbacks)).toThrow('scan failed');
+      await expect(completed).resolves.toBe(false);
+      expect(controller.isProgressiveDrawInFlight()).toBe(false);
+      expect(callbacks.size).toBe(0);
+    } finally {
+      controller.destroy(source);
+      setTimeout.mockRestore();
+      clearTimeout.mockRestore();
+    }
+  });
 
   test('preserves visibility only when the replacement has the same series identity', () => {
     const first = createSource(
@@ -344,6 +1089,541 @@ describe('CompactRenderController', () => {
 
     controller.setSeries(1, { show: false });
     expect(controller.updateCursor(plot, 1, 2, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0, top: 1 });
+  });
+
+  test.each([
+    {
+      name: 'solid',
+      values: [
+        [500, 500],
+        [1800, 1800],
+      ],
+      flags: [CompactSeriesFlag.DrawLine, CompactSeriesFlag.DrawLine],
+      stackGroupCount: 0,
+      fill: { areaFill: 'rgba(0, 0, 255, 0.2)' },
+    },
+    {
+      name: 'gradient',
+      values: [
+        [500, 500],
+        [1800, 1800],
+      ],
+      flags: [CompactSeriesFlag.DrawLine, CompactSeriesFlag.DrawLine],
+      stackGroupCount: 0,
+      fill: { areaGradient: ['rgba(0, 0, 255, 0.2)', 'rgba(0, 0, 255, 0)'] as const },
+    },
+    {
+      name: 'stacked',
+      values: [
+        [500, 500],
+        [1300, 1300],
+      ],
+      flags: [
+        CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+        CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack,
+      ],
+      stackGroupCount: 1,
+      fill: { areaFill: 'rgba(0, 0, 255, 0.2)' },
+    },
+  ])('treats a $name area fill as a focus target while keeping the cursor point on the line', (testCase) => {
+    const source = createSource(testCase.values, testCase.flags, testCase.stackGroupCount, 'series', 'single', {
+      stroke: '#00f',
+      cursorStroke: '#0000ff80',
+      lineWidth: 1,
+      ...testCase.fill,
+    });
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+
+    expect(controller.updateCursor(plot, 1, 1200, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 1,
+      dataIndex: 1,
+      distance: 0,
+      top: 1800,
+    });
+    expect(controller.updateCursor(plot, 1, 520, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      dataIndex: 1,
+      distance: 20,
+      top: 500,
+    });
+  });
+
+  test('hits the rendered linear area between sparse samples instead of the nearest sample height', () => {
+    const source = createSource([[0, 100]], [CompactSeriesFlag.DrawLine], 0, 'series', 'single', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 1,
+    });
+    source.xAt = (index) => index * 100;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 50;
+
+    expect(controller.updateCursor(plot, 1, 10, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      distance: 0,
+    });
+    expect(controller.updateCursor(plot, 1, 90, 'local')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+    });
+  });
+
+  test.each([
+    { path: CompactSeriesFlag.StepBefore, expected: true },
+    { path: CompactSeriesFlag.StepAfter, expected: false },
+  ])('matches the rendered stepped area while hovering: %p', ({ path, expected }) => {
+    const source = createSource([[20, 100]], [path | CompactSeriesFlag.DrawLine], 0, 'series', 'single', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 1,
+    });
+    source.xAt = (index) => index * 100;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 25;
+
+    expect(controller.updateCursor(plot, 0, 80, 'local')).toMatchObject({
+      hasPoint: expected,
+      seriesIndex: expected ? 0 : -1,
+    });
+  });
+
+  test('matches the quadratic spline area instead of linearly interpolating its samples', () => {
+    const source = createSource(
+      [[0, 100, 0]],
+      [CompactSeriesFlag.Spline | CompactSeriesFlag.DrawLine],
+      0,
+      'series',
+      'single',
+      {
+        stroke: '#00f',
+        areaFill: '#0000ff40',
+        lineWidth: 1,
+      }
+    );
+    source.xAt = (index) => index * 100;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 75;
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 1, 60, 'local')).toMatchObject({ hasPoint: true, distance: 0 });
+    expect(controller.updateCursor(plot, 1, 72, 'local')).toMatchObject({ hasPoint: false, seriesIndex: -1 });
+  });
+
+  test.each([
+    { middle: undefined, expected: true },
+    { middle: null, expected: false },
+  ])('distinguishes an alignment absence from a rendered area gap: %p', ({ middle, expected }) => {
+    const source = createSource([[100, middle, 100]], [CompactSeriesFlag.DrawLine], 0, 'series', 'multi', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 1,
+    });
+    source.xAt = (index) => index * 50;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 50;
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 1, 50, 'local')).toMatchObject({
+      hasPoint: expected,
+      seriesIndex: expected ? 0 : -1,
+    });
+  });
+
+  test.each([
+    {
+      name: 'timestamp disconnect',
+      values: [100, 100],
+      timestamp: (index: number) => index * 20,
+      cursorIndex: 0,
+      cursorPosition: 10,
+      disconnectThreshold: 10,
+    },
+    {
+      name: 'isolated sample',
+      values: [undefined, 100, undefined],
+      timestamp: (index: number) => index,
+      cursorIndex: 1,
+      cursorPosition: 1,
+      disconnectThreshold: undefined,
+    },
+  ])('does not focus an area over a visually empty $name', (testCase) => {
+    const source = createSource([testCase.values], [CompactSeriesFlag.DrawLine], 0, 'series', 'single', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 1,
+      disconnectThreshold: testCase.disconnectThreshold,
+    });
+    source.xAt = testCase.timestamp;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = testCase.cursorPosition;
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, testCase.cursorIndex, 50, 'local')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+    });
+  });
+
+  test('hits a stacked area where another series supplies an aligned vertex', () => {
+    const flags = CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [
+        [20, 40, 60],
+        [80, null, 40],
+      ],
+      [flags, flags],
+      1,
+      'series',
+      'single',
+      { stroke: '#00f', areaFill: '#0000ff40', lineWidth: 1 }
+    );
+    source.xAt = (index) => index * 50;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 40;
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 1, 45, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 1,
+      distance: 0,
+    });
+  });
+
+  test('does not bridge a stacked area when every series has a rendered gap', () => {
+    const flags = CompactSeriesFlag.DrawLine | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [
+        [20, null, 60],
+        [80, null, 40],
+      ],
+      [flags, flags],
+      1,
+      'series',
+      'single',
+      { stroke: '#00f', areaFill: '#0000ff40', lineWidth: 1 }
+    );
+    source.xAt = (index) => index * 50;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 50;
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 1, 45, 'local')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+    });
+  });
+
+  test('prefers a rendered Time series bar body over an overlapping area fill', () => {
+    const source = createSource(
+      [
+        [80, 80],
+        [100, 100],
+      ],
+      [CompactSeriesFlag.DrawLine, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'single',
+      { stroke: '#00f', areaFill: '#0000ff40', lineWidth: 0, barWidthFactor: 0.6 }
+    );
+    source.xAt = (index) => index * 100;
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    plot.bbox.left = 17;
+    plot.bbox.top = 23;
+    plot.valToPos = (value, scaleKey, canvasPixels) =>
+      canvasPixels ? value + (scaleKey === 'x' ? plot.bbox.left : plot.bbox.top) : value;
+    plot.focus.prox = 1;
+    controller.draw(plot, 0, 1);
+    const [renderedLeft, renderedTop, renderedWidth, renderedHeight] = context.rect.mock.calls.slice(1)[0];
+    const bar = {
+      left: (renderedLeft - plot.bbox.left) / uPlot.pxRatio,
+      top: (renderedTop - plot.bbox.top) / uPlot.pxRatio,
+      width: renderedWidth / uPlot.pxRatio,
+      height: renderedHeight / uPlot.pxRatio,
+    };
+    plot.cursor.left = bar.left + bar.width / 2;
+
+    expect(controller.updateCursor(plot, 0, bar.top + bar.height / 2, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 1,
+      centered: false,
+      ...bar,
+    });
+  });
+
+  test.each([
+    { name: 'transparent', style: { alpha: 0, lineWidth: 1, areaFill: '#f00' } },
+    { name: 'unpainted', style: { alpha: 1, lineWidth: 0, areaFill: null } },
+  ])('does not let a $name Time series bar steal focus from visible geometry', ({ style }) => {
+    const source = createSource(
+      [
+        [50, 50],
+        [100, 100],
+      ],
+      [CompactSeriesFlag.DrawLine, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'single',
+      { stroke: '#00f', areaFill: null, lineWidth: 2, barWidthFactor: 0.6 }
+    );
+    Reflect.set(source, 'styles', [
+      source.styles[0],
+      { stroke: '#f00', cursorStroke: '#f008', barWidthFactor: 0.6, ...style },
+    ]);
+    source.columns.styleIds[1] = 1;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+    plot.focus.prox = 20;
+    controller.draw(plot, 0, 1);
+
+    expect(controller.updateCursor(plot, 0, 40, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      centered: true,
+    });
+  });
+
+  test.each([
+    { geometry: 'line', flags: CompactSeriesFlag.DrawLine, lineWidth: 4, pointerX: 20, pointerY: 51.5 },
+    { geometry: 'point', flags: CompactSeriesFlag.Points, lineWidth: 1, pointerX: 0, pointerY: 50 },
+  ])(
+    'keeps a visible $geometry focusable inside a Time series bar body',
+    ({ flags, lineWidth, pointerX, pointerY }) => {
+      const source = createSource(
+        [
+          [50, 50],
+          [100, 100],
+        ],
+        [flags, CompactSeriesFlag.Bars],
+        0,
+        'series',
+        'single',
+        {
+          stroke: '#00f',
+          areaFill: '#0000ff40',
+          lineWidth,
+          barWidthFactor: 0.6,
+        }
+      );
+      source.xAt = (index) => index * 100;
+      const controller = new CompactRenderController(source);
+      const { plot } = createPlot();
+      plot.cursor.left = pointerX;
+      plot.focus.prox = 1;
+      controller.draw(plot, 0, 1);
+
+      expect(controller.updateCursor(plot, 0, pointerY, 'local')).toMatchObject({
+        hasPoint: true,
+        seriesIndex: 0,
+        distance: 0,
+        centered: true,
+      });
+      expect(controller.updateCursor(plot, 0, 40, 'local')).toMatchObject({
+        hasPoint: true,
+        seriesIndex: 1,
+        centered: false,
+      });
+    }
+  );
+
+  test('uses the rendered line segment when it crosses a Time series bar body', () => {
+    const source = createSource(
+      [
+        [0, undefined, 100],
+        [100, 100, 100],
+      ],
+      [CompactSeriesFlag.DrawLine, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'single',
+      { stroke: '#00f', areaFill: null, lineWidth: 1, barWidthFactor: 0.6 }
+    );
+    source.xAt = (index) => index * 50;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 50;
+    plot.focus.prox = 1;
+    controller.draw(plot, 0, 2);
+
+    expect(controller.updateCursor(plot, 1, 50, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      distance: 0,
+      centered: true,
+    });
+  });
+
+  test.each([
+    {
+      visibility: 'auto shown',
+      flags: CompactSeriesFlag.DrawLine | CompactSeriesFlag.AutoPoints,
+      pointCount: 1,
+      expectedSeries: 0,
+    },
+    {
+      visibility: 'auto suppressed',
+      flags: CompactSeriesFlag.DrawLine | CompactSeriesFlag.AutoPoints,
+      pointCount: 21,
+      expectedSeries: 1,
+    },
+  ])('respects $visibility point visibility inside a Time series bar body', ({ flags, pointCount, expectedSeries }) => {
+    const source = createSource(
+      [new Array(pointCount).fill(50), new Array(pointCount).fill(100)],
+      [flags, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'single',
+      { stroke: '#00f', areaFill: '#0000ff40', lineWidth: 0, pointSize: 5, barWidthFactor: 0.6 }
+    );
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    const index = Math.floor(pointCount / 2);
+    plot.cursor.left = index;
+    plot.focus.prox = 1;
+    controller.draw(plot, 0, pointCount - 1);
+
+    expect(controller.updateCursor(plot, index, 50, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: expectedSeries,
+      centered: expectedSeries !== 1,
+    });
+  });
+
+  test('refreshes a multi-tooltip snapshot when vertical movement selects another bar', () => {
+    const source = createSource(
+      [
+        [80, undefined, 80],
+        [40, undefined, 40],
+      ],
+      [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'multi',
+      { stroke: '#00f', fill: null, lineWidth: 1, barWidthFactor: 0.8 }
+    );
+    Reflect.set(source, 'styles', [
+      { ...source.styles[0], barAlignment: 1 },
+      { ...source.styles[0], barAlignment: -1 },
+    ]);
+    source.columns.styleIds[1] = 1;
+    source.xAt = (index) => [0, 50, 100][index];
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 50;
+    plot.cursor.hover!.prox = 1;
+    plot.focus.prox = 1;
+    controller.draw(plot, 0, 2);
+
+    expect(controller.updateCursor(plot, 1, 70, 'local')).toMatchObject({ seriesIndex: 0, dataIndex: 0 });
+    const firstSnapshot = controller.getCursorSnapshot(1, plot);
+    const firstRevision = firstSnapshot.revision;
+    expect(firstSnapshot.dataIndexAt(0)).toBe(0);
+
+    expect(controller.updateCursor(plot, 1, 20, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 2 });
+    const secondSnapshot = controller.getCursorSnapshot(1, plot);
+    expect(secondSnapshot.revision).toBeGreaterThan(firstRevision);
+    expect(secondSnapshot.dataIndexAt(1)).toBe(2);
+    expect(secondSnapshot.valueAt(1)).toBe(40);
+  });
+
+  test('reuses a multi-tooltip snapshot when vertical movement stays at the same bar index', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[40], [40]], [flags, flags], 1, 'series', 'multi', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 0,
+      barWidthFactor: 0.8,
+    });
+    const cursorValueAt = jest.fn(source.cursorValueAt);
+    source.cursorValueAt = cursorValueAt;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+    controller.draw(plot, 0, 0);
+
+    controller.updateCursor(plot, 0, 20, 'local');
+    const snapshot = controller.getCursorSnapshot(0, plot);
+    const revision = snapshot.revision;
+    const populatedCallCount = cursorValueAt.mock.calls.length;
+    expect(populatedCallCount).toBeGreaterThan(0);
+
+    controller.updateCursor(plot, 0, 60, 'local');
+    expect(controller.getCursorSnapshot(0, plot)).toBe(snapshot);
+    expect(snapshot.revision).toBe(revision);
+    expect(cursorValueAt).toHaveBeenCalledTimes(populatedCallCount);
+  });
+
+  test('uses the rendered horizontal Time series bar body as the hover target', () => {
+    const source = createSource([[100, 100]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 1,
+      barWidthFactor: 0.6,
+    });
+    source.xAt = (index) => index * 100;
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    plot.bbox.left = 17;
+    plot.bbox.top = 23;
+    plot.scales.x.ori = 1;
+    plot.scales.y.ori = 0;
+    plot.valToPos = (value, scaleKey, canvasPixels) =>
+      canvasPixels ? value + (scaleKey === 'x' ? plot.bbox.top : plot.bbox.left) : value;
+    controller.draw(plot, 0, 1);
+    const [renderedLeft, renderedTop, renderedWidth, renderedHeight] = context.rect.mock.calls.slice(1)[0];
+    const bar = {
+      left: (renderedLeft - plot.bbox.left) / uPlot.pxRatio,
+      top: (renderedTop - plot.bbox.top) / uPlot.pxRatio,
+      width: renderedWidth / uPlot.pxRatio,
+      height: renderedHeight / uPlot.pxRatio,
+    };
+    const strokeExpansion = Math.round(uPlot.pxRatio) / (2 * uPlot.pxRatio);
+    const paintedLeft = Math.max(0, bar.left - strokeExpansion);
+    const paintedTop = Math.max(0, bar.top - strokeExpansion);
+    const paintedBar = {
+      left: paintedLeft,
+      top: paintedTop,
+      width: Math.min(plot.bbox.width / uPlot.pxRatio, bar.left + bar.width + strokeExpansion) - paintedLeft,
+      height: Math.min(plot.bbox.height / uPlot.pxRatio, bar.top + bar.height + strokeExpansion) - paintedTop,
+    };
+    plot.cursor.top = paintedBar.top + 0.1;
+
+    expect(controller.updateCursor(plot, 0, bar.left + bar.width / 2, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      centered: false,
+      ...paintedBar,
+    });
+    plot.cursor.top = paintedBar.top - 0.1;
+    expect(controller.updateCursor(plot, 0, bar.left + bar.width / 2, 'local')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+    });
+  });
+
+  test('retains sample focus for a zero-height Time series bar', () => {
+    const source = createSource([[0]], [CompactSeriesFlag.Bars]);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+
+    expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      centered: true,
+    });
   });
 
   test('uses the nearest present sample when cursor focus lands on a series gap', () => {
@@ -414,6 +1694,9 @@ describe('CompactRenderController', () => {
     const controller = new CompactRenderController(source);
     const { plot } = createPlot();
 
+    expect(controller.updateCursor(plot, 1, 10, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
+    expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
+    plot.cursor.left = 1.5;
     expect(controller.updateCursor(plot, 1, 10, 'local')).toMatchObject({ seriesIndex: 1, dataIndex: 1, top: 11 });
     expect(source.cursorValueAt).toHaveBeenCalledTimes(2);
   });
@@ -577,12 +1860,15 @@ describe('CompactRenderController', () => {
       hasPoint: false,
       seriesIndex: -1,
     });
-    expect(controller.getCursorSnapshot(1, plot).valueAt(0)).toBeNull();
+    const firstSnapshot = controller.getCursorSnapshot(1, plot);
+    const firstRevision = firstSnapshot.revision;
+    expect(firstSnapshot.valueAt(0)).toBeNull();
 
     Reflect.set(plot, 'cursor', { left: 1.9, top: 1, event: null, hover: { prox: 15 } });
     const snapshot = controller.getCursorSnapshot(1, plot);
     expect(snapshot.valueAt(0)).toBeNull();
     expect(snapshot.dataIndexAt(0)).toBe(2);
+    expect(snapshot.revision).toBeGreaterThan(firstRevision);
   });
 
   test('draws and clears a focused-series overlay without rebuilding the complete plot', () => {
@@ -646,6 +1932,534 @@ describe('CompactRenderController', () => {
     }
   });
 
+  test('bounds distant stacked focus point scans with retained stack checkpoints', async () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array(300).fill(1);
+    const source = createSource(
+      Array.from({ length: 129 }, () => values),
+      Array(129).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      await controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      context.rect.mockClear();
+      controller.setSeries(65, { focus: true });
+
+      const scannedSeries = source.scan.mock.calls.map(([series]) => series);
+      expect(scannedSeries).toContain(65);
+      expect(scannedSeries.filter((series) => series !== 65).length).toBeLessThan(Math.sqrt(source.seriesCount));
+      expect(context.rect.mock.calls.some(([, top, , height]) => top === 65 && height === 1)).toBe(true);
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test.each([
+    { name: 'Time series bars', lineWidth: 0, grouped: false, transparent: false },
+    { name: 'stroked Time series bars', lineWidth: 1, grouped: false, transparent: false },
+    { name: 'stacked grouped bars', lineWidth: 1, grouped: true, transparent: false },
+    { name: 'stacks with transparent segments', lineWidth: 0, grouped: false, transparent: true },
+  ])('matches exhaustive $name selection across bodies and spacing', ({ lineWidth, grouped, transparent }) => {
+    const seriesCount = 129;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array.from({ length: seriesCount }, (_, series) => [
+      1 + (series % 3),
+      series % 7 === 0 ? null : 2,
+      1,
+    ]);
+    const createController = () => {
+      const source = createSource(values, Array(seriesCount).fill(flags), 1, 'series', 'single', {
+        stroke: '#f00',
+        areaFill: '#fcc',
+        lineWidth,
+        barWidthFactor: 0.6,
+      });
+      if (grouped) {
+        Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+      }
+      if (transparent) {
+        Reflect.set(source, 'styles', [...source.styles, { ...source.styles[0], alpha: 0 }]);
+        source.columns.styleIds[64] = 1;
+      }
+      const yAt = jest.fn(source.yAt);
+      source.yAt = yAt;
+      return { controller: new CompactRenderController(source), source, yAt };
+    };
+    const bounded = createController();
+    const exhaustive = createController();
+    const { plot: boundedPlot } = createPlot();
+    const { plot: exhaustivePlot } = createPlot();
+    bounded.controller.draw(boundedPlot, 0, 2);
+
+    for (const { index, x, y } of [
+      { index: 0, x: 0, y: 50.5 },
+      { index: 1, x: 0.5, y: 80.5 },
+      { index: 1, x: 1, y: 160.5 },
+      { index: 2, x: 1.5, y: 100.5 },
+      { index: 2, x: 2, y: 20.5 },
+    ]) {
+      boundedPlot.cursor.left = x;
+      exhaustivePlot.cursor.left = x;
+      bounded.yAt.mockClear();
+      expect({ ...bounded.controller.updateCursor(boundedPlot, index, y, 'local') }).toEqual({
+        ...exhaustive.controller.updateCursor(exhaustivePlot, index, y, 'local'),
+      });
+      if (transparent) {
+        expect(bounded.yAt.mock.calls.length).toBeGreaterThan(seriesCount);
+      } else {
+        expect(bounded.yAt.mock.calls.length).toBeLessThan(seriesCount);
+      }
+    }
+  });
+
+  test('keeps bounded grouped stack selection across visibility and source changes', () => {
+    const seriesCount = 129;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const createStackSource = () => {
+      const source = createSource(
+        Array.from({ length: seriesCount }, () => [1, 1, 1]),
+        Array(seriesCount).fill(flags),
+        1,
+        'series',
+        'single',
+        { stroke: '#f00', areaFill: '#fcc', lineWidth: 1, barWidthFactor: 0.6 }
+      );
+      Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 0.8 });
+      const yAt = jest.fn(source.yAt);
+      source.yAt = yAt;
+      return { source, yAt };
+    };
+    const first = createStackSource();
+    const second = createStackSource();
+    const controller = new CompactRenderController(first.source);
+    const { plot } = createPlot();
+    plot.cursor.left = 1;
+    const expectBoundedHover = ({ yAt }: ReturnType<typeof createStackSource>) => {
+      yAt.mockClear();
+      expect(controller.updateCursor(plot, 1, 80.5, 'local')).toMatchObject({ hasPoint: true });
+      expect(yAt.mock.calls.length).toBeLessThan(seriesCount);
+    };
+
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(first);
+
+    controller.extent(plot, 'y', 0, 2);
+    first.yAt.mockClear();
+    expect(controller.updateCursor(plot, 1, 80.5, 'local')).toMatchObject({ hasPoint: true });
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(first);
+
+    expect(controller.setSeries(0, { show: false })).toBe(true);
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(first);
+
+    controller.replaceSource(first.source, second.source);
+    controller.draw(plot, 0, 2);
+    expectBoundedHover(second);
+  });
+
+  test('falls back when opposing values are hidden inside one checkpoint span', () => {
+    const seriesCount = 129;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array.from({ length: seriesCount }, (_, series) => [series === 50 ? -100 : series === 51 ? 100 : 1]);
+    const source = createSource(values, Array(seriesCount).fill(flags), 1, 'series', 'single', {
+      stroke: '#f00',
+      areaFill: '#fcc',
+      lineWidth: 0,
+      barWidthFactor: 0.6,
+    });
+    const yAt = jest.fn(source.yAt);
+    source.yAt = yAt;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 0;
+
+    controller.draw(plot, 0, 0);
+    yAt.mockClear();
+
+    expect(controller.updateCursor(plot, 0, 0.5, 'local')).toMatchObject({ hasPoint: true });
+    expect(yAt.mock.calls.length).toBeGreaterThan(seriesCount);
+  });
+
+  test('bounds tail focus scans for many short stacked series', () => {
+    const seriesCount = 1_000;
+    const values = Array(10).fill(1);
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      Array.from({ length: seriesCount }, () => values),
+      Array(seriesCount).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== seriesCount - 1).length;
+      expect(nonFocusedScans).toBeLessThan(Math.sqrt(seriesCount));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('bounds tail focus scans for a moderate stacked group', () => {
+    const seriesCount = 127;
+    const values = Array(250).fill(1);
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      Array.from({ length: seriesCount }, () => values),
+      Array(seriesCount).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== seriesCount - 1).length;
+      expect(nonFocusedScans).toBeLessThan(Math.sqrt(seriesCount));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('bounds zero-heavy tail focus work beyond the checkpoint memory cap', () => {
+    const seriesCount = 5;
+    const values = Array.from({ length: seriesCount }, (_, series) => Array(42_000).fill(series === 4 ? 0 : 1));
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(values, Array(seriesCount).fill(flags), 1, 'series', 'single', undefined, '#0008');
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values[0].length - 1);
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== seriesCount - 1).length;
+      expect(nonFocusedScans).toBeLessThan(Math.ceil(seriesCount / 2));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('uses the empty baseline for a decimal singleton stack group', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource([[1.5], [2.5]], [flags, flags], 2, 'series', 'single', undefined, '#0008');
+    source.columns.stackGroupIds![1] = 2;
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, 0);
+      controller.setSeries(1, { focus: true });
+
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).not.toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('uses an equally cheap exact prefix when a decimal suffix cannot be reversed', async () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = [Array(42_000).fill(1.5), Array(42_000).fill(2.5)];
+    const source = createSource(values, [flags, flags], 1, 'series', 'single', undefined, '#0008');
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      await controller.draw(plot, 0, values[0].length - 1);
+      source.scan.mockClear();
+      controller.setSeries(1, { focus: true });
+
+      expect(source.scan.mock.calls[0]?.[0]).toBe(0);
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).not.toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('uses a bounded exact prefix for an uncheckpointed decimal stack group', async () => {
+    const groupCount = 17;
+    const seriesPerGroup = 4;
+    const seriesCount = groupCount * seriesPerGroup;
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const values = Array.from({ length: seriesCount }, () => Array(2_000).fill(1.5));
+    const source = createSource(
+      values,
+      Array(seriesCount).fill(flags),
+      groupCount,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    for (let series = 0; series < seriesCount; series++) {
+      source.columns.stackGroupIds![series] = Math.floor(series / seriesPerGroup) + 1;
+    }
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      await controller.draw(plot, 0, values[0].length - 1);
+      const focusedGroupStart = seriesCount - seriesPerGroup;
+      controller.setSeries(focusedGroupStart, { focus: true });
+      source.scan.mockClear();
+      controller.setSeries(seriesCount - 1, { focus: true });
+
+      expect(source.scan.mock.calls.map(([series]) => series)).toContain(focusedGroupStart);
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).not.toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('invalidates cached focus state when a suffix baseline is not exact', async () => {
+    const values = [1e16, 1, -1e16, 2, 3, 4, 5].map((value) => Array(42_000).fill(value));
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(values, Array(values.length).fill(flags), 1, 'series', 'single', undefined, '#0008');
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      await controller.draw(plot, 0, values[0].length - 1);
+      controller.setSeries(0, { focus: true });
+      controller.setSeries(5, { focus: true });
+      source.scan.mockClear();
+      controller.setSeries(4, { focus: true });
+      controller.setSeries(6, { focus: true });
+
+      const scannedSeries = source.scan.mock.calls.map(([series]) => series);
+      expect(scannedSeries).toEqual(expect.arrayContaining([4, 5, 6]));
+      expect(scannedSeries).not.toEqual(expect.arrayContaining([0, 1, 2]));
+      expect(plot.over.parentElement?.querySelector('.u-compact-focus-overlay')).toBeNull();
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('checkpoints a large stack group without copying unrelated groups', () => {
+    const largeGroupSize = 129;
+    const smallGroupCount = 109;
+    const seriesCount = largeGroupSize + smallGroupCount;
+    const values = Array(300).fill(1);
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      Array.from({ length: seriesCount }, () => values),
+      Array(seriesCount).fill(flags),
+      smallGroupCount + 1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    for (let series = largeGroupSize; series < seriesCount; series++) {
+      source.columns.stackGroupIds![series] = series - largeGroupSize + 2;
+    }
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, values.length - 1);
+      source.scan.mockClear();
+      controller.setSeries(65, { focus: true });
+
+      const nonFocusedScans = source.scan.mock.calls.filter(([series]) => series !== 65).length;
+      expect(nonFocusedScans).toBeLessThan(Math.sqrt(largeGroupSize));
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('reuses forward stack work and rebases backward focus', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      Array.from({ length: 7 }, (_, series) => [series + 1]),
+      Array(7).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, 0);
+      controller.setSeries(3, { focus: true });
+
+      source.scan.mockClear();
+      context.rect.mockClear();
+      controller.setSeries(4, { focus: true });
+      expect(source.scan.mock.calls.map(([series]) => series).filter((series) => series !== 4)).toHaveLength(0);
+      expect(context.rect.mock.calls.some(([, top, , height]) => top === 10 && height === 4)).toBe(true);
+
+      source.scan.mockClear();
+      context.rect.mockClear();
+      controller.setSeries(3, { focus: true });
+      expect(
+        source.scan.mock.calls.map(([series]) => series).filter((series) => series !== 3).length
+      ).toBeLessThanOrEqual(3);
+      expect(context.rect.mock.calls.some(([, top, , height]) => top === 6 && height === 3)).toBe(true);
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('keeps backward focus geometry stable across mixed-magnitude stacks', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [[1e16], [1], [-1e16], [2], [3]],
+      Array(5).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, 0);
+      context.rect.mockClear();
+      controller.setSeries(3, { focus: true });
+      const initialGeometry = context.rect.mock.calls.at(-1);
+
+      controller.setSeries(4, { focus: true });
+      context.rect.mockClear();
+      controller.setSeries(3, { focus: true });
+
+      expect(context.rect.mock.calls.at(-1)).toEqual(initialGeometry);
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('builds focused stack geometry in the main chart accumulation order', () => {
+    const flags = CompactSeriesFlag.Bars | CompactSeriesFlag.Stack;
+    const source = createSource(
+      [[1], [2], [1], [1], [4], [1e16], [1e100]],
+      Array(7).fill(flags),
+      1,
+      'series',
+      'single',
+      undefined,
+      '#0008'
+    );
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const restoreContext = installFocusOverlayContext(plot, context);
+
+    try {
+      controller.draw(plot, 0, 0);
+      source.scan.mockClear();
+      context.rect.mockClear();
+      controller.setSeries(4, { focus: true });
+
+      const scannedSeries = source.scan.mock.calls.map(([series]) => series);
+      expect(scannedSeries.every((series) => series === 4)).toBe(true);
+      expect(context.rect.mock.calls.at(-1)?.[1]).toBe(5);
+    } finally {
+      restoreContext();
+    }
+  });
+
+  test('focuses and repaints the visible outlined bar when Time series bar bodies overlap', () => {
+    const source = createSource(
+      [[60], [80], [100]],
+      [CompactSeriesFlag.Bars, CompactSeriesFlag.Bars, CompactSeriesFlag.Bars],
+      0,
+      'series',
+      'single',
+      { stroke: '#f00', fill: null, lineWidth: 1, barWidthFactor: 0.6 },
+      'rgba(0, 0, 0, 0.5)'
+    );
+    Reflect.set(source, 'styles', [
+      { stroke: '#f00', cursorStroke: '#f0000080', fill: null, lineWidth: 1, barWidthFactor: 0.6 },
+      { stroke: '#0f0', cursorStroke: '#00f00080', fill: null, lineWidth: 1, barWidthFactor: 0.6 },
+      { stroke: '#00f', cursorStroke: '#0000ff80', fill: null, lineWidth: 1, barWidthFactor: 0.6 },
+    ]);
+    source.columns.styleIds.set([0, 1, 2]);
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    const parent = document.createElement('div');
+    const mainCanvas = document.createElement('canvas');
+    const over = document.createElement('div');
+    parent.append(mainCanvas, over);
+    Object.defineProperty(context, 'canvas', { value: mainCanvas });
+    Reflect.set(plot, 'over', over);
+    plot.cursor.left = 0;
+    plot.focus.prox = 1;
+    const overlayContext = {
+      ...context,
+      clearRect: jest.fn(),
+      fillRect: jest.fn(),
+      rect: jest.fn(),
+      stroke: jest.fn(),
+    } as unknown as jest.Mocked<CanvasRenderingContext2D>;
+    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+      this: HTMLCanvasElement
+    ) {
+      Object.defineProperty(overlayContext, 'canvas', { value: this, configurable: true });
+      return overlayContext;
+    });
+
+    try {
+      controller.draw(plot, 0, 0);
+      const cursor = controller.updateCursor(plot, 0, 50, 'local');
+      expect(cursor).toMatchObject({
+        hasPoint: true,
+        seriesIndex: 2,
+        dataIndex: 0,
+        distance: 0,
+        centered: false,
+      });
+
+      controller.setSeries(cursor!.seriesIndex, { focus: true });
+
+      expect(overlayContext.rect.mock.calls.some(([, , width, height]) => width > 0 && height > 0)).toBe(true);
+      expect(overlayContext.stroke).toHaveBeenCalled();
+      expect(overlayContext.strokeStyle).toBe('#00f');
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
   test('does not create a focused-series overlay when only one series is visible', () => {
     const source = createSource(
       [[1, 2, 3]],
@@ -670,7 +2484,7 @@ describe('CompactRenderController', () => {
     expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
   });
 
-  test('restores requested focus when a second series becomes visible', () => {
+  test('restores requested focus after the visible frame includes a second series', () => {
     const source = createSource(
       [
         [1, 2, 3],
@@ -711,6 +2525,8 @@ describe('CompactRenderController', () => {
       expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
 
       controller.setSeries(1, { show: true });
+      expect(parent.querySelector('.u-compact-focus-overlay')).toBeNull();
+      controller.draw(plot, 0, 2);
       expect(parent.querySelectorAll('.u-compact-focus-overlay')).toHaveLength(1);
     } finally {
       getContext.mockRestore();
@@ -1154,7 +2970,7 @@ function createSource(
     columns: {
       styleIds: new Uint8Array(values.length),
       scaleIds: new Uint8Array(values.length),
-      flags: Uint8Array.from(flags),
+      flags: Uint16Array.from(flags),
       visibility: new Uint8Array(values.length).fill(1),
       stackGroupIds: new Uint8Array(values.length).fill(stackGroupCount === 0 ? 0 : 1),
     },
@@ -1169,6 +2985,7 @@ function createSource(
     release: () => undefined,
     xAt: (index) => index,
     closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round(value))),
+    barWidthValueAt: valueAt,
     cursorValueAt: valueAt,
     yAt: valueAt,
     scan,
@@ -1208,6 +3025,14 @@ function createSource(
       }
       return null;
     },
+    isDirectSegmentConnected: (series, from, to) => {
+      for (let index = from + 1; index < to; index++) {
+        if (valueAt(series, index) === null) {
+          return false;
+        }
+      }
+      return true;
+    },
   };
 }
 
@@ -1235,6 +3060,7 @@ function createPlot(): {
     rect: jest.fn(),
     clip: jest.fn(),
     createLinearGradient: jest.fn(() => gradient),
+    measureText: jest.fn(() => ({ width: 8 })),
     fillText: jest.fn(),
   } as unknown as jest.Mocked<CanvasRenderingContext2D>;
   const plot = {
@@ -1260,4 +3086,30 @@ function createPlot(): {
     posToVal: (value: number) => value,
   } as unknown as uPlot;
   return { plot, context, gradient };
+}
+
+function runNextTimer(callbacks: Map<ReturnType<typeof window.setTimeout>, TimerHandler>): void {
+  const entry = callbacks.entries().next().value;
+  if (!entry) {
+    throw new Error('Expected a scheduled progressive render turn');
+  }
+  const [timer, callback] = entry;
+  callbacks.delete(timer);
+  (callback as () => void)();
+}
+
+function installFocusOverlayContext(plot: uPlot, context: jest.Mocked<CanvasRenderingContext2D>): () => void {
+  const parent = document.createElement('div');
+  const mainCanvas = document.createElement('canvas');
+  const over = document.createElement('div');
+  parent.append(mainCanvas, over);
+  Object.defineProperty(context, 'canvas', { value: mainCanvas, configurable: true });
+  Reflect.set(plot, 'over', over);
+  const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+    this: HTMLCanvasElement
+  ) {
+    Object.defineProperty(context, 'canvas', { value: this, configurable: true });
+    return context;
+  });
+  return () => getContext.mockRestore();
 }

@@ -1,6 +1,6 @@
 // Core Grafana history https://github.com/grafana/grafana/blob/v11.0.0-preview/public/app/plugins/datasource/prometheus/datasource.test.ts
 import { cloneDeep } from 'lodash';
-import { lastValueFrom, Observable, of } from 'rxjs';
+import { lastValueFrom, Observable, of, Subject } from 'rxjs';
 
 import {
   AdHocVariableFilter,
@@ -13,6 +13,7 @@ import {
   DataQueryResponse,
   DataSourceInstanceSettings,
   dateTime,
+  FieldType,
   LoadingState,
   ScopeSpecFilter,
   TimeRange,
@@ -28,6 +29,7 @@ import {
 } from './datasource';
 import { prometheusRegularEscape, prometheusSpecialRegexEscape } from './escaping';
 import { PrometheusLanguageProviderInterface } from './language_provider';
+import * as prometheusMultibatchStream from './prometheusMultibatchStream';
 import { CacheRequestInfo } from './querycache/QueryCache';
 import {
   createDataRequest,
@@ -124,14 +126,18 @@ describe('PrometheusDatasource', () => {
   });
 
   describe('Query', () => {
-    it('requests compact responses only for time-series range queries', async () => {
-      const compactRequest = (targets: PromQuery[]) =>
+    it('requests compact responses only for supported dashboard range queries', async () => {
+      const compactRequest = (targets: PromQuery[], panelPluginId = 'timeseries') =>
         createDataRequest(targets, {
-          panelPluginId: 'timeseries',
+          panelPluginId,
           preferredQueryResultFormat: 'compact-v1',
         });
 
       await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true }])));
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
+
+      fetchMock.mockClear();
+      await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true }], 'barchart')));
       expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
 
       fetchMock.mockClear();
@@ -559,7 +565,7 @@ describe('PrometheusDatasource', () => {
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(browserFetchSpy).toHaveBeenCalledTimes(2);
-        expect(responses).toHaveLength(2);
+        expect(responses).toHaveLength(1);
         const finalResponse = responses[responses.length - 1];
         expect(finalResponse.state).toBe(LoadingState.Done);
         expect(finalResponse.errors?.map((error) => error.message)).toEqual([
@@ -568,6 +574,115 @@ describe('PrometheusDatasource', () => {
         ]);
       } finally {
         browserFetchSpy.mockRestore();
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
+    it('coalesces cumulative target revisions before render-session scheduling', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = true;
+      const streams = new Map([
+        ['A', new Subject<DataQueryResponse>()],
+        ['B', new Subject<DataQueryResponse>()],
+      ]);
+      const multiBatchSpy = jest
+        .spyOn(prometheusMultibatchStream, 'queryPrometheusMultiBatch')
+        .mockImplementation((_datasourceUid, _request, target) => streams.get(target.refId!)!);
+      const responses: DataQueryResponse[] = [];
+      const waitForCombinedResponse = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+      try {
+        const completion = new Promise<void>((resolve, reject) => {
+          ds.query(
+            createDataRequest(
+              [
+                { datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'metric_a', refId: 'A' },
+                { datasource: { type: 'prometheus', uid: 'ABCDEF' }, expr: 'metric_b', refId: 'B' },
+              ],
+              {
+                app: CoreApp.Dashboard,
+                panelPluginId: 'timeseries',
+                preferredQueryResultFormat: 'compact-v1',
+              }
+            )
+          ).subscribe({ complete: resolve, error: reject, next: (response) => responses.push(response) });
+        });
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 16),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        streams.get('B')!.next({
+          compactSeries: compactResponseFixture('B', 16),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        await waitForCombinedResponse();
+        expect(responses).toHaveLength(1);
+        expect(responses[0].state).toBe(LoadingState.Streaming);
+        expect(responses[0].compactSeries?.series).toHaveLength(2);
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 24),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        streams.get('B')!.next({
+          compactSeries: compactResponseFixture('B', 24),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        await waitForCombinedResponse();
+        expect(responses).toHaveLength(2);
+        expect(responses[1].state).toBe(LoadingState.Streaming);
+
+        streams.get('A')!.next({
+          data: [
+            {
+              refId: 'A',
+              length: 1,
+              fields: [
+                { name: 'Time', type: FieldType.time, config: {}, values: [0] },
+                { name: 'Value', type: FieldType.number, config: {}, values: [7] },
+              ],
+            },
+          ],
+          state: LoadingState.Streaming,
+        });
+        await waitForCombinedResponse();
+        expect(responses[2].compactSeries).toBeUndefined();
+        expect(responses[2].data.map((frame) => frame.refId)).toEqual(['A', 'B']);
+        expect(responses[2].data[1].fields[0].config.interval).toBe(1000);
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 24),
+          data: [],
+          state: LoadingState.Streaming,
+        });
+        await waitForCombinedResponse();
+        expect(responses[3].compactSeries?.series).toHaveLength(2);
+        expect(responses[3].data).toHaveLength(0);
+
+        streams.get('A')!.next({
+          compactSeries: compactResponseFixture('A', 24),
+          data: [],
+          state: LoadingState.Done,
+        });
+        streams.get('B')!.next({
+          compactSeries: compactResponseFixture('B', 24),
+          data: [],
+          state: LoadingState.Done,
+        });
+        streams.get('A')!.complete();
+        streams.get('B')!.complete();
+        await completion;
+
+        expect(responses).toHaveLength(5);
+        expect(responses[4].state).toBe(LoadingState.Done);
+        expect(responses[4].compactSeries?.series).toHaveLength(2);
+      } finally {
+        multiBatchSpy.mockRestore();
         config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
       }
     });

@@ -2,7 +2,15 @@ import { render, screen } from '@testing-library/react';
 import { defaultsDeep } from 'lodash';
 import { Provider } from 'react-redux';
 
-import { CoreApp, DataQueryRequest, EventBusSrv, FieldType, getDefaultTimeRange, LoadingState } from '@grafana/data';
+import {
+  CoreApp,
+  createDataFrame,
+  DataQueryRequest,
+  EventBusSrv,
+  FieldType,
+  getDefaultTimeRange,
+  LoadingState,
+} from '@grafana/data';
 import { config, PanelDataErrorViewProps } from '@grafana/runtime';
 import { usePanelContext } from '@grafana/ui';
 import { configureStore } from 'app/store/configureStore';
@@ -44,6 +52,37 @@ describe('PanelDataErrorView', () => {
     renderWithProps();
 
     expect(screen.getByText('No data')).toBeInTheDocument();
+  });
+
+  it('shows loading instead of a false no-data state while a replacement query runs', () => {
+    mockUsePanelContext.mockReturnValue(panelContextEditor);
+    renderWithProps({
+      message: 'Data is missing required fields',
+      data: {
+        state: LoadingState.Loading,
+        series: [],
+        timeRange: getDefaultTimeRange(),
+      },
+    });
+
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    expect(screen.queryByText('No data')).not.toBeInTheDocument();
+    expect(screen.queryByText('Data is missing required fields')).not.toBeInTheDocument();
+  });
+
+  it('keeps explicit rendering errors visible while refreshing existing data', () => {
+    mockUsePanelContext.mockReturnValue(panelContextEditor);
+    renderWithProps({
+      message: 'Data is missing required fields',
+      data: {
+        state: LoadingState.Loading,
+        series: [createDataFrame({ fields: [{ name: 'value', type: FieldType.string, values: ['value'] }] })],
+        timeRange: getDefaultTimeRange(),
+      },
+    });
+
+    expect(screen.getByText('Data is missing required fields')).toBeInTheDocument();
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
   });
 
   it('show No data when there is no data', () => {

@@ -1,6 +1,7 @@
 import { Component } from 'react';
 
 import { DataFrame, TimeRange } from '@grafana/data';
+import { VizLegendOptions } from '@grafana/schema';
 import { withTheme2 } from '@grafana/ui';
 import { hasVisibleLegendSeries, PlotLegend, UPlotConfigBuilder } from '@grafana/ui/internal';
 
@@ -40,6 +41,10 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
 
   prepCompactConfig = (plan: CompactNativeRenderPlan, getTimeRange: () => TimeRange, annotationLanes?: number) => {
     const { theme, timeZone, options } = this.props;
+    const compactXAxisConfig = options?.compactXAxisConfig;
+    const compactValueAxisConfig = options?.compactValueAxisConfig;
+    const compactPadding = options?.compactPadding;
+    const groupedBarTickSpacing = options?.compactGroupedBarTickSpacing;
 
     return prepareCompactPlotConfigBuilder({
       plan,
@@ -48,12 +53,14 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
       getTimeRange,
       hoverProximity: options?.tooltip?.hoverProximity,
       orientation: options?.orientation,
-      xAxisConfig: getXAxisConfig(annotationLanes),
+      xAxisConfig: { ...getXAxisConfig(annotationLanes), ...compactXAxisConfig },
+      valueAxisConfig: compactValueAxisConfig,
+      padding: compactPadding,
+      groupedBarTickSpacing,
     });
   };
 
-  renderCompactLegend = (config: UPlotConfigBuilder, plan: CompactNativeRenderPlan) => {
-    const { legend } = this.props;
+  renderCompactLegend = (config: UPlotConfigBuilder, plan: CompactNativeRenderPlan, legend: VizLegendOptions) => {
     if (!legend?.showLegend) {
       return null;
     }

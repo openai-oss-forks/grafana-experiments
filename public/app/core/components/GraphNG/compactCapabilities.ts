@@ -1,6 +1,7 @@
 import tinycolor from 'tinycolor2';
 
 import {
+  FieldColorModeId,
   FieldConfigProperty,
   FieldConfigSource,
   FieldMatcherID,
@@ -26,14 +27,10 @@ import {
 
 type CompactCapability = 'supported' | 'legacy-inert' | 'unsupported';
 
-const inertProperties = [
-  'barAlignment',
-  'barMaxWidth',
-  'barWidthFactor',
-  'fillColor',
-  'pointColor',
-  'pointSymbol',
-] as const;
+export type CompactPanelCapability = 'timeseries-line' | 'timeseries-bars' | 'standalone-barchart';
+
+const alwaysInertProperties = ['fillColor', 'pointColor', 'pointSymbol'] as const;
+const lineOnlyInertProperties = ['barAlignment', 'barMaxWidth', 'barWidthFactor'] as const;
 const thresholdStyleModes = new Set<unknown>(Object.values(GraphThresholdsStyleMode));
 const comparisonOperationValues = Object.values(ComparisonOperation);
 const reducerValues = Object.values(ReducerID);
@@ -58,7 +55,11 @@ export interface CompactValueMatcher {
   readonly value?: number;
 }
 
-function classifyCompactCustomProperty(property: string, value: unknown): CompactCapability {
+function classifyCompactCustomProperty(
+  property: string,
+  value: unknown,
+  capability: CompactPanelCapability
+): CompactCapability {
   switch (property) {
     case 'axisBorderShow':
     case 'axisCenteredZero':
@@ -90,16 +91,32 @@ function classifyCompactCustomProperty(property: string, value: unknown): Compac
         value === BarAlignment.Before ||
         value === BarAlignment.Center ||
         value === BarAlignment.After
-        ? 'legacy-inert'
+        ? capability === 'timeseries-line'
+          ? 'legacy-inert'
+          : 'supported'
         : 'unsupported';
     case 'barMaxWidth':
       return value == null || isFiniteNumberInRange(value, 0, Number.POSITIVE_INFINITY)
-        ? 'legacy-inert'
+        ? capability === 'timeseries-line'
+          ? 'legacy-inert'
+          : 'supported'
         : 'unsupported';
     case 'barWidthFactor':
-      return value == null || isFiniteNumberInRange(value, 0, 1) ? 'legacy-inert' : 'unsupported';
+      return value == null || isFiniteNumberInRange(value, 0, 1)
+        ? capability === 'timeseries-line'
+          ? 'legacy-inert'
+          : 'supported'
+        : 'unsupported';
     case 'drawStyle':
-      return value == null || value === GraphDrawStyle.Line || value === GraphDrawStyle.Points
+      if (value == null) {
+        return 'supported';
+      }
+      if (capability === 'standalone-barchart') {
+        return value === GraphDrawStyle.Bars ? 'supported' : 'unsupported';
+      }
+      return value === GraphDrawStyle.Line ||
+        value === GraphDrawStyle.Points ||
+        (capability === 'timeseries-bars' && value === GraphDrawStyle.Bars)
         ? 'supported'
         : 'unsupported';
     case 'fillBelowTo':
@@ -144,7 +161,9 @@ function classifyCompactCustomProperty(property: string, value: unknown): Compac
         ? 'supported'
         : 'unsupported';
     case 'stacking':
-      return value == null || isSupportedStacking(value) ? 'supported' : 'unsupported';
+      return value == null || isSupportedStacking(value, capability !== 'timeseries-line')
+        ? 'supported'
+        : 'unsupported';
     case 'thresholdsStyle':
       return value == null || isSupportedThresholdStyle(value) ? 'supported' : 'unsupported';
     case 'transform':
@@ -188,29 +207,39 @@ export function parseCompactValueMatcher(options: unknown): CompactValueMatcher 
   return { reducer, operation, value };
 }
 
-export function isCompactFieldConfigSupported(fieldConfig: FieldConfigSource | undefined): boolean {
-  return canNormalize(() => assertCompactFieldConfig(fieldConfig));
+export function isCompactFieldConfigSupported(
+  fieldConfig: FieldConfigSource | undefined,
+  capability: CompactPanelCapability = 'timeseries-line'
+): boolean {
+  return canNormalize(() => assertCompactFieldConfig(fieldConfig, capability));
 }
 
-export function assertCompactFieldConfig(fieldConfig: FieldConfigSource | undefined): void {
+export function assertCompactFieldConfig(
+  fieldConfig: FieldConfigSource | undefined,
+  capability: CompactPanelCapability = 'timeseries-line'
+): void {
   if (!fieldConfig) {
     return;
   }
   if (fieldConfig.defaults.links?.length || fieldConfig.defaults.actions?.length) {
     throw new Error('Compact rendering does not support data links or actions');
   }
-  assertCompactCustomConfig(fieldConfig.defaults.custom);
+  assertCompactCustomConfig(fieldConfig.defaults.custom, capability);
   assertCompactColorReducer(fieldConfig.defaults.color);
+  assertCompactBarColorSemantics(fieldConfig.defaults.color, fieldConfig.defaults.mappings, capability);
 
   for (const override of fieldConfig.overrides) {
     assertCompactMatcher(override.matcher.id, override.matcher.options);
     for (const property of override.properties) {
       if (property.id.startsWith('custom.')) {
-        assertCompactCustomProperty(property.id.slice('custom.'.length), property.value);
+        assertCompactCustomProperty(property.id.slice('custom.'.length), property.value, capability);
       } else if (property.id === FieldConfigProperty.Links || property.id === FieldConfigProperty.Actions) {
         throw new Error('Compact rendering does not support data links or actions');
       } else if (property.id === FieldConfigProperty.Color) {
         assertCompactColorReducer(property.value);
+        assertCompactBarColorSemantics(property.value, undefined, capability);
+      } else if (property.id === FieldConfigProperty.Mappings) {
+        assertCompactBarColorSemantics(undefined, property.value, capability);
       }
     }
   }
@@ -223,7 +252,7 @@ export function isCompactReducerSupported(value: unknown): boolean {
   return reducer != null && isCompactTimeSeriesReducerSupported(reducer);
 }
 
-function assertCompactCustomConfig(custom: unknown): void {
+function assertCompactCustomConfig(custom: unknown, capability: CompactPanelCapability): void {
   if (custom == null) {
     return;
   }
@@ -231,32 +260,40 @@ function assertCompactCustomConfig(custom: unknown): void {
     throw new Error('Compact rendering requires graph custom configuration to be an object');
   }
   for (const [property, value] of Object.entries(custom)) {
-    assertCompactCustomProperty(property, value);
+    assertCompactCustomProperty(property, value, capability);
   }
 }
 
-function assertCompactCustomProperty(property: string, value: unknown): void {
-  if (classifyCompactCustomProperty(property, value) === 'unsupported') {
+function assertCompactCustomProperty(property: string, value: unknown, capability: CompactPanelCapability): void {
+  if (classifyCompactCustomProperty(property, value, capability) === 'unsupported') {
     throw new Error(`Compact rendering does not support custom.${property}`);
   }
 }
 
-function stripCompactInertProperties(custom: GraphFieldConfig | undefined): void {
+function stripCompactInertProperties(custom: GraphFieldConfig | undefined, capability: CompactPanelCapability): void {
   if (!custom) {
     return;
   }
-  for (const property of inertProperties) {
+  for (const property of alwaysInertProperties) {
     delete custom[property];
+  }
+  if (capability === 'timeseries-line') {
+    for (const property of lineOnlyInertProperties) {
+      delete custom[property];
+    }
   }
 }
 
-export function canonicalizeCompactCustomConfig(custom: GraphFieldConfig | undefined): GraphFieldConfig | undefined {
-  assertCompactCustomConfig(custom);
+export function canonicalizeCompactCustomConfig(
+  custom: GraphFieldConfig | undefined,
+  capability: CompactPanelCapability = 'timeseries-line'
+): GraphFieldConfig | undefined {
+  assertCompactCustomConfig(custom, capability);
   if (!custom) {
     return undefined;
   }
 
-  stripCompactInertProperties(custom);
+  stripCompactInertProperties(custom, capability);
   if (getObjectProperty(custom.scaleDistribution, 'type') === 'sqrt') {
     custom.scaleDistribution = { type: ScaleDistribution.Linear };
   }
@@ -327,6 +364,28 @@ function assertCompactColorReducer(color: unknown): void {
   if (reducer != null && !isCompactReducerSupported(reducer)) {
     throw new Error('Compact rendering requires a supported color reducer');
   }
+}
+
+function assertCompactBarColorSemantics(color: unknown, mappings: unknown, capability: CompactPanelCapability): void {
+  if (capability !== 'standalone-barchart') {
+    return;
+  }
+  if (getObjectProperty(color, 'mode') === FieldColorModeId.Thresholds || containsMappedColor(mappings)) {
+    throw new Error('Compact bar rendering does not support per-value colors');
+  }
+}
+
+function containsMappedColor(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsMappedColor);
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (getObjectProperty(value, 'color') != null) {
+    return true;
+  }
+  return Object.values(value).some(containsMappedColor);
 }
 
 function assertConsistentInsertNulls(fieldConfig: FieldConfigSource): void {
@@ -433,13 +492,14 @@ function isSupportedScaleDistribution(value: unknown): boolean {
   );
 }
 
-function isSupportedStacking(value: unknown): boolean {
+function isSupportedStacking(value: unknown, allowPercent: boolean): boolean {
   return (
     isRecord(value) &&
     hasOnlyProperties(value, ['group', 'mode']) &&
     (getObjectProperty(value, 'mode') == null ||
       getObjectProperty(value, 'mode') === StackingMode.None ||
-      getObjectProperty(value, 'mode') === StackingMode.Normal) &&
+      getObjectProperty(value, 'mode') === StackingMode.Normal ||
+      (allowPercent && getObjectProperty(value, 'mode') === StackingMode.Percent)) &&
     (getObjectProperty(value, 'group') == null || typeof getObjectProperty(value, 'group') === 'string')
   );
 }

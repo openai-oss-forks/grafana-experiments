@@ -1,8 +1,16 @@
 import uPlot from 'uplot';
 
-import { createTheme, dateTime, type DataQuery, FieldConfigOptionsRegistry } from '@grafana/data';
+import {
+  createTheme,
+  dateTime,
+  dateTimeFormat,
+  type DataQuery,
+  FieldConfigOptionsRegistry,
+  systemDateFormats,
+} from '@grafana/data';
 import { toDataQueryResponse } from '@grafana/runtime';
-import { installCompactRenderer, UPlotConfigBuilder } from '@grafana/ui/internal';
+import { VizOrientation } from '@grafana/schema';
+import { getCompactRenderController, installCompactRenderer, UPlotConfigBuilder } from '@grafana/ui/internal';
 
 import { prepareCompactPlotConfigBuilder } from '../TimeSeries/utils';
 
@@ -81,6 +89,67 @@ describe('compact binary rendering pipeline', () => {
     expect(proximity(plot, 1, 1, 2000)).toBe(15);
     Reflect.set(plot, 'compactSource', { yAt: jest.fn(() => 4) });
     expect(proximity(plot, 1, 1, 2000)).toBeNull();
+  });
+
+  test('configures standalone bars with categorical X geometry and orientation-aware drag', async () => {
+    const plan = createPlan(decodeFixture());
+    Reflect.set(plan.source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1 });
+    const builder = prepareCompactPlotConfigBuilder({
+      plan,
+      theme: createTheme(),
+      timeZones: ['utc'],
+      getTimeRange: () => ({
+        from: dateTime(1000),
+        to: dateTime(3000),
+        raw: { from: dateTime(1000), to: dateTime(3000) },
+      }),
+      orientation: VizOrientation.Vertical,
+      xAxisConfig: { tickLabelRotation: 0 },
+      valueAxisConfig: { tickLabelRotation: -30, filter: jest.fn((_plot, splits) => splits) },
+    });
+
+    const config = builder.getConfig();
+    expect(config.scales?.x).toMatchObject({ time: false, distr: 100 });
+    expect(config.axes?.[0]).toMatchObject({ scale: 'x', rotate: 0, values: expect.any(Function) });
+    expect(config.axes?.[1]).toMatchObject({ rotate: -30, filter: expect.any(Function) });
+    const formatTicks = config.axes?.[0].values;
+    if (typeof formatTicks !== 'function') {
+      throw new Error('Expected compact grouped-bar tick formatter');
+    }
+    expect(formatTicks({} as uPlot, [1000, 2000, 3000], 0, 0, 1000)).toEqual(
+      [1000, 2000, 3000].map((value) =>
+        dateTimeFormat(value, { format: systemDateFormats.interval.second, timeZone: 'utc' })
+      )
+    );
+    expect(config.scales?.x.fwd?.(1000)).toBe(0);
+    expect(config.scales?.x.fwd?.(3000)).toBe(2);
+    expect(config.scales?.x.bwd?.(1.5)).toBe(2500);
+    expect(config.cursor?.drag).toMatchObject({ x: false, y: true, setScale: false });
+
+    const horizontalConfig = prepareCompactPlotConfigBuilder({
+      plan,
+      theme: createTheme(),
+      timeZones: ['utc'],
+      getTimeRange: () => ({
+        from: dateTime(1000),
+        to: dateTime(3000),
+        raw: { from: dateTime(1000), to: dateTime(3000) },
+      }),
+      orientation: VizOrientation.Horizontal,
+    }).getConfig();
+    expect(horizontalConfig.cursor?.drag).toMatchObject({ x: true, y: false, setScale: false });
+
+    const plot = uPlot.compact(
+      { width: 300, height: 200, ...config },
+      plan.source,
+      getCompactRenderController(plan.source),
+      document.createElement('div')
+    );
+    await flushCommit();
+    expect(plot.axes[0].filter?.(plot, [1000, 2000, 3000], 0, 0, 1000)).toEqual([1000, 2000, 3000]);
+    const positions = [1000, 2000, 3000].map((value) => plot.valToPos(value, 'x'));
+    expect(Math.abs(positions[1] - positions[0])).toBeCloseTo(Math.abs(positions[2] - positions[1]));
+    plot.destroy();
   });
 });
 

@@ -12,9 +12,12 @@ import { VizLegendItem, VizLegendItemSource, VizLegendTableProps } from './types
 
 const nameSortKey = 'Name';
 const naturalCompare = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
-const VIRTUALIZE_THRESHOLD = 200;
+const VIRTUALIZE_THRESHOLD = 50;
+const CUSTOM_RENDERER_VIRTUALIZE_THRESHOLD = 200;
 const VIRTUAL_ROW_HEIGHT = 28;
 const VIRTUAL_OVERSCAN = 12;
+const TABLE_NAME_COLUMN_MIN_WIDTH = 160;
+const TABLE_VALUE_COLUMN_WIDTH = 88;
 
 /**
  * @internal
@@ -121,7 +124,7 @@ export const VizLegendTable = <T extends unknown>({
               key={columnTitle}
               className={cx(styles.header, {
                 [styles.headerSortable]: Boolean(onToggleSort),
-                [styles.nameHeader]: isSortable,
+                [styles.nameHeader]: isSortable && columnTitle === nameSortKey,
                 [styles.withIcon]: sortKey === columnTitle,
                 'sr-only': !isSortable,
               })}
@@ -222,11 +225,11 @@ function IndexedVizLegendTable<T>({
   const getDisplayValues = (sourceIndex: number, item: VizLegendItem<T>) =>
     itemSource.getDisplayValues?.(sourceIndex) ?? getItemDisplayValues?.(item) ?? item.getDisplayValues?.() ?? [];
 
-  if (itemRenderer && itemSource.length > VIRTUALIZE_THRESHOLD) {
+  if (itemRenderer && itemSource.length > CUSTOM_RENDERER_VIRTUALIZE_THRESHOLD) {
     throw new Error('Virtualized indexed legends do not support custom item renderers');
   }
 
-  if (itemSource.length > VIRTUALIZE_THRESHOLD) {
+  if (!itemRenderer && itemSource.length > VIRTUALIZE_THRESHOLD) {
     return (
       <VirtualizedIndexedVizLegendTable
         className={className}
@@ -246,8 +249,18 @@ function IndexedVizLegendTable<T>({
     );
   }
 
+  const valueColumnCount = Math.max(0, Object.keys(header).length - 1);
+
   return (
-    <table className={cx(styles.table, className)}>
+    <table
+      className={cx(styles.table, !itemRenderer && styles.fixedTable, className)}
+      style={
+        itemRenderer
+          ? undefined
+          : { minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }
+      }
+    >
+      {!itemRenderer && <LegendTableColGroup valueColumnCount={valueColumnCount} />}
       <LegendTableHeader
         header={header}
         isSortable={isSortable}
@@ -301,7 +314,6 @@ function renderIndexedTableRows<T>(
 }
 
 function LegendTableHeader({
-  gridTemplateColumns,
   header,
   isSortable,
   onToggleSort,
@@ -309,7 +321,6 @@ function LegendTableHeader({
   sortKey,
   virtual = false,
 }: {
-  gridTemplateColumns?: string;
   header: Record<string, string>;
   isSortable?: boolean;
   onToggleSort?: (sortBy: string) => void;
@@ -320,14 +331,14 @@ function LegendTableHeader({
   const styles = useStyles2(getStyles);
   return (
     <thead className={virtual ? styles.virtualHeader : undefined}>
-      <tr style={gridTemplateColumns ? { gridTemplateColumns } : undefined}>
+      <tr>
         {Object.keys(header).map((columnTitle) => (
           <th
             title={header[columnTitle]}
             key={columnTitle}
             className={cx(styles.header, {
               [styles.headerSortable]: Boolean(onToggleSort),
-              [styles.nameHeader]: isSortable,
+              [styles.nameHeader]: isSortable && columnTitle === nameSortKey,
               [styles.withIcon]: sortKey === columnTitle,
               'sr-only': !isSortable,
             })}
@@ -383,7 +394,14 @@ function VirtualizedIndexedVizLegendTable<T>({
     overscan: VIRTUAL_OVERSCAN,
     initialViewportSize: VIRTUAL_ROW_HEIGHT * 12,
   });
-  const gridTemplateColumns = `minmax(0, 1fr) repeat(${Math.max(Object.keys(header).length - 1, 0)}, max-content)`;
+  const columnCount = Object.keys(header).length;
+  const firstVirtualItem = virtualItems[0];
+  const lastVirtualItem = virtualItems[virtualItems.length - 1];
+  const topSpacerSize = firstVirtualItem?.start ?? 0;
+  const bottomSpacerSize = lastVirtualItem
+    ? Math.max(0, totalSize - lastVirtualItem.start - VIRTUAL_ROW_HEIGHT)
+    : totalSize;
+  const valueColumnCount = Math.max(0, columnCount - 1);
   const focusItem = useCallback(
     (index: number) => {
       const nextIndex = Math.max(0, Math.min(itemSource.length - 1, index));
@@ -426,9 +444,13 @@ function VirtualizedIndexedVizLegendTable<T>({
 
   return (
     <div ref={scrollRef} className={cx(styles.virtualScroll, className)}>
-      <table className={cx(styles.table, styles.virtualTable)} aria-rowcount={itemSource.length + 1}>
+      <table
+        className={cx(styles.table, styles.fixedTable)}
+        aria-rowcount={itemSource.length + 1}
+        style={{ minWidth: TABLE_NAME_COLUMN_MIN_WIDTH + valueColumnCount * TABLE_VALUE_COLUMN_WIDTH }}
+      >
+        <LegendTableColGroup valueColumnCount={valueColumnCount} />
         <LegendTableHeader
-          gridTemplateColumns={gridTemplateColumns}
           header={header}
           isSortable={isSortable}
           onToggleSort={onToggleSort}
@@ -436,7 +458,8 @@ function VirtualizedIndexedVizLegendTable<T>({
           sortKey={sortKey}
           virtual
         />
-        <tbody className={styles.virtualBody} style={{ height: totalSize }}>
+        <tbody>
+          <VirtualTableSpacer columnCount={columnCount} size={topSpacerSize} />
           {virtualItems.map((row) => {
             const sourceIndex = sortedOrder?.[row.index] ?? row.index;
             const item = itemSource.getItem(sourceIndex);
@@ -451,13 +474,34 @@ function VirtualizedIndexedVizLegendTable<T>({
                 displayValues={getDisplayValues(sourceIndex, item)}
                 className={styles.virtualRow}
                 rowIndex={row.index + 2}
-                style={{ gridTemplateColumns, transform: `translateY(${row.start}px)` }}
               />
             );
           })}
+          <VirtualTableSpacer columnCount={columnCount} size={bottomSpacerSize} />
         </tbody>
       </table>
     </div>
+  );
+}
+
+function LegendTableColGroup({ valueColumnCount }: { valueColumnCount: number }) {
+  return (
+    <colgroup>
+      <col />
+      {valueColumnCount > 0 && <col span={valueColumnCount} style={{ width: TABLE_VALUE_COLUMN_WIDTH }} />}
+    </colgroup>
+  );
+}
+
+function VirtualTableSpacer({ columnCount, size }: { columnCount: number; size: number }) {
+  if (size <= 0) {
+    return null;
+  }
+
+  return (
+    <tr aria-hidden style={{ height: size }}>
+      <td colSpan={columnCount} style={{ border: 0, height: size, padding: 0 }} />
+    </tr>
   );
 }
 
@@ -495,29 +539,33 @@ const getStyles = (theme: GrafanaTheme2) => ({
     overflow: 'auto',
     width: '100%',
   }),
-  virtualTable: css({
-    display: 'block',
-  }),
-  virtualHeader: css({
-    display: 'block',
-    position: 'sticky',
-    top: 0,
-    zIndex: 1,
-    tr: {
-      display: 'grid',
+  fixedTable: css({
+    borderSpacing: 0,
+    tableLayout: 'fixed',
+    'th:first-child': {
+      width: 'auto',
+    },
+    'td:first-child': {
+      overflow: 'hidden',
+    },
+    'th:not(:first-child)': {
+      overflow: 'hidden',
+    },
+    'td:not(:first-child)': {
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
     },
   }),
-  virtualBody: css({
-    display: 'block',
-    position: 'relative',
-    width: '100%',
+  virtualHeader: css({
+    background: theme.colors.background.primary,
+    'th:not(.sr-only)': {
+      background: theme.colors.background.primary,
+      position: 'sticky',
+      top: 0,
+      zIndex: 1,
+    },
   }),
   virtualRow: css({
-    display: 'grid',
-    left: 0,
-    minHeight: VIRTUAL_ROW_HEIGHT,
-    position: 'absolute',
-    top: 0,
-    width: '100%',
+    height: VIRTUAL_ROW_HEIGHT,
   }),
 });

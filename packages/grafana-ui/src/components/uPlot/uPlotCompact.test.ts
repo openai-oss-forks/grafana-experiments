@@ -26,6 +26,37 @@ describe('uPlot compact X host', () => {
     expect(target.contains(plot.root)).toBe(false);
   });
 
+  test('recalculates custom X axes when compact source values change', async () => {
+    const axisValues = jest.fn((_plot: uPlot, splits: number[]) => splits.map(String));
+    const options: uPlot.Options = {
+      ...createOptions(),
+      axes: [{ scale: 'x', values: axisValues }],
+      scales: {
+        x: {
+          time: false,
+          distr: 100,
+          fwd: (value) => value,
+          bwd: (value) => value,
+          range: () => [1000, 3000],
+        },
+      },
+    };
+    const plot = uPlot.compact(
+      options,
+      createSource([1, 2, 3], [1000, 1500, 3000]),
+      createController(),
+      document.createElement('div')
+    );
+    await flushCommit();
+    const initialCalls = axisValues.mock.calls.length;
+
+    plot.setCompactData?.(createSource([1, 2, 3], [1000, 2500, 3000]));
+    await flushCommit();
+
+    expect(axisValues.mock.calls.length).toBeGreaterThan(initialCalls);
+    plot.destroy();
+  });
+
   test('rejects legacy data replacement on a compact plot', () => {
     expect(() => uPlot.compact(createOptions(), createSource([1]), null, document.createElement('div'))).toThrow(
       'render controller'
@@ -109,6 +140,7 @@ describe('uPlot compact X host', () => {
   test('renders receiver-local compact marker state for native synchronization', async () => {
     const sourceController = createController();
     const receiverController = createController();
+    let useBarRectangle = false;
     receiverController.updateCursor.mockImplementation((_plot, index, _mouseY, origin) =>
       index != null && origin === 'native-sync'
         ? {
@@ -119,6 +151,7 @@ describe('uPlot compact X host', () => {
             left: 140,
             top: 60,
             size: 10,
+            ...(useBarRectangle ? { width: 10, height: 10, centered: false } : undefined),
             fill: 'rgb(12, 34, 56)',
             stroke: 'rgba(12, 34, 56, 0.5)',
           }
@@ -131,8 +164,8 @@ describe('uPlot compact X host', () => {
         show: true,
         points: {
           one: true,
-          size: (plot, seriesIndex) => plot.series[seriesIndex].points.size * 2,
-          width: (_plot, _seriesIndex, size) => size / 4,
+          size: (plot: uPlot, seriesIndex: number) => plot.series[seriesIndex].points!.size! * 2,
+          width: (_plot: uPlot, _seriesIndex: number, size: number) => size / 4,
         },
         focus: { prox: 30 },
         sync: { key: syncKey, scales: ['x', null] as [string, null] },
@@ -165,7 +198,9 @@ describe('uPlot compact X host', () => {
     expect(marker?.style.background).toBe('rgb(12, 34, 56)');
     expect(marker?.style.borderColor).toBe('rgba(12, 34, 56, 0.5)');
     expect(marker?.style.borderWidth).toBe('2.5px');
+    expect(marker?.style.borderRadius).toBe('');
 
+    useBarRectangle = true;
     Reflect.set(receiverPlot.cursor, 'event', new MouseEvent('mousemove'));
     receiverPlot.setCursor({ left: 120, top: 40 }, true, false, 'native-sync');
     expect(receiverController.updateCursor).toHaveBeenLastCalledWith(
@@ -174,6 +209,15 @@ describe('uPlot compact X host', () => {
       40,
       'native-sync'
     );
+    expect(marker?.style.marginLeft).toBe('0px');
+    expect(marker?.style.marginTop).toBe('0px');
+    expect(marker?.style.borderRadius).toBe('0');
+    expect(marker?.style.borderWidth).toBe('0px');
+
+    useBarRectangle = false;
+    receiverPlot.setCursor({ left: 120, top: 30 }, true, false, 'native-sync');
+    expect(marker?.style.borderRadius).toBe('');
+    expect(marker?.style.borderWidth).toBe('2.5px');
 
     receiverController.updateCursor.mockReturnValue(null);
     sourcePlot.setCursor({ left: 120, top: 50 }, true, true);
@@ -292,6 +336,36 @@ describe('uPlot compact X host', () => {
     expect(retainedPath).toHaveBeenCalledTimes(retainedCalls);
     plot.destroy();
   });
+
+  test('keeps legacy ordinal render windows in ordinal index space', async () => {
+    const timestamps = Array.from({ length: 29 }, (_, index) => 1_779_692_400_000 + index * 86_400_000);
+    const target = document.createElement('div');
+    const plot = new uPlot(
+      {
+        width: 300,
+        height: 200,
+        series: [{}, { scale: 'y', stroke: '#f00' }],
+        axes: [],
+        scales: { x: { time: false, distr: 2 }, y: { auto: true } },
+        legend: { show: false },
+        cursor: { show: true },
+      },
+      [timestamps, timestamps.map((_timestamp, index) => index)],
+      target
+    );
+    await flushCommit();
+
+    expect(plot.scales.x).toMatchObject({ min: 0, max: 28 });
+    expect(plot.getX?.(28)).toBe(timestamps[28]);
+    expect(plot.valToIdx(28)).toBe(28);
+    expect(plot.series[0].idxs).toEqual([0, 28]);
+    expect(plot.series[1].idxs).toEqual([0, 28]);
+
+    plot.setCursor({ left: plot.valToPos(28, 'x'), top: 100 }, true);
+    expect(plot.cursor.idx).toBe(28);
+    expect(target.querySelector('.u-cursor-pt')).not.toHaveClass('u-off');
+    plot.destroy();
+  });
 });
 
 function createOptions(withYScale = false): uPlot.Options {
@@ -323,7 +397,10 @@ async function flushCommit(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function createSource(values: number[]): uPlot.CompactPlotSource {
+function createSource(
+  values: number[],
+  xValues = values.map((_value, index) => 1000 + index * 1000)
+): uPlot.CompactPlotSource {
   const buffer = new Float64Array(values).buffer;
   return {
     kind: 'compact-v1',
@@ -331,9 +408,16 @@ function createSource(values: number[]): uPlot.CompactPlotSource {
     pointCount: values.length,
     seriesCount: 1,
     release: () => undefined,
-    xAt: (index) => 1000 + index * 1000,
-    closestXIndex: (value, from, to) => Math.max(from, Math.min(to, Math.round((value - 1000) / 1000))),
-    cursorValueAt: (_seriesIndex, index) => values[index],
+    xAt: (index) => xValues[index],
+    closestXIndex: (value, from, to) => {
+      let closest = from;
+      for (let index = from + 1; index <= to; index++) {
+        if (Math.abs(xValues[index] - value) < Math.abs(xValues[closest] - value)) {
+          closest = index;
+        }
+      }
+      return closest;
+    },
     yAt: (_seriesIndex, index) => values[index],
     scan: (_seriesIndex, from, to, visitor) => {
       for (let index = from; index <= to; index++) {

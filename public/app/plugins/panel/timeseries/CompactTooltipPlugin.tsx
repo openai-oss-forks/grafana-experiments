@@ -45,6 +45,10 @@ interface HoverState {
   viaSync: boolean;
 }
 
+function getCompactGroupCursorPosition(plot: import('uplot')): number | null | undefined {
+  return plot.scales.x.ori === 1 ? plot.cursor.top : plot.cursor.left;
+}
+
 const ROW_HEIGHT = 24;
 const VIRTUALIZE_THRESHOLD = 40;
 const DEFAULT_VIRTUAL_HEIGHT = 400;
@@ -109,6 +113,7 @@ export function CompactTooltipPlugin({
   sourceRef.current = plan.source;
   const styles = useStyles2(getStyles, maxWidth);
   const baseIndexes = useMemo(() => buildTooltipIndexes(plan), [plan]);
+  const standaloneRestIndexes = useMemo(() => buildStandaloneRestTooltipIndexes(plan), [plan]);
   const activeHover = hover?.source === plan.source ? hover : null;
   const hoverSource = activeHover?.source;
   const hoverCursorIndex = activeHover?.cursorIndex;
@@ -178,7 +183,8 @@ export function CompactTooltipPlugin({
       : undefined;
   const focusedValueVisible =
     activeHover?.focusedSeries != null && activeHover.focusedSeries >= 0
-      ? shouldShowTooltipValue(focusedValue, plan.getStyle(activeHover.focusedSeries).config.noValue, hideZeros)
+      ? (plan.columns.flags[activeHover.focusedSeries] & CompactNativeSeriesFlag.HiddenFromTooltip) === 0 &&
+        shouldShowTooltipValue(focusedValue, plan.getStyle(activeHover.focusedSeries).config.noValue, hideZeros)
       : false;
   const focusedSeriesToPromote =
     effectiveMode === TooltipDisplayMode.Multi &&
@@ -193,11 +199,13 @@ export function CompactTooltipPlugin({
     [focusedSeriesToPromote, indexes]
   );
   const showFocusedSeries = focusedSeriesPosition >= 0;
+  const showSingleFocusedSeries =
+    effectiveMode === TooltipDisplayMode.Single && activeHover != null && activeHover.focusedSeries >= 0
+      ? focusedValueVisible
+      : false;
   const rowCount =
     effectiveMode === TooltipDisplayMode.Single
-      ? activeHover && activeHover.focusedSeries >= 0 && focusedValueVisible
-        ? 1
-        : 0
+      ? standaloneRestIndexes.length + (showSingleFocusedSeries ? 1 : 0)
       : indexes.length - (showFocusedSeries ? 1 : 0);
   const isVirtualized = rowCount > VIRTUALIZE_THRESHOLD;
   const virtualHeight = maxHeight ?? DEFAULT_VIRTUAL_HEIGHT;
@@ -250,8 +258,9 @@ export function CompactTooltipPlugin({
           return;
         }
         if (event.ctrlKey || event.metaKey) {
-          if (annotationRangeRef.current != null && plot.cursor.left != null) {
-            const value = plot.posToVal(plot.cursor.left, 'x');
+          const cursorPosition = getCompactGroupCursorPosition(plot);
+          if (annotationRangeRef.current != null && cursorPosition != null) {
+            const value = plot.posToVal(cursorPosition, 'x');
             annotationRangeRef.current({ from: value, to: value });
           }
           return;
@@ -274,12 +283,16 @@ export function CompactTooltipPlugin({
         if (event.button !== 0 || !event.shiftKey || event.ctrlKey || event.metaKey) {
           return;
         }
-        plot.cursor.drag!.x = false;
-        plot.cursor.drag!.y = true;
         shiftMouseUp?.();
+        const drag = plot.cursor.drag!;
+        const previousX = drag.x;
+        const previousY = drag.y;
+        const groupAxisVertical = plot.scales.x.ori === 1;
+        drag.x = groupAxisVertical;
+        drag.y = !groupAxisVertical;
         shiftMouseUp = () => {
-          plot.cursor.drag!.x = true;
-          plot.cursor.drag!.y = false;
+          drag.x = previousX;
+          drag.y = previousY;
           document.removeEventListener('mouseup', shiftMouseUp!, true);
           shiftMouseUp = undefined;
         };
@@ -310,21 +323,28 @@ export function CompactTooltipPlugin({
     });
     config.addHook('setSelect', (plot) => {
       const event = plot.cursor.event;
-      const from = plot.posToVal(plot.select.left, 'x');
-      const to = plot.posToVal(plot.select.left + plot.select.width, 'x');
+      const xVertical = plot.scales.x.ori === 1;
+      const groupStart = xVertical ? plot.select.top : plot.select.left;
+      const groupSize = xVertical ? plot.select.height : plot.select.width;
+      const valueStart = xVertical ? plot.select.left : plot.select.top;
+      const valueSize = xVertical ? plot.select.width : plot.select.height;
+      const from = plot.posToVal(groupStart, 'x');
+      const to = plot.posToVal(groupStart + groupSize, 'x');
       if ((event?.ctrlKey || event?.metaKey) && annotationRangeRef.current != null) {
         annotationRangeRef.current({ from, to });
-      } else if (event?.shiftKey && plot.select.height >= MIN_ZOOM_DISTANCE) {
+      } else if (event?.shiftKey && valueSize >= MIN_ZOOM_DISTANCE) {
+        const valueMinPosition = xVertical ? valueStart : valueStart + valueSize;
+        const valueMaxPosition = xVertical ? valueStart + valueSize : valueStart;
         for (const scaleKey of Object.keys(plot.scales)) {
           if (scaleKey !== 'x') {
             plot.setScale(scaleKey, {
-              min: plot.posToVal(plot.select.top + plot.select.height, scaleKey),
-              max: plot.posToVal(plot.select.top, scaleKey),
+              min: plot.posToVal(valueMinPosition, scaleKey),
+              max: plot.posToVal(valueMaxPosition, scaleKey),
             });
           }
         }
         yZoomedRef.current = true;
-      } else if (queryZoomRef.current != null && plot.select.width >= MIN_ZOOM_DISTANCE) {
+      } else if (queryZoomRef.current != null && groupSize >= MIN_ZOOM_DISTANCE) {
         queryZoomRef.current({ from, to });
       }
       plot.setSelect({ left: 0, width: 0, top: 0, height: 0 }, false);
@@ -333,15 +353,22 @@ export function CompactTooltipPlugin({
       if (pinnedRef.current) {
         return;
       }
+      if (modeRef.current === TooltipDisplayMode.None) {
+        if (hoverRef.current != null) {
+          clearHover();
+        }
+        return;
+      }
       const point = plot.compactCursor;
       const index = plot.cursor.idx;
       const viaSync = plot.compactCursorOrigin === 'native-sync';
+      const groupCursorPosition = getCompactGroupCursorPosition(plot);
       const requiresPoint = !viaSync && modeRef.current === TooltipDisplayMode.Single;
       const hasFocusedPoint = !viaSync && point?.hasPoint === true;
       if (
         index == null ||
-        plot.cursor.left == null ||
-        plot.cursor.left < 0 ||
+        groupCursorPosition == null ||
+        groupCursorPosition < 0 ||
         (requiresPoint && !point?.hasPoint) ||
         (viaSync && syncModeRef.current !== DashboardCursorSync.Tooltip)
       ) {
@@ -368,7 +395,7 @@ export function CompactTooltipPlugin({
         return;
       }
 
-      positionRef.current.left = plot.rect.left + plot.cursor.left;
+      positionRef.current.left = plot.rect.left + (plot.cursor.left ?? 0);
       positionRef.current.top = plot.rect.top + (plot.cursor.top ?? 0);
       if (tooltipRef.current) {
         tooltipRef.current.style.transform = getTooltipTransform(positionRef.current, sizeRef.current);
@@ -439,6 +466,12 @@ export function CompactTooltipPlugin({
   }, [clearTooltip, config]);
 
   useLayoutEffect(() => {
+    if (mode === TooltipDisplayMode.None) {
+      clearTooltip();
+    }
+  }, [clearTooltip, mode]);
+
+  useLayoutEffect(() => {
     sortedIndexesRef.current = undefined;
     filteredIndexesRef.current = undefined;
     pinnedSnapshotRef.current = undefined;
@@ -498,13 +531,15 @@ export function CompactTooltipPlugin({
     };
   }, [clearHover]);
 
-  if (!activeHover || (rowCount === 0 && !showFocusedSeries)) {
+  if (mode === TooltipDisplayMode.None || !activeHover || (rowCount === 0 && !showFocusedSeries)) {
     return null;
   }
 
   const getSeriesIndex = (rowIndex: number) => {
     if (effectiveMode === TooltipDisplayMode.Single) {
-      return activeHover.focusedSeries;
+      return showSingleFocusedSeries && rowIndex === 0
+        ? activeHover.focusedSeries
+        : standaloneRestIndexes.at(rowIndex - (showSingleFocusedSeries ? 1 : 0));
     }
     if (!showFocusedSeries) {
       return indexes.at(rowIndex);
@@ -530,7 +565,12 @@ export function CompactTooltipPlugin({
     const seriesIndex = getSeriesIndex(rowIndex);
     const value =
       effectiveMode === TooltipDisplayMode.Single
-        ? resolveTooltipValue(plan.source, seriesIndex, valueIndex)
+        ? resolveSingleTooltipRowValue(
+            plan.source,
+            seriesIndex,
+            activeHover.cursorIndex,
+            showSingleFocusedSeries && rowIndex === 0 ? activeHover.focusedIndex : undefined
+          )
         : filteredTooltipIndexes?.valueAt(seriesIndex);
     const row = getTooltipRowModel(plan, seriesIndex, value, plan.source.columns.visibility[seriesIndex] === 0);
 
@@ -743,6 +783,17 @@ export function resolveTooltipValue(
   return nearestIndex == null ? value : source.yAt(seriesIndex, nearestIndex);
 }
 
+export function resolveSingleTooltipRowValue(
+  source: Pick<CompactNativeRenderPlan['source'], 'yAt' | 'nearestPresent'>,
+  seriesIndex: number,
+  cursorIndex: number,
+  focusedIndex: number | undefined
+) {
+  return focusedIndex == null
+    ? source.yAt(seriesIndex, cursorIndex)
+    : resolveTooltipValue(source, seriesIndex, focusedIndex);
+}
+
 export function resolveMultiTooltipValue(
   snapshot: Pick<CompactCursorSnapshot, 'cursorIndex' | 'valueAt' | 'dataIndexAt'>,
   source: Pick<CompactNativeRenderPlan['source'], 'yAt'>,
@@ -783,6 +834,29 @@ function buildTooltipIndexes(plan: CompactNativeRenderPlan): CompactTooltipIndex
     }
   }
   return { length: indexes.length, at: (index) => indexes[index] };
+}
+
+export function buildStandaloneRestTooltipIndexes(plan: {
+  readonly seriesCount: number;
+  readonly source: Pick<CompactNativeRenderPlan['source'], 'barLayoutVisibility'>;
+  readonly columns: Pick<CompactNativeRenderPlan['columns'], 'flags'>;
+}): CompactTooltipIndexes {
+  const layoutVisibility = plan.source.barLayoutVisibility;
+  if (!layoutVisibility) {
+    return { length: 0, at: () => -1 };
+  }
+
+  const indexes = new Uint32Array(plan.seriesCount);
+  let length = 0;
+  for (let seriesIndex = 0; seriesIndex < plan.seriesCount; seriesIndex++) {
+    if (
+      layoutVisibility[seriesIndex] === 0 &&
+      (plan.columns.flags[seriesIndex] & CompactNativeSeriesFlag.HiddenFromTooltip) === 0
+    ) {
+      indexes[length++] = seriesIndex;
+    }
+  }
+  return { length, at: (index) => indexes[index] };
 }
 
 export function findTooltipIndex(indexes: CompactTooltipIndexes, seriesIndex: number): number {

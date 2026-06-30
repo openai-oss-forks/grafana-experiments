@@ -122,7 +122,7 @@ describe('DataSourceWithBackend', () => {
       filters: [{ key: 'key1', operator: '=', value: 'val1' }],
       range: getDefaultTimeRange(),
       queryGroupId: 'abc',
-    } as DataQueryRequest);
+    } as unknown as DataQueryRequest);
 
     const args = mock.calls[0][0];
 
@@ -194,7 +194,7 @@ describe('DataSourceWithBackend', () => {
         to: dateTime('2023-10-13T00:00:00Z'),
         raw: { from: 'now-7d', to: 'now' },
       },
-    } as DataQueryRequest);
+    } as unknown as DataQueryRequest);
 
     const args = mock.calls[0][0];
 
@@ -253,7 +253,7 @@ describe('DataSourceWithBackend', () => {
         to: dateTime('2023-10-13T00:00:00Z'),
         raw: { from: 'now-7d', to: 'now' },
       },
-    } as DataQueryRequest);
+    } as unknown as DataQueryRequest);
 
     const args = mock.calls[0][0];
 
@@ -283,7 +283,7 @@ describe('DataSourceWithBackend', () => {
         to: dateTime('2023-10-13T00:00:00Z'),
         raw: { from: 'now-7d', to: 'now' },
       },
-    } as DataQueryRequest);
+    } as unknown as DataQueryRequest);
 
     const args = mock.calls[0][0];
 

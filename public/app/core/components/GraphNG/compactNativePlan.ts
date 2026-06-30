@@ -33,6 +33,7 @@ import {
   GraphFieldConfig,
   GraphGradientMode,
   GraphTransform,
+  HideSeriesConfig,
   LineInterpolation,
   ScaleDistribution,
   StackingMode,
@@ -45,6 +46,7 @@ import {
   CompactSeriesFlag,
   CompactStyleRecord,
   CompactVisibilityState,
+  hasCompatibleCompactRenderSource,
   isCompactRenderSource,
 } from '@grafana/ui/internal';
 
@@ -81,6 +83,7 @@ const scaleCustomProperties = new Set<keyof GraphFieldConfig>([
   'axisSoftMin',
   'axisWidth',
   'scaleDistribution',
+  'thresholdsStyle',
 ]);
 
 const reducerValues = Object.values(ReducerID);
@@ -180,6 +183,9 @@ interface RendererConfigRecord {
   readonly showPoints: VisibilityMode | undefined;
   readonly stackingMode: StackingMode;
   readonly stackingGroup: string;
+  readonly barAlignment: -1 | 0 | 1;
+  readonly barWidthFactor: number;
+  readonly barMaxWidth: number;
 }
 
 interface RendererStackGroupRecord {
@@ -188,6 +194,7 @@ interface RendererStackGroupRecord {
   readonly scaleId: number;
   readonly drawStyle: GraphDrawStyle;
   readonly path: CompactSeriesFlag;
+  readonly mode: StackingMode;
 }
 
 interface LabelProfile {
@@ -215,11 +222,12 @@ export function createCompactNativeRenderPlan(
   data: CompactTimeSeriesData,
   options: CompactFieldConfigOptions
 ): CompactNativeRenderPlan {
-  assertCompactFieldConfig(options.fieldConfig);
+  assertCompactFieldConfig(options.fieldConfig, options.capability);
   const seriesCount = data.series.length;
   const access = createSeriesAccess(data);
   const configIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const flags = new Uint8Array(seriesCount);
+  const barLayoutVisibility = new Uint8Array(seriesCount);
   const configuredDisplayNameIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const compiledConfigs: CompiledConfigRecord[] = [];
   const compiledConfigBuckets = new Map<number, number[]>();
@@ -295,6 +303,12 @@ export function createCompactNativeRenderPlan(
     scratch.display = undefined;
     scratch.labels = undefined;
     context.dataFrameIndex = seriesIndex;
+    const configuredHideFrom: HideSeriesConfig = {
+      legend: false,
+      tooltip: false,
+      viz: false,
+      ...options.fieldConfig.defaults.custom?.hideFrom,
+    };
 
     setFieldConfigDefaults(scratch.config, options.fieldConfig.defaults, context);
     for (let ruleIndex = 0; ruleIndex < options.fieldConfig.overrides.length; ruleIndex++) {
@@ -318,12 +332,19 @@ export function createCompactNativeRenderPlan(
       ) {
         continue;
       }
+      if (!('__systemRef' in rule)) {
+        for (const property of rule.properties) {
+          if (property.id === 'custom.hideFrom' && typeof property.value === 'object' && property.value !== null) {
+            Object.assign(configuredHideFrom, property.value);
+          }
+        }
+      }
       for (const property of rule.properties) {
         setDynamicConfigValue(scratch.config, property, context);
       }
     }
 
-    scratch.config.custom = canonicalizeCompactCustomConfig(scratch.config.custom);
+    scratch.config.custom = canonicalizeCompactCustomConfig(scratch.config.custom, options.capability);
 
     const configuredDisplayNameId = internOptionalString(
       scratchConfig.displayName,
@@ -331,7 +352,13 @@ export function createCompactNativeRenderPlan(
       configuredDisplayNameKeys
     );
     configuredDisplayNameIdBuilder.set(seriesIndex, configuredDisplayNameId);
-    flags[seriesIndex] = calculateFlags(scratchConfig, access.getPresenceByteLength(seriesIndex));
+    flags[seriesIndex] = calculateFlags(
+      scratchConfig,
+      configuredHideFrom,
+      access.getPresenceByteLength(seriesIndex),
+      options.capability
+    );
+    barLayoutVisibility[seriesIndex] = configuredHideFrom.viz ? 0 : 1;
 
     const configId = internCompiledConfig(
       scratchConfig,
@@ -351,7 +378,7 @@ export function createCompactNativeRenderPlan(
   const reusablePlotOptions: CompactPlotSeriesOptions = {};
   const plotSource = createCompactPlotSource(data, (seriesIndex) => {
     const config = styles[compiledConfigs[configIds[seriesIndex]].styleId].config;
-    reusablePlotOptions.noValue = config.noValue;
+    reusablePlotOptions.noValue = options.capability === 'standalone-barchart' ? undefined : config.noValue;
     reusablePlotOptions.transform = config.custom?.transform;
     reusablePlotOptions.spanNulls = config.custom?.spanNulls;
     reusablePlotOptions.insertNulls = config.custom?.insertNulls;
@@ -560,6 +587,7 @@ export function createCompactNativeRenderPlan(
     getSeriesIdentity,
     getSeriesIdentityHash,
     visibilityState,
+    barLayoutVisibility,
     getDisplay,
     options
   );
@@ -599,6 +627,25 @@ export function hasSameCompactNativeTopology(
   );
 }
 
+/**
+ * Returns whether an existing compact plot configuration can render the next source in place.
+ * Virtual series, styles, and normal stack groups are owned by the compact renderer and may grow
+ * while a streamed response is in progress. The uPlot configuration only needs to be rebuilt when
+ * its axes, scales, percent stacking, or grouped-bar X mode changes.
+ */
+export function hasCompatibleCompactNativeConfig(
+  left: CompactNativeRenderPlan | undefined,
+  right: CompactNativeRenderPlan | undefined
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return hasCompatibleCompactRenderSource(left.source, right.source) && isEqual(left.scales, right.scales);
+}
+
 function createRenderSource(
   source: CompactPlotSource,
   seriesCount: number,
@@ -612,13 +659,14 @@ function createRenderSource(
   getSeriesIdentity: (seriesIndex: number) => string,
   getSeriesIdentityHash: (seriesIndex: number) => number,
   visibilityState: CompactVisibilityState,
+  barLayoutVisibility: Uint8Array,
   getDisplay: (seriesIndex: number) => DisplayProcessor,
   options: CompactFieldConfigOptions
 ): CompactRenderSource {
   const styleIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const scaleIdBuilder = new CompactIndexColumnBuilder(seriesCount);
   const stackGroupIdBuilder = new CompactIndexColumnBuilder(seriesCount);
-  const flags = new Uint8Array(seriesCount);
+  const flags = new Uint16Array(seriesCount);
   const visibility = new Uint8Array(seriesCount);
   const styles: CompactStyleRecord[] = [];
   const scales: CompactScaleRecord[] = [];
@@ -631,6 +679,7 @@ function createRenderSource(
   const rendererConfigs = new Map<number, RendererConfigRecord>();
   const colorCalculators = new Map<number, ReturnType<typeof getFieldColorCalculator>>();
   const scaleCalculators: NumericRangeValueCache<ReturnType<typeof getScaleCalculator>> = new Map();
+  const percentDisplays = new Map<number, DisplayProcessor>();
   const colorState: { displayName: string; seriesIndex: number; range?: NumericRange } = {
     displayName: '',
     seriesIndex: 0,
@@ -669,6 +718,9 @@ function createRenderSource(
       showPoints: configuredShowPoints,
       stackingMode,
       stackingGroup,
+      barAlignment,
+      barWidthFactor,
+      barMaxWidth,
     } = rendererConfig;
     const displayName = colorMode.useSeriesName ? getDisplayName(seriesIndex) : '';
     colorTarget.config = config;
@@ -718,6 +770,9 @@ function createRenderSource(
         disconnectThreshold,
         spanNullsThreshold,
         showValues,
+        barAlignment,
+        barWidthFactor,
+        barMaxWidth,
       });
       styleIdsByColor.set(lineColor, rendererStyleId);
     }
@@ -739,14 +794,19 @@ function createRenderSource(
     let seriesFlags = pathFlag;
     if (drawStyle === GraphDrawStyle.Line) {
       seriesFlags |= CompactSeriesFlag.DrawLine;
+    } else if (drawStyle === GraphDrawStyle.Bars) {
+      seriesFlags |= CompactSeriesFlag.Bars;
     }
     const showPoints = drawStyle === GraphDrawStyle.Points ? VisibilityMode.Always : configuredShowPoints;
     if (showPoints === VisibilityMode.Always) {
       seriesFlags |= CompactSeriesFlag.Points;
-    } else if (showPoints === VisibilityMode.Auto) {
+    } else if (showPoints === VisibilityMode.Auto && drawStyle !== GraphDrawStyle.Bars) {
       seriesFlags |= CompactSeriesFlag.AutoPoints;
     }
-    if (stackingMode === StackingMode.Normal) {
+    if (drawStyle === GraphDrawStyle.Bars && custom.transform === GraphTransform.Constant) {
+      seriesFlags |= CompactSeriesFlag.Constant;
+    }
+    if (stackingMode === StackingMode.Normal || stackingMode === StackingMode.Percent) {
       const stackGroupIndex = internStructuralRecord(
         {
           direction: getStackDirection(source, seriesIndex, custom.transform),
@@ -754,6 +814,7 @@ function createRenderSource(
           scaleId: rendererScaleId,
           drawStyle,
           path: pathFlag,
+          mode: stackingMode,
         },
         stackGroups,
         stackGroupBuckets
@@ -761,6 +822,9 @@ function createRenderSource(
       stackGroupCounts[stackGroupIndex] = (stackGroupCounts[stackGroupIndex] ?? 0) + 1;
       stackGroupIdBuilder.set(seriesIndex, stackGroupIndex + 1);
       seriesFlags |= CompactSeriesFlag.Stack;
+      if (stackingMode === StackingMode.Percent) {
+        seriesFlags |= CompactSeriesFlag.PercentStack;
+      }
     }
     flags[seriesIndex] = seriesFlags;
     visibility[seriesIndex] = custom.hideFrom?.viz ? 0 : 1;
@@ -769,7 +833,22 @@ function createRenderSource(
   const styleIds = styleIdBuilder.finish();
   const scaleIds = scaleIdBuilder.finish();
   const rawStackGroupIds = stackGroupIdBuilder.finish();
-  const { stackGroupIds, stackGroupCount } = compactStackGroups(rawStackGroupIds, stackGroupCounts, flags);
+  const preserveSingletonStacks =
+    options.capability === 'standalone-barchart' && options.barOptions?.mode === 'grouped';
+  const { stackGroupIds, stackGroupCount } = compactStackGroups(
+    rawStackGroupIds,
+    stackGroupCounts,
+    flags,
+    preserveSingletonStacks
+  );
+  const stackDirections = new Int8Array(stackGroupCount);
+  for (let seriesIndex = 0; seriesIndex < seriesCount; seriesIndex++) {
+    const compactGroup = stackGroupIds[seriesIndex];
+    if (compactGroup !== 0) {
+      stackDirections[compactGroup - 1] = stackGroups[rawStackGroupIds[seriesIndex] - 1].direction;
+    }
+  }
+  const barOptions = options.barOptions;
 
   Object.assign(source, {
     columns: {
@@ -782,22 +861,29 @@ function createRenderSource(
     styles,
     scales,
     stackGroupCount,
+    ...(stackGroupCount > 0 ? { stackDirections } : undefined),
     cursorMode: options.cursorMode ?? 'single',
     focusOverlayColor:
-      options.highlightSeriesOnHover === false
+      options.highlightSeriesOnHover === false || options.barOptions?.fullHighlight
         ? undefined
         : colorManipulator.alpha(options.theme.colors.background.canvas, 0.5),
     seriesIdentityAt: getSeriesIdentity,
     seriesIdentityHashAt: getSeriesIdentityHash,
     visibilityState,
+    ...(barOptions ? { barLayoutVisibility } : undefined),
     ...(hasValueLabels
       ? {
           formatValueAt: (seriesIndex: number, _index: number, value: number) =>
-            formattedValueToString(getDisplay(seriesIndex)(value)),
+            formattedValueToString(
+              (flags[seriesIndex] & CompactSeriesFlag.PercentStack) !== 0
+                ? getPercentDisplay(seriesIndex, getConfigId, getConfig, options, percentDisplays)(value)
+                : getDisplay(seriesIndex)(value)
+            ),
           valueColor: options.theme.colors.text.primary,
           valueFontFamily: options.theme.typography.fontFamily,
         }
       : undefined),
+    ...(barOptions ? { barOptions } : undefined),
   });
   if (!isCompactRenderSource(source)) {
     throw new Error('Compact native renderer source construction failed');
@@ -933,6 +1019,9 @@ function compileRendererConfig(config: FieldConfig<GraphFieldConfig>): RendererC
     showPoints: custom.showPoints,
     stackingMode: custom.stacking?.mode ?? StackingMode.None,
     stackingGroup: custom.stacking?.group ?? '',
+    barAlignment: custom.barAlignment ?? 0,
+    barWidthFactor: custom.barWidthFactor ?? 0.6,
+    barMaxWidth: custom.barMaxWidth ?? 200,
   };
 }
 
@@ -945,8 +1034,11 @@ function getStackDirection(
   if (source.pointCount === 0) {
     return 1;
   }
-  const firstIndex = source.nearestPresent(seriesIndex, 0, 1);
-  const lastIndex = source.nearestPresent(seriesIndex, source.pointCount - 1, -1);
+  const usesRawValues = transform === GraphTransform.Constant && source.barWidthValueAt != null;
+  const firstIndex = usesRawValues ? 0 : source.nearestPresent(seriesIndex, 0, 1);
+  const lastIndex = usesRawValues
+    ? source.pointCount - 1
+    : source.nearestPresent(seriesIndex, source.pointCount - 1, -1);
   if (firstIndex == null || lastIndex == null) {
     return transform === GraphTransform.NegativeY ? -1 : 1;
   }
@@ -955,7 +1047,7 @@ function getStackDirection(
   let positiveCount = 0;
   const stride = Math.max(1, Math.floor((lastIndex - firstIndex + 1) / samples));
   for (let index = firstIndex; index <= lastIndex; index += stride) {
-    const renderedValue = source.yAt(seriesIndex, index);
+    const renderedValue = usesRawValues ? source.barWidthValueAt!(seriesIndex, index) : source.yAt(seriesIndex, index);
     if (renderedValue == null) {
       continue;
     }
@@ -977,12 +1069,20 @@ function getStackDirection(
 function compactStackGroups(
   rawStackGroupIds: CompactIndexColumn,
   stackGroupCounts: number[],
-  flags: Uint8Array
+  flags: CompactIndexColumn,
+  preserveSingletons = false
 ): { stackGroupIds: CompactIndexColumn; stackGroupCount: number } {
   const remappedGroupIds = new Uint32Array(stackGroupCounts.length);
+  const requiredGroups = new Uint8Array(stackGroupCounts.length);
+  for (let seriesIndex = 0; seriesIndex < rawStackGroupIds.length; seriesIndex++) {
+    const groupId = rawStackGroupIds[seriesIndex];
+    if (groupId > 0 && (flags[seriesIndex] & (CompactSeriesFlag.PercentStack | CompactSeriesFlag.Constant)) !== 0) {
+      requiredGroups[groupId - 1] = 1;
+    }
+  }
   let stackGroupCount = 0;
   for (let groupIndex = 0; groupIndex < stackGroupCounts.length; groupIndex++) {
-    if (stackGroupCounts[groupIndex] > 1) {
+    if (stackGroupCounts[groupIndex] > 1 || requiredGroups[groupIndex] !== 0 || preserveSingletons) {
       remappedGroupIds[groupIndex] = ++stackGroupCount;
     }
   }
@@ -997,7 +1097,7 @@ function compactStackGroups(
     const stackGroupId = rawGroupId === 0 ? 0 : remappedGroupIds[rawGroupId - 1];
     builder.set(seriesIndex, stackGroupId);
     if (stackGroupId === 0) {
-      flags[seriesIndex] &= ~CompactSeriesFlag.Stack;
+      flags[seriesIndex] &= ~(CompactSeriesFlag.Stack | CompactSeriesFlag.PercentStack);
     }
   }
   return { stackGroupIds: builder.finish(), stackGroupCount };
@@ -1043,6 +1143,30 @@ function getCachedColorCalculator(
     cache.set(configId, calculator);
   }
   return calculator;
+}
+
+function getPercentDisplay(
+  seriesIndex: number,
+  getConfigId: (seriesIndex: number) => number,
+  getConfig: (seriesIndex: number) => FieldConfig<GraphFieldConfig>,
+  options: CompactFieldConfigOptions,
+  cache: Map<number, DisplayProcessor>
+): DisplayProcessor {
+  const configId = getConfigId(seriesIndex);
+  let display = cache.get(configId);
+  if (!display) {
+    display = getDisplayProcessor({
+      field: {
+        name: TIME_SERIES_VALUE_FIELD_NAME,
+        type: FieldType.number,
+        config: { ...getConfig(seriesIndex), unit: 'percentunit' },
+      },
+      theme: options.theme,
+      timeZone: options.timeZone,
+    });
+    cache.set(configId, display);
+  }
+  return display;
 }
 
 function getCachedScaleCalculator(
@@ -1507,6 +1631,7 @@ function splitConfig(config: FieldConfig<GraphFieldConfig>): {
   delete styleConfig.min;
   delete styleConfig.max;
   delete styleConfig.fieldMinMax;
+  delete styleConfig.thresholds;
 
   const scaleConfig: FieldConfig<GraphFieldConfig> = {};
   copyDefined(scaleConfig, config, 'unit');
@@ -1514,6 +1639,7 @@ function splitConfig(config: FieldConfig<GraphFieldConfig>): {
   copyDefined(scaleConfig, config, 'min');
   copyDefined(scaleConfig, config, 'max');
   copyDefined(scaleConfig, config, 'fieldMinMax');
+  copyDefined(scaleConfig, config, 'thresholds');
 
   if (config.custom) {
     const scaleCustom: GraphFieldConfig = {};
@@ -1537,16 +1663,25 @@ function splitConfig(config: FieldConfig<GraphFieldConfig>): {
   };
 }
 
-function calculateFlags(config: FieldConfig<GraphFieldConfig>, presenceByteLength: number): number {
+function calculateFlags(
+  config: FieldConfig<GraphFieldConfig>,
+  configuredHideFrom: HideSeriesConfig,
+  presenceByteLength: number,
+  capability: CompactFieldConfigOptions['capability']
+): number {
   const custom = config.custom;
   let flags = presenceByteLength > 0 ? CompactNativeSeriesFlag.HasGaps : 0;
   if (custom?.hideFrom?.viz) {
     flags |= CompactNativeSeriesFlag.HiddenFromViz;
   }
-  if (custom?.hideFrom?.legend) {
+  if (configuredHideFrom.legend) {
     flags |= CompactNativeSeriesFlag.HiddenFromLegend;
   }
-  if (custom?.hideFrom?.tooltip) {
+  const hiddenFromTooltip =
+    capability === 'standalone-barchart'
+      ? configuredHideFrom.tooltip || (!configuredHideFrom.viz && custom?.hideFrom?.viz === true)
+      : custom?.hideFrom?.tooltip === true;
+  if (hiddenFromTooltip) {
     flags |= CompactNativeSeriesFlag.HiddenFromTooltip;
   }
   if (custom?.transform === GraphTransform.NegativeY) {

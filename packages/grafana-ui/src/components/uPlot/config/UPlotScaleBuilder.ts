@@ -24,6 +24,8 @@ export interface ScaleProps {
   stackingMode?: StackingMode;
   padMinBy?: number;
   padMaxBy?: number;
+  forward?: NonNullable<Scale['fwd']>;
+  inverse?: NonNullable<Scale['bwd']>;
 }
 
 export class UPlotScaleBuilder extends PlotConfigBuilder<ScaleProps, Scale> {
@@ -49,6 +51,8 @@ export class UPlotScaleBuilder extends PlotConfigBuilder<ScaleProps, Scale> {
       stackingMode,
       padMinBy = 0.1,
       padMaxBy = 0.1,
+      forward,
+      inverse,
     } = this.props;
 
     if (stackingMode === StackingMode.Percent) {
@@ -63,21 +67,26 @@ export class UPlotScaleBuilder extends PlotConfigBuilder<ScaleProps, Scale> {
 
     const distr = this.props.distribution;
 
-    const distribution = !isTime
-      ? {
-          distr:
-            distr === ScaleDistribution.Symlog
-              ? 4
-              : distr === ScaleDistribution.Log
-                ? 3
-                : distr === ScaleDistribution.Ordinal
-                  ? 2
-                  : 1,
-          log:
-            distr === ScaleDistribution.Log || distr === ScaleDistribution.Symlog ? (this.props.log ?? 2) : undefined,
-          asinh: distr === ScaleDistribution.Symlog ? (this.props.linearThreshold ?? 1) : undefined,
-        }
-      : {};
+    const distribution =
+      forward && inverse
+        ? getCustomDistribution(forward, inverse)
+        : !isTime
+          ? {
+              distr:
+                distr === ScaleDistribution.Symlog
+                  ? 4
+                  : distr === ScaleDistribution.Log
+                    ? 3
+                    : distr === ScaleDistribution.Ordinal
+                      ? 2
+                      : 1,
+              log:
+                distr === ScaleDistribution.Log || distr === ScaleDistribution.Symlog
+                  ? (this.props.log ?? 2)
+                  : undefined,
+              asinh: distr === ScaleDistribution.Symlog ? (this.props.linearThreshold ?? 1) : undefined,
+            }
+          : {};
 
     // guard against invalid log scale limits <= 0, or snap to log boundaries
     if (distr === ScaleDistribution.Log) {
@@ -280,6 +289,10 @@ export class UPlotScaleBuilder extends PlotConfigBuilder<ScaleProps, Scale> {
       },
     };
   }
+}
+
+function getCustomDistribution(forward: NonNullable<Scale['fwd']>, inverse: NonNullable<Scale['bwd']>): Scale {
+  return { distr: 100, fwd: forward, bwd: inverse };
 }
 
 export function optMinMax(minmax: 'min' | 'max', a?: number | null, b?: number | null): undefined | number | null {

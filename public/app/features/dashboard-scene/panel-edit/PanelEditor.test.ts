@@ -1,3 +1,4 @@
+import { waitFor } from '@testing-library/react';
 import { of } from 'rxjs';
 
 import {
@@ -7,6 +8,7 @@ import {
   getDefaultTimeRange,
   LoadingState,
   PanelPlugin,
+  standardTransformersRegistry,
 } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
 import { config } from '@grafana/runtime';
@@ -21,13 +23,15 @@ import {
   SceneVariableSet,
   VizPanel,
 } from '@grafana/scenes';
-import { VizOrientation } from '@grafana/schema';
+import { GraphDrawStyle, VizOrientation } from '@grafana/schema';
 import { mockDataSource } from 'app/features/alerting/unified/mocks';
 import { setupDataSources } from 'app/features/alerting/unified/testSetup/datasources';
 import { DataSourceType } from 'app/features/alerting/unified/utils/datasource';
 import * as libAPI from 'app/features/library-panels/state/api';
+import { getStandardTransformers } from 'app/features/transformers/standardTransformers';
 
 import { DashboardScene } from '../scene/DashboardScene';
+import { DashboardSceneQueryRunner } from '../scene/DashboardSceneQueryRunner';
 import { LibraryPanelBehavior } from '../scene/LibraryPanelBehavior';
 import { DashboardGridItem } from '../scene/layout-default/DashboardGridItem';
 import { DefaultGridLayoutManager } from '../scene/layout-default/DefaultGridLayoutManager';
@@ -39,13 +43,14 @@ import { PanelDataPane } from './PanelDataPane/PanelDataPane';
 import { PanelDataPaneNext } from './PanelEditNext/PanelDataPaneNext';
 import { buildPanelEditScene } from './PanelEditor';
 
-const runRequestMock = jest.fn().mockImplementation((ds: DataSourceApi, request: DataQueryRequest) => {
+const defaultRunRequest = (_ds: DataSourceApi, request: DataQueryRequest) => {
   return of({
     state: LoadingState.Loading,
     series: [],
     timeRange: request.range,
   });
-});
+};
+const runRequestMock = jest.fn(defaultRunRequest);
 
 let pluginPromise: Promise<PanelPlugin> | undefined;
 
@@ -82,11 +87,13 @@ const dataSources = {
 };
 
 setupDataSources(...Object.values(dataSources));
+standardTransformersRegistry.setInit(getStandardTransformers);
 
 let deactivate: CancelActivationHandler | undefined;
 
 describe('PanelEditor', () => {
   afterEach(() => {
+    runRequestMock.mockReset().mockImplementation(defaultRunRequest);
     if (deactivate) {
       deactivate();
       deactivate = undefined;
@@ -124,58 +131,6 @@ describe('PanelEditor', () => {
   });
 
   describe('Entering panel edit', () => {
-    it('reruns existing compact data through the panel editor wrapper', () => {
-      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
-      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
-      queryRunner.setState({
-        data: {
-          state: LoadingState.Done,
-          series: [],
-          timeRange: getDefaultTimeRange(),
-          compactSeries: {
-            kind: 'compact-response-view',
-            format: COMPACT_TIME_SERIES_FORMAT,
-            buffer: new ArrayBuffer(0),
-            metadata: {
-              getLabel: () => undefined,
-              forEachLabel: () => undefined,
-              materializeLabels: () => undefined,
-            },
-            decodeStats: {
-              responseBytes: 0,
-              axisCount: 0,
-              resultCount: 0,
-              stringCount: 0,
-              stringBytes: 0,
-              seriesCount: 0,
-            },
-            axes: [],
-            series: [],
-          },
-        },
-      });
-      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
-      const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
-      const gridItem = new DashboardGridItem({ body: panel });
-      const panelEditor = buildPanelEditScene(panel);
-      const dashboard = new DashboardScene({
-        editPanel: panelEditor,
-        isEditing: true,
-        $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
-        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
-      });
-
-      deactivate = activateFullSceneTree(dashboard);
-
-      expect(runQueries).toHaveBeenCalled();
-      expect(panel.state.$data).toBeInstanceOf(SceneDataTransformer);
-
-      deactivate();
-      deactivate = undefined;
-
-      expect(panel.state.$data).toBe(queryRunner);
-    });
-
     it('wraps eligible compact dashboard data before the first response arrives', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
@@ -232,26 +187,7 @@ describe('PanelEditor', () => {
           state: LoadingState.Done,
           series: [],
           timeRange: getDefaultTimeRange(),
-          compactSeries: {
-            kind: 'compact-response-view',
-            format: COMPACT_TIME_SERIES_FORMAT,
-            buffer: new ArrayBuffer(0),
-            metadata: {
-              getLabel: () => undefined,
-              forEachLabel: () => undefined,
-              materializeLabels: () => undefined,
-            },
-            decodeStats: {
-              responseBytes: 0,
-              axisCount: 0,
-              resultCount: 0,
-              stringCount: 0,
-              stringBytes: 0,
-              seriesCount: 0,
-            },
-            axes: [],
-            series: [],
-          },
+          compactSeries: createCompactSeries(),
         },
       });
       jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
@@ -276,6 +212,178 @@ describe('PanelEditor', () => {
       deactivate = undefined;
 
       expect(panel.state.$data).toBe(transformer);
+    });
+
+    it('matches prepared and network request formats to the final panel configuration', async () => {
+      pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
+      runRequestMock.mockImplementation((_ds, request) =>
+        of({
+          state: LoadingState.Done,
+          series: [],
+          timeRange: request.range,
+          request,
+          compactSeries: request.preferredQueryResultFormat === 'compact-v1' ? createCompactSeries() : undefined,
+        })
+      );
+      const queryRunner = new DashboardSceneQueryRunner({
+        datasource: { uid: 'ds1' },
+        queries: [{ refId: 'A', expr: 'up' }],
+        runQueriesMode: 'manual',
+      });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          request: { requestId: 'existing-full' } as DataQueryRequest,
+        },
+      });
+      const panel = new VizPanel({
+        key: 'panel-1',
+        pluginId: 'timeseries',
+        fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] },
+        $data: queryRunner,
+      });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-1h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+      deactivate = activateFullSceneTree(dashboard);
+
+      const expectLatestFormat = (format: 'compact-v1' | undefined) => {
+        const preparedRequest = queryRunner.getLastPreparedRequest();
+        const networkRequest = runRequestMock.mock.lastCall?.[1];
+        expect(preparedRequest?.preferredQueryResultFormat).toBe(format);
+        expect(networkRequest?.preferredQueryResultFormat).toBe(format);
+        expect(preparedRequest?.requestId).toBe(networkRequest?.requestId);
+        expect(queryRunner.state.data?.request?.preferredQueryResultFormat).toBe(format);
+      };
+      await waitFor(() => expectLatestFormat('compact-v1'));
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Bars } }, overrides: [] }, true);
+      await waitFor(() => expectLatestFormat('compact-v1'));
+
+      panel.onFieldConfigChange({ defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] }, true);
+      await waitFor(() => expectLatestFormat('compact-v1'));
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'barchart', skipDataQuery: false }));
+      await panel.changePluginType('barchart');
+      await waitFor(() => expectLatestFormat('compact-v1'));
+
+      panel.onOptionsChange({ xField: 'category' });
+      await waitFor(() => expectLatestFormat(undefined));
+      expect(queryRunner.state.data?.compactSeries).toBeUndefined();
+
+      panel.onOptionsChange({ xField: undefined });
+      await waitFor(() => expectLatestFormat('compact-v1'));
+
+      pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
+      await panel.changePluginType('timeseries');
+      expect(dashboard.enrichDataRequest(queryRunner).preferredQueryResultFormat).toBe('compact-v1');
+      await waitFor(() => expectLatestFormat('compact-v1'));
+
+      const transformer = panel.state.$data;
+      expect(transformer).toBeInstanceOf(SceneDataTransformer);
+      const dataTransformer = transformer as SceneDataTransformer;
+      dataTransformer.setState({ transformations: [{ id: 'organize', options: {} }] });
+      queryRunner.runQueries();
+      await waitFor(() => expectLatestFormat(undefined));
+
+      dataTransformer.setState({ transformations: [] });
+      await waitFor(() => expectLatestFormat('compact-v1'));
+    });
+
+    it('does not request an unattainable compact replacement for a mixed datasource', () => {
+      pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
+      const queryRunner = new DashboardSceneQueryRunner({
+        datasource: { uid: '-- Mixed --', type: 'mixed' },
+        queries: [{ refId: 'A', expr: 'up' }],
+        runQueriesMode: 'manual',
+      });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          request: { requestId: 'existing-full' } as DataQueryRequest,
+        },
+      });
+      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({
+        key: 'panel-1',
+        pluginId: 'timeseries',
+        fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] },
+        $data: queryRunner,
+      });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-1h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+
+      deactivate = activateFullSceneTree(dashboard);
+
+      expect(runQueries).not.toHaveBeenCalled();
+    });
+
+    it('keeps replacement data loading across compact format changes', async () => {
+      pluginPromise = Promise.resolve(createTimeSeriesTestPlugin());
+      const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries: createCompactSeries(),
+        },
+      });
+      const runQueries = jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+      const panel = new VizPanel({
+        key: 'panel-1',
+        pluginId: 'timeseries',
+        fieldConfig: { defaults: { custom: { drawStyle: GraphDrawStyle.Line } }, overrides: [] },
+        $data: queryRunner,
+      });
+      const gridItem = new DashboardGridItem({ body: panel });
+      const panelEditor = buildPanelEditScene(panel);
+      const dashboard = new DashboardScene({
+        editPanel: panelEditor,
+        isEditing: true,
+        $timeRange: new SceneTimeRange({ from: 'now-1h', to: 'now' }),
+        body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+      });
+      deactivate = activateFullSceneTree(dashboard);
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'barchart', skipDataQuery: false }));
+      await panel.changePluginType('barchart');
+      runQueries.mockClear();
+      panel.onOptionsChange({ xField: 'category' });
+
+      expect(queryRunner.state.data).toMatchObject({
+        state: LoadingState.Loading,
+        compactSeries: undefined,
+      });
+      expect(runQueries).toHaveBeenCalledTimes(1);
+
+      queryRunner.setState({
+        data: {
+          ...queryRunner.state.data!,
+          state: LoadingState.Loading,
+          request: { requestId: 'in-flight-full' } as DataQueryRequest,
+        },
+      });
+      runQueries.mockClear();
+      panel.onOptionsChange({ xField: undefined });
+
+      expect(queryRunner.state.data?.state).toBe(LoadingState.Loading);
+      expect(runQueries).toHaveBeenCalledTimes(1);
     });
 
     it('does not unwrap an existing data transformer when leaving panel edit', () => {
@@ -559,6 +667,41 @@ describe('PanelEditor', () => {
     });
   });
 });
+
+function createCompactSeries() {
+  return {
+    kind: 'compact-response-view' as const,
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer: new ArrayBuffer(0),
+    metadata: {
+      getLabel: () => undefined,
+      forEachLabel: () => undefined,
+      materializeLabels: () => undefined,
+    },
+    decodeStats: {
+      responseBytes: 0,
+      axisCount: 0,
+      resultCount: 0,
+      stringCount: 0,
+      stringBytes: 0,
+      seriesCount: 0,
+    },
+    axes: [],
+    series: [],
+  };
+}
+
+function createTimeSeriesTestPlugin() {
+  return getPanelPlugin({ id: 'timeseries', skipDataQuery: false }).useFieldConfig({
+    useCustomConfig: (builder) => {
+      builder.addTextInput({
+        name: 'Draw style',
+        path: 'drawStyle',
+        defaultValue: GraphDrawStyle.Line,
+      });
+    },
+  });
+}
 
 interface SetupOptions {
   isNewPanel?: boolean;

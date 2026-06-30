@@ -42,6 +42,7 @@ export interface CompactPlotSource {
   release(): void;
   xAt(index: number): number;
   closestXIndex(value: number, from: number, to: number): number;
+  barWidthValueAt?(seriesIndex: number, index: number): CompactPlotValue;
   cursorValueAt(seriesIndex: number, index: number): CompactPlotValue;
   yAt(seriesIndex: number, index: number): CompactPlotValue;
   scan(seriesIndex: number, from: number, to: number, visitor: CompactPointVisitor): void;
@@ -53,6 +54,8 @@ export interface CompactPlotSource {
     mode?: CompactPlotScaleMode
   ): [min: number | null, max: number | null];
   nearestPresent(seriesIndex: number, index: number, bias: -1 | 0 | 1): number | null;
+  /** Tests the open interval between neighboring rendered vertices; endpoint rendering is handled by the caller. */
+  isDirectSegmentConnected?(seriesIndex: number, from: number, to: number): boolean;
 }
 
 export type PlotData = AlignedData | FacetedData | CompactPlotSource;
@@ -69,6 +72,16 @@ export interface PlotProps {
   children?: React.ReactNode;
   // Reference to uPlot instance
   plotRef?: (u: uPlot | null) => void;
+  /** Retain the last completed compact canvas while a replacement frame is drawn. */
+  holdPreviousCompactFrame?: boolean;
+  /** Called after the current compact source has completed a visible-frame draw. */
+  /** Return false when the completed frame is stale and must not replace the retained canvas. */
+  onCompactFrameReady?: (
+    source: CompactPlotSource,
+    config: UPlotConfigBuilder,
+    width: number,
+    height: number
+  ) => boolean | void;
 }
 
 export abstract class PlotConfigBuilder<P, T> {

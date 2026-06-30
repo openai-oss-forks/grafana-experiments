@@ -8,6 +8,7 @@ import {
   SceneGridLayout,
   SceneGridRow,
   SceneObjectBase,
+  type SceneObjectState,
   SceneQueryRunner,
   type SceneComponentProps,
   VizPanel,
@@ -32,7 +33,7 @@ setPluginImportUtils({
   getPanelPluginFromCache: () => undefined,
 });
 
-interface TestSceneObjectState {
+interface TestSceneObjectState extends SceneObjectState {
   child?: TestSceneObject;
   name: string;
 }

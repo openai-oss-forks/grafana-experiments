@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import { LegendDisplayMode } from '@grafana/schema';
 
@@ -26,9 +27,56 @@ describe('high-cardinality visualization UI', () => {
     const toolbars = screen.getAllByRole('toolbar');
     expect(toolbars).toHaveLength(2);
     expect(toolbars[0]).toHaveAttribute('aria-orientation', 'horizontal');
+    expect(toolbars[0].parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
+    expect(toolbars[1].parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
     expect(source.getItem).toHaveBeenCalled();
     expect(source.getItem.mock.calls.length).toBeLessThan(50);
     expect(source.getItem.mock.calls[0][0]).toBe(0);
+  });
+
+  test('keeps materialized bottom indexed legends bounded so long labels can wrap', () => {
+    const source = createItemSource(40);
+    source.getItem.mockImplementation((index) => ({
+      label: `series-${index}-${'x'.repeat(200)}`,
+      yAxis: index % 2 === 0 ? 1 : 2,
+    }));
+
+    render(<VizLegendList items={[]} itemSource={source} placement="bottom" />);
+
+    for (const [index, name] of [source.getItem(0).label, source.getItem(1).label].entries()) {
+      const button = screen.getByRole('button', { name });
+      const item = button.closest('li');
+      const list = item?.closest('ul');
+      expect(button).toHaveStyle({ overflowWrap: 'anywhere', whiteSpace: 'normal' });
+      expect(item).toHaveStyle({ display: 'inline-block', maxWidth: '100%', verticalAlign: 'top' });
+      expect(list).toHaveStyle({ maxWidth: '100%', minWidth: 0, width: 'fit-content' });
+      if (index === 1) {
+        expect(list).toHaveStyle({ textAlign: 'right' });
+        expect(list?.parentElement).toHaveStyle({ flexBasis: 0, justifyContent: 'flex-end' });
+      }
+      expect(list?.parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
+    }
+  });
+
+  test('keeps materialized bottom legends bounded so long labels can wrap', () => {
+    const items: VizLegendItem[] = [
+      { label: `left-${'x'.repeat(200)}`, yAxis: 1 },
+      { label: `right-${'x'.repeat(200)}`, yAxis: 2 },
+    ];
+
+    render(<VizLegendList items={items} placement="bottom" />);
+
+    for (const [index, item] of items.entries()) {
+      const button = screen.getByRole('button', { name: item.label });
+      const list = button.closest('ul');
+      expect(button).toHaveStyle({ overflowWrap: 'anywhere', whiteSpace: 'normal' });
+      expect(list).toHaveStyle({ maxWidth: '100%', minWidth: 0, width: 'fit-content' });
+      expect(list?.parentElement).toHaveStyle({ flex: '1 1 0', maxWidth: '100%', minWidth: 0 });
+      if (index === 1) {
+        expect(list).toHaveStyle({ textAlign: 'right' });
+        expect(list?.parentElement).toHaveStyle({ flexBasis: 0, justifyContent: 'flex-end' });
+      }
+    }
   });
 
   test('sorts indexed tables without materializing offscreen items', () => {
@@ -51,6 +99,26 @@ describe('high-cardinality visualization UI', () => {
     expect(source.getItem).toHaveBeenNthCalledWith(1, 999);
   });
 
+  test('aligns materialized Name and value headers', () => {
+    const items: VizLegendItem[] = [
+      {
+        label: `series-${'long-name-'.repeat(20)}`,
+        yAxis: 1,
+        getDisplayValues: () => [
+          { title: 'Min', description: 'Minimum value', text: '1', numeric: 1 },
+          { title: 'Max', description: 'Maximum value', text: '2', numeric: 2 },
+        ],
+      },
+    ];
+
+    render(<VizLegendTable items={items} placement="right" isSortable />);
+
+    const [nameHeader, minHeader, maxHeader] = screen.getAllByRole('columnheader');
+    expect(nameHeader).toHaveStyle({ textAlign: 'left' });
+    expect(minHeader).toHaveStyle({ textAlign: 'right' });
+    expect(maxHeader).toHaveStyle({ textAlign: 'right' });
+  });
+
   test('does not build a sort order for unsorted indexed tables', () => {
     const source = createItemSource(1_000);
 
@@ -71,6 +139,98 @@ describe('high-cardinality visualization UI', () => {
     expect(screen.getAllByRole('row')[1]).toHaveAttribute('aria-rowindex', '2');
   });
 
+  test('keeps custom indexed table rows materialized below their existing limit', () => {
+    const source = createItemSource(100);
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        itemRenderer={(item, index) => (
+          <tr key={index}>
+            <td>{item.label}</td>
+          </tr>
+        )}
+      />
+    );
+
+    expect(screen.getByText('series-99')).toBeInTheDocument();
+    expect(source.getItem).toHaveBeenCalledTimes(100);
+  });
+
+  test('keeps virtualized names and Min/Max values aligned while scrolling', async () => {
+    const source = createItemSource(1_000);
+    source.getDisplayValues = (index) => [
+      { title: 'Min', text: `min-${index}`, numeric: index },
+      { title: 'Max', text: `max-${index}`, numeric: index },
+    ];
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        isSortable
+        displayValueColumns={[
+          { title: 'Min', description: 'Minimum value' },
+          { title: 'Max', description: 'Maximum value' },
+        ]}
+      />
+    );
+
+    const table = screen.getByRole('table');
+    const scrollContainer = table.parentElement!;
+    expect(getComputedStyle(table).tableLayout).toBe('fixed');
+    expect(table.querySelector('col[span="2"]')).toHaveStyle({ width: '88px' });
+    const [nameHeader, minHeader, maxHeader] = screen.getAllByRole('columnheader');
+    expect(getComputedStyle(nameHeader).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(nameHeader).position).toBe('sticky');
+    expect(nameHeader).toHaveStyle({ textAlign: 'left', width: 'auto' });
+    expect(minHeader).toHaveStyle({ textAlign: 'right' });
+    expect(maxHeader).toHaveStyle({ textAlign: 'right' });
+
+    scrollContainer.scrollTop = 560;
+    fireEvent.scroll(scrollContainer);
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'series-0' })).not.toBeInTheDocument());
+    const label = screen.getAllByRole('button')[0];
+    const index = label.textContent?.replace('series-', '').trim();
+    const cells = within(label.closest('tr')!).getAllByRole('cell');
+    expect(cells[0]).toHaveTextContent(`series-${index}`);
+    expect(cells[1]).toHaveTextContent(`min-${index}`);
+    expect(cells[1]).toHaveAttribute('title', `min-${index}`);
+    expect(cells[2]).toHaveTextContent(`max-${index}`);
+    expect(getComputedStyle(label.closest('tr')!).display).toBe('table-row');
+  });
+
+  test('keeps non-virtual indexed value columns readable in narrow legends', () => {
+    const source = createItemSource(1);
+    source.getDisplayValues = () => [
+      { title: 'Mean', text: '1', numeric: 1 },
+      { title: 'Min', text: '1', numeric: 1 },
+      { title: 'Max', text: '1', numeric: 1 },
+      { title: 'Last', text: '1', numeric: 1 },
+      { title: 'Total', text: '1', numeric: 1 },
+    ];
+
+    render(
+      <VizLegendTable
+        items={[]}
+        itemSource={source}
+        placement="right"
+        isSortable
+        displayValueColumns={source.getDisplayValues(0)}
+      />
+    );
+
+    const table = screen.getByRole('table');
+    expect(getComputedStyle(table).tableLayout).toBe('fixed');
+    expect(table).toHaveStyle({ minWidth: '600px' });
+    expect(table.querySelector('col[span="5"]')).toHaveStyle({ width: '88px' });
+    expect(screen.getByRole('columnheader', { name: 'Name' })).toHaveStyle({ width: 'auto' });
+  });
+
   test('recovers the visible window when an indexed source shrinks', () => {
     const largeSource = createItemSource(1_000);
     const { rerender } = render(<VizLegendList items={[]} itemSource={largeSource} placement="right" />);
@@ -84,6 +244,7 @@ describe('high-cardinality visualization UI', () => {
   });
 
   test('supports keyboard navigation to offscreen indexed table rows', async () => {
+    const user = userEvent.setup();
     const source = createItemSource(1_000);
     render(
       <VizLegendTable
@@ -93,10 +254,8 @@ describe('high-cardinality visualization UI', () => {
         displayValueColumns={[{ title: 'Last', description: 'Last value' }]}
       />
     );
-    const scrollContainer = screen.getByRole('table').parentElement!;
-
-    scrollContainer.focus();
-    fireEvent.keyDown(scrollContainer, { key: 'End' });
+    screen.getByRole('button', { name: 'series-0' }).focus();
+    await user.keyboard('{End}');
 
     await waitFor(() => expect(document.activeElement).toHaveTextContent('series-999'));
   });
