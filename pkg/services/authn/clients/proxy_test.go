@@ -127,10 +127,11 @@ func TestProxy_Authenticate(t *testing.T) {
 
 func TestProxy_Test(t *testing.T) {
 	type testCase struct {
-		desc         string
-		req          *authn.Request
-		sharedSecret string
-		expectedOK   bool
+		desc                string
+		req                 *authn.Request
+		sharedSecretEnabled bool
+		sharedSecret        string
+		expectedOK          bool
 	}
 
 	tests := []testCase{
@@ -165,8 +166,9 @@ func TestProxy_Test(t *testing.T) {
 			expectedOK: false,
 		},
 		{
-			desc:         "should return true when proxy and valid shared secret headers exist",
-			sharedSecret: "secret",
+			desc:                "should return true when proxy and valid shared secret headers exist",
+			sharedSecretEnabled: true,
+			sharedSecret:        "secret",
 			req: &authn.Request{
 				HTTPRequest: &http.Request{
 					Header: map[string][]string{
@@ -178,8 +180,9 @@ func TestProxy_Test(t *testing.T) {
 			expectedOK: true,
 		},
 		{
-			desc:         "should return false when shared secret header is missing",
-			sharedSecret: "secret",
+			desc:                "should return false when shared secret header is missing",
+			sharedSecretEnabled: true,
+			sharedSecret:        "secret",
 			req: &authn.Request{
 				HTTPRequest: &http.Request{
 					Header: map[string][]string{"Proxy-Header": {"some value"}},
@@ -188,8 +191,9 @@ func TestProxy_Test(t *testing.T) {
 			expectedOK: false,
 		},
 		{
-			desc:         "should return false when shared secret header is invalid",
-			sharedSecret: "secret",
+			desc:                "should return true when shared secret header is invalid",
+			sharedSecretEnabled: true,
+			sharedSecret:        "secret",
 			req: &authn.Request{
 				HTTPRequest: &http.Request{
 					Header: map[string][]string{
@@ -198,7 +202,32 @@ func TestProxy_Test(t *testing.T) {
 					},
 				},
 			},
-			expectedOK: false,
+			expectedOK: true,
+		},
+		{
+			desc:                "should return true when shared secret header is present but empty",
+			sharedSecretEnabled: true,
+			sharedSecret:        "secret",
+			req: &authn.Request{
+				HTTPRequest: &http.Request{
+					Header: map[string][]string{
+						"Proxy-Header":  {"some value"},
+						"Secret-Header": {""},
+					},
+				},
+			},
+			expectedOK: true,
+		},
+		{
+			desc:                "should return true when shared secret header exists without proxy user header",
+			sharedSecretEnabled: true,
+			sharedSecret:        "secret",
+			req: &authn.Request{
+				HTTPRequest: &http.Request{
+					Header: map[string][]string{"Secret-Header": {"secret"}},
+				},
+			},
+			expectedOK: true,
 		},
 	}
 
@@ -206,6 +235,7 @@ func TestProxy_Test(t *testing.T) {
 		t.Run(tt.desc, func(t *testing.T) {
 			cfg := setting.NewCfg()
 			cfg.AuthProxy.HeaderName = "Proxy-Header"
+			cfg.AuthProxy.SharedSecretEnabled = tt.sharedSecretEnabled
 			cfg.AuthProxy.SharedSecret = tt.sharedSecret
 			cfg.AuthProxy.SharedSecretHeader = "Secret-Header"
 
@@ -220,6 +250,7 @@ func TestProxy_Authenticate_SharedSecret(t *testing.T) {
 		t.Helper()
 		cfg := setting.NewCfg()
 		cfg.AuthProxy.HeaderName = "Proxy-Header"
+		cfg.AuthProxy.SharedSecretEnabled = true
 		cfg.AuthProxy.SharedSecret = "secret"
 		cfg.AuthProxy.SharedSecretHeader = "Secret-Header"
 
@@ -263,7 +294,7 @@ func TestProxy_Authenticate_SharedSecret(t *testing.T) {
 			}
 
 			_, err := c.Authenticate(context.Background(), &authn.Request{HTTPRequest: &http.Request{Header: headers}})
-			assert.ErrorIs(t, err, errInvalidSharedSecret)
+			assert.ErrorIs(t, err, authn.ErrInvalidAuthProxySharedSecret)
 			assert.False(t, called)
 		})
 	}

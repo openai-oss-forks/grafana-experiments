@@ -124,6 +124,13 @@ func (s *Service) Authenticate(ctx context.Context, r *authn.Request) (*authn.Id
 				if errors.Is(err, authn.ErrTokenNeedsRotation) {
 					return nil, err
 				}
+				// A present auth proxy shared-secret header explicitly selects that
+				// authentication path. Never fall through to a less-specific
+				// credential after any failure on that path.
+				if r.GetMeta(authn.MetaKeyAuthProxySharedSecret) != "" ||
+					errors.Is(err, authn.ErrInvalidAuthProxySharedSecret) {
+					return nil, err
+				}
 
 				authErr = errors.Join(authErr, err)
 				// try next
