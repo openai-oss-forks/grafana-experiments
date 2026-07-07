@@ -35,6 +35,12 @@ func NewClient(d doer, method, baseUrl, queryTimeout string) *Client {
 }
 
 func (c *Client) QueryRange(ctx context.Context, q *models.Query) (*http.Response, error) {
+	return c.QueryRangeWithAccept(ctx, q, "")
+}
+
+// QueryRangeWithAccept executes a range query while allowing callers that understand a
+// response extension (such as multibatch streaming) to negotiate it explicitly.
+func (c *Client) QueryRangeWithAccept(ctx context.Context, q *models.Query, accept string) (*http.Response, error) {
 	tr := q.TimeRange()
 	qv := map[string]string{
 		"query": q.Expr,
@@ -49,6 +55,9 @@ func (c *Client) QueryRange(ctx context.Context, q *models.Query) (*http.Respons
 	req, err := c.createQueryRequest(ctx, "api/v1/query_range", qv)
 	if err != nil {
 		return nil, err
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
 	}
 
 	return c.doer.Do(req)

@@ -63,7 +63,7 @@ import {
 } from './language_provider';
 import { expandRecordingRules, getPrometheusTime, getRangeSnapInterval } from './language_utils';
 import { PrometheusMetricFindQuery } from './metric_find_query';
-import { getPrometheusMultiBatchIntervals, queryPrometheusMultiBatch } from './prometheusMultibatchStream';
+import { queryPrometheusMultiBatch } from './prometheusMultibatchStream';
 import { getQueryHints } from './query_hints';
 import { renderLabelsWithoutBrackets } from './querybuilder/shared/rendering/labels';
 import { QueryBuilderLabelFilter, QueryEditorMode } from './querybuilder/shared/types';
@@ -760,44 +760,8 @@ export class PrometheusDatasource
   }
 
   private preparePrometheusMultiBatchTarget(target: PromQuery, request: DataQueryRequest<PromQuery>): PromQuery {
-    const minInterval = request.minInterval ?? this.interval;
-    const intervals = getPrometheusMultiBatchIntervals(request, target, minInterval);
-    const intervalSeconds = intervals.stepSeconds;
-    const interval = rangeUtil.secondsToHms(intervalSeconds);
-    const intervalMs = intervals.stepMs;
-    const rateIntervalMs = this.getPrometheusRateIntervalMs(intervals.rateIntervalBaseMs, target, minInterval);
-    const rateInterval = rangeUtil.secondsToHms(rateIntervalMs / 1000);
-    const scopedVars = {
-      ...request.scopedVars,
-      __interval: { text: interval, value: interval },
-      __interval_ms: { text: intervalMs, value: intervalMs },
-      __rate_interval: request.scopedVars?.__rate_interval ?? { text: rateInterval, value: rateInterval },
-      __rate_interval_ms: request.scopedVars?.__rate_interval_ms ?? { text: rateIntervalMs, value: rateIntervalMs },
-      ...this.getRangeScopedVars(request.range),
-    };
-    const interpolatedTarget = this.interpolateVariablesInQueries([target], scopedVars, request.filters)[0];
-    const targetWithInterpolatedLegend = {
-      ...interpolatedTarget,
-      legendFormat: this.templateSrv.replace(interpolatedTarget.legendFormat, scopedVars),
-    };
-
-    return this.processTargetV2(targetWithInterpolatedLegend, {
-      ...request,
-      targets: [targetWithInterpolatedLegend],
-    })[0];
-  }
-
-  private getPrometheusRateIntervalMs(intervalMs: number, target: PromQuery, minInterval: string | undefined): number {
-    const requestedMinStepMs =
-      this.prometheusIntervalToMs(target.interval) || this.prometheusIntervalToMs(minInterval) || 15000;
-    return Math.max(intervalMs + requestedMinStepMs, 4 * requestedMinStepMs);
-  }
-
-  private prometheusIntervalToMs(interval: string | null | undefined): number {
-    if (!interval || this.hasTemplateVariable(interval)) {
-      return 0;
-    }
-    return rangeUtil.intervalToMs(interval);
+    const processedTarget = this.processTargetV2(target, request)[0];
+    return this.applyTemplateVariables(processedTarget, request.scopedVars, request.filters);
   }
 
   private hasTemplateVariable(value: string | null | undefined): boolean {

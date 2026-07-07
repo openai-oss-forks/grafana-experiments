@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -86,19 +87,7 @@ func TestExecuteCompactMultiBatchStreamSendsFirstBatchBeforeFinalArrives(t *test
 	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
 	require.NoError(t, err)
 
-	req := &backend.CallResourceRequest{
-		Method: http.MethodPost,
-		Path:   "api/v1/query_range",
-		URL:    "/api/v1/query_range",
-		Body:   []byte("query=up&start=0&end=120&step=60"),
-		Headers: map[string][]string{
-			"Content-Type":                      {"application/x-www-form-urlencoded"},
-			"X-Grafana-Query-Format":            {"compact-v1"},
-			compactMultiBatchRefIDHeader:        {"A"},
-			compactMultiBatchLegendFormatHeader: {"{{job}}"},
-			compactMultiBatchUTCOffsetHeader:    {"0"},
-		},
-	}
+	req := compactMultiBatchRequest()
 	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 4)}
 	done := make(chan error, 1)
 	go func() {
@@ -152,19 +141,7 @@ func TestExecuteCompactMultiBatchStreamDecodesZstdWithoutContentSize(t *testing.
 	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
 	require.NoError(t, err)
 
-	req := &backend.CallResourceRequest{
-		Method: http.MethodPost,
-		Path:   "api/v1/query_range",
-		URL:    "/api/v1/query_range",
-		Body:   []byte("query=up&start=0&end=120&step=60"),
-		Headers: map[string][]string{
-			"Content-Type":                      {"application/x-www-form-urlencoded"},
-			"X-Grafana-Query-Format":            {"compact-v1"},
-			compactMultiBatchRefIDHeader:        {"A"},
-			compactMultiBatchLegendFormatHeader: {"{{job}}"},
-			compactMultiBatchUTCOffsetHeader:    {"0"},
-		},
-	}
+	req := compactMultiBatchRequest()
 	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 4)}
 	require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
 
@@ -194,23 +171,12 @@ func TestExecuteCompactMultiBatchStreamDoesNotForwardBrowserOnlyHeaders(t *testi
 	res, err := New(&http.Client{Transport: transport}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
 	require.NoError(t, err)
 
-	req := &backend.CallResourceRequest{
-		Method: http.MethodPost,
-		Path:   "api/v1/query_range",
-		URL:    "/api/v1/query_range",
-		Body:   []byte("query=up&start=0&end=120&step=60"),
-		Headers: map[string][]string{
-			"Accept":                              {preferredMultiBatchContentType + "; version=1, " + multiBatchContentType + "; version=1, application/jsonl"},
-			"Accept-Encoding":                     {"gzip, deflate, br, zstd"},
-			"Content-Type":                        {"application/x-www-form-urlencoded"},
-			"X-Grafana-Query-Format":              {"compact-v1"},
-			"X-OQP-Source":                        {"grafana-prometheus"},
-			compactMultiBatchRefIDHeader:          {"A"},
-			compactMultiBatchLegendFormatHeader:   {"{{job}}"},
-			compactMultiBatchUTCOffsetHeader:      {"0"},
-			"X-Grafana-Prometheus-Unrelated-Test": {"keep"},
-		},
-	}
+	req := compactMultiBatchRequest()
+	req.Headers["Accept"] = []string{preferredMultiBatchContentType + "; version=1, " + multiBatchContentType + "; version=1, application/jsonl"}
+	req.Headers["Accept-Encoding"] = []string{"gzip, deflate, br, zstd"}
+	req.Headers["X-OQP-Source"] = []string{"grafana-prometheus"}
+	req.Headers["X-OQP-Cache-Control"] = []string{"no-cache"}
+	req.Headers["X-Grafana-Prometheus-Unrelated-Test"] = []string{"keep"}
 	forwardPluginHeaders := sdkhttpclient.NamedMiddlewareFunc("test-forward-plugin-headers", func(opts sdkhttpclient.Options, next http.RoundTripper) http.RoundTripper {
 		return sdkhttpclient.RoundTripperFunc(func(httpReq *http.Request) (*http.Response, error) {
 			for key, values := range req.GetHTTPHeaders() {
@@ -228,16 +194,13 @@ func TestExecuteCompactMultiBatchStreamDoesNotForwardBrowserOnlyHeaders(t *testi
 	receiveResponse(t, sender.responses)
 	receiveResponse(t, sender.responses)
 	require.Equal(t, "compact-v1", req.GetHTTPHeaders().Get("X-Grafana-Query-Format"))
-	require.Equal(t, "A", req.GetHTTPHeaders().Get(compactMultiBatchRefIDHeader))
 	require.Equal(t, preferredMultiBatchContentType+"; version=1, "+multiBatchContentType+"; version=1, application/jsonl", forwarded.Get("Accept"))
 	require.Empty(t, forwarded.Get("Accept-Encoding"))
 	require.Equal(t, "application/x-www-form-urlencoded", forwarded.Get("Content-Type"))
 	require.Equal(t, "grafana-prometheus", forwarded.Get("X-Oqp-Source"))
+	require.Equal(t, "no-cache", forwarded.Get("X-Oqp-Cache-Control"))
 	require.Equal(t, "keep", forwarded.Get("X-Grafana-Prometheus-Unrelated-Test"))
 	require.Empty(t, forwarded.Get("X-Grafana-Query-Format"))
-	require.Empty(t, forwarded.Get(compactMultiBatchRefIDHeader))
-	require.Empty(t, forwarded.Get(compactMultiBatchLegendFormatHeader))
-	require.Empty(t, forwarded.Get(compactMultiBatchUTCOffsetHeader))
 }
 
 func TestExecuteCompactMultiBatchStreamUsesGoManagedGzipForPlainJSONFallback(t *testing.T) {
@@ -280,6 +243,129 @@ func TestExecuteCompactMultiBatchStreamUsesGoManagedGzipForPlainJSONFallback(t *
 	require.Equal(t, byte(multiBatchPayloadTypeCompactV1), final.Body[5])
 	require.Equal(t, byte(multiBatchFinalFlag), final.Body[6]&multiBatchFinalFlag)
 	require.Equal(t, "GQD1", string(final.Body[multiBatchFrameHeaderSize:multiBatchFrameHeaderSize+4]))
+}
+
+func TestPrometheusMultiBatchStreamUsesParsedQueryAndOnlyUpstreamPrometheusFields(t *testing.T) {
+	var upstreamBody url.Values
+	var upstreamHeaders http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		require.Equal(t, "/api/v1/query_range", req.URL.Path)
+		require.NoError(t, req.ParseForm())
+		upstreamBody = req.Form
+		upstreamHeaders = req.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	res, err := New(
+		server.Client(),
+		backend.DataSourceInstanceSettings{
+			URL:      server.URL + "?custom=keep",
+			JSONData: []byte(`{"queryTimeout":"30s","timeInterval":"15s"}`),
+		},
+		log.DefaultLogger,
+	)
+	require.NoError(t, err)
+
+	req := compactMultiBatchRequest()
+	req.Body = []byte(`{"from":"0","to":"120000","queries":[{"expr":"rate(up[$__interval])","range":true,"refId":"A","legendFormat":"[{{app}}] in [{{cluster_short_name}}] ➡️ [{{oai_sd_target_service}}] in [{{oai_sd_routed_to}}] via {{route_type}}","utcOffsetSec":0,"intervalMs":60000,"maxDataPoints":100}]}`)
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
+
+	receiveResponse(t, sender.responses)
+	receiveResponse(t, sender.responses)
+	require.Equal(t, prometheusMultiBatchAcceptHeader, upstreamHeaders.Get("Accept"))
+	require.Empty(t, upstreamHeaders.Get("X-Grafana-Query-Format"))
+	require.Empty(t, upstreamHeaders.Get("X-Grafana-Prometheus-Multibatch-Legend-Format"))
+	require.Equal(t, "30s", upstreamBody.Get("timeout"))
+	require.Equal(t, "keep", upstreamBody.Get("custom"))
+	require.NotContains(t, upstreamBody.Get("query"), "$__interval")
+	require.Contains(t, upstreamBody.Get("query"), "rate(up[")
+	require.NotEmpty(t, upstreamBody.Get("start"))
+	require.NotEmpty(t, upstreamBody.Get("end"))
+	require.NotEmpty(t, upstreamBody.Get("step"))
+}
+
+func TestPrometheusMultiBatchStreamRespectsConfiguredUpstreamGETMethod(t *testing.T) {
+	var upstreamMethod string
+	var upstreamQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		upstreamMethod = req.Method
+		upstreamQuery = req.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	res, err := New(
+		server.Client(),
+		backend.DataSourceInstanceSettings{URL: server.URL, JSONData: []byte(`{"httpMethod":"GET","queryTimeout":"30s"}`)},
+		log.DefaultLogger,
+	)
+	require.NoError(t, err)
+
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), compactMultiBatchRequest(), sender))
+	receiveResponse(t, sender.responses)
+	receiveResponse(t, sender.responses)
+
+	require.Equal(t, http.MethodGet, upstreamMethod)
+	require.Equal(t, "up", upstreamQuery.Get("query"))
+	require.Equal(t, "30s", upstreamQuery.Get("timeout"))
+	require.NotEmpty(t, upstreamQuery.Get("start"))
+	require.NotEmpty(t, upstreamQuery.Get("end"))
+	require.NotEmpty(t, upstreamQuery.Get("step"))
+}
+
+func TestPrometheusMultiBatchStreamFramesNonCompactFallbackWhenUpstreamDeclines(t *testing.T) {
+	payload := []byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`)
+	res, err := New(&http.Client{Transport: compactRoundTripper{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(payload)),
+	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
+	require.NoError(t, err)
+
+	req := compactMultiBatchRequest()
+	delete(req.Headers, "X-Grafana-Query-Format")
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
+
+	response := receiveResponse(t, sender.responses)
+	require.Equal(t, "MBRH", string(response.Body[:4]))
+	final := response.Body[multiBatchFrameHeaderSize:]
+	require.Equal(t, "MBBF", string(final[:4]))
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), final[5])
+	require.Equal(t, byte(multiBatchFinalFlag), final[6]&multiBatchFinalFlag)
+	require.Equal(t, payload, final[multiBatchFrameHeaderSize:])
+	select {
+	case extra := <-sender.responses:
+		t.Fatalf("unexpected extra fallback response: %#v", extra)
+	default:
+	}
+}
+
+func TestPrometheusMultiBatchQueryFromRequestRejectsUnsupportedEnvelopes(t *testing.T) {
+	res, err := New(nil, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
+	require.NoError(t, err)
+
+	testCases := map[string][]byte{
+		"malformed JSON":   []byte("{"),
+		"no queries":       []byte(`{"from":"0","to":"120000","queries":[]}`),
+		"multiple queries": []byte(`{"from":"0","to":"120000","queries":[{"expr":"up"},{"expr":"up"}]}`),
+		"instant query":    []byte(`{"from":"0","to":"120000","queries":[{"expr":"up","instant":true}]}`),
+	}
+	for name, body := range testCases {
+		t.Run(name, func(t *testing.T) {
+			req := compactMultiBatchRequest()
+			req.Body = body
+			_, err := res.prometheusMultiBatchQueryFromRequest(context.Background(), req)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestExecuteStreamUsesGoManagedGzipWithoutMultiBatchAccept(t *testing.T) {
@@ -333,15 +419,8 @@ func TestExecuteMultiBatchStreamPassesThroughJSONLBeforeFinalArrives(t *testing.
 	}}}, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
 	require.NoError(t, err)
 
-	req := &backend.CallResourceRequest{
-		Method: http.MethodPost,
-		Path:   "api/v1/query_range",
-		URL:    "/api/v1/query_range",
-		Body:   []byte("query=up&start=0&end=120&step=60"),
-		Headers: map[string][]string{
-			"Content-Type": {"application/x-www-form-urlencoded"},
-		},
-	}
+	req := compactMultiBatchRequest()
+	delete(req.Headers, "X-Grafana-Query-Format")
 	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 4)}
 	done := make(chan error, 1)
 	go func() {
@@ -544,17 +623,52 @@ func TestExecuteStreamPassesPlainJSONThroughWithoutMultiBatchAccept(t *testing.T
 func compactMultiBatchRequest() *backend.CallResourceRequest {
 	return &backend.CallResourceRequest{
 		Method: http.MethodPost,
-		Path:   "api/v1/query_range",
-		URL:    "/api/v1/query_range",
-		Body:   []byte("query=up&start=0&end=120&step=60"),
+		Path:   prometheusQueryRangePath,
+		URL:    "/" + prometheusQueryRangePath,
+		Body: []byte(`{
+			"from":"0",
+			"to":"120000",
+			"queries":[{
+				"expr":"up",
+				"range":true,
+				"refId":"A",
+				"legendFormat":"{{job}}",
+				"utcOffsetSec":0,
+				"intervalMs":60000,
+				"maxDataPoints":100
+			}]
+		}`),
 		Headers: map[string][]string{
-			"Content-Type":                      {"application/x-www-form-urlencoded"},
-			"X-Grafana-Query-Format":            {"compact-v1"},
-			compactMultiBatchRefIDHeader:        {"A"},
-			compactMultiBatchLegendFormatHeader: {"{{job}}"},
-			compactMultiBatchUTCOffsetHeader:    {"0"},
+			"Content-Type":           {"application/json"},
+			"X-Grafana-Query-Format": {"compact-v1"},
 		},
 	}
+}
+
+func TestPrometheusMultiBatchQueryFromRequestPreservesUnicodeLegendFormat(t *testing.T) {
+	res, err := New(nil, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
+	require.NoError(t, err)
+	req := compactMultiBatchRequest()
+	req.Body = []byte(`{"from":"0","to":"120000","queries":[{"expr":"up","range":true,"refId":"A","legendFormat":"[{{app}}] in [{{cluster_short_name}}] ➡️ [{{oai_sd_target_service}}] in [{{oai_sd_routed_to}}] via {{route_type}}","intervalMs":60000,"maxDataPoints":100}]}`)
+
+	query, err := res.prometheusMultiBatchQueryFromRequest(context.Background(), req)
+
+	require.NoError(t, err)
+	require.Equal(t, "[{{app}}] in [{{cluster_short_name}}] ➡️ [{{oai_sd_target_service}}] in [{{oai_sd_routed_to}}] via {{route_type}}", query.LegendFormat)
+}
+
+func TestPrometheusMultiBatchQueryFromRequestUsesNormalQueryDefaults(t *testing.T) {
+	res, err := New(nil, backend.DataSourceInstanceSettings{URL: "http://prometheus", JSONData: []byte(`{}`)}, log.DefaultLogger)
+	require.NoError(t, err)
+	req := compactMultiBatchRequest()
+	req.Body = []byte(`{"from":"0","to":"120000","queries":[{"expr":"up","legendFormat":"{{job}} 100%"}]}`)
+
+	query, err := res.prometheusMultiBatchQueryFromRequest(context.Background(), req)
+
+	require.NoError(t, err)
+	require.True(t, query.RangeQuery)
+	require.Equal(t, "A", query.RefId)
+	require.Equal(t, "{{job}} 100%", query.LegendFormat)
 }
 
 func nonCompactMultiBatchRequest() *backend.CallResourceRequest {
