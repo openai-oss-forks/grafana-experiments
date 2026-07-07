@@ -369,9 +369,10 @@ describe('PrometheusDatasource', () => {
           '/api/datasources/uid/ABCDEF/resources/api/v1/query_range',
           '/api/datasources/uid/ABCDEF/resources/api/v1/query_range',
         ]);
-        expect(
-          browserFetchSpy.mock.calls.map(([, init]) => new URLSearchParams(String(init?.body)).get('query'))
-        ).toEqual(['rate(metric_a[1m])', 'rate(metric_b[1m])']);
+        expect(browserFetchSpy.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).queries[0].expr)).toEqual([
+          'rate(metric_a[$__rate_interval])',
+          'rate(metric_b[$__rate_interval])',
+        ]);
       } finally {
         browserFetchSpy.mockRestore();
         replaceMock.mockImplementation(defaultReplaceMock ?? ((a: string) => a));
@@ -379,7 +380,7 @@ describe('PrometheusDatasource', () => {
       }
     });
 
-    it('uses request-level min intervals for compact multi-batch step and rate interval interpolation', async () => {
+    it('keeps request-level min interval inputs for backend multi-batch interpolation', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
       const intervalTemplateSrv = {
@@ -397,11 +398,12 @@ describe('PrometheusDatasource', () => {
       } as unknown as TemplateSrv;
       const intervalDs = new PrometheusDatasource(instanceSettings, intervalTemplateSrv);
       const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
-        const body = typeof init?.body === 'string' ? init.body : '';
-        const params = new URLSearchParams(body);
+        const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+        const query = body.queries[0];
 
-        expect(params.get('query')).toBe('rate(up[20m])');
-        expect(params.get('step')).toBe('300');
+        expect(query.expr).toBe('rate(up[$__rate_interval])');
+        expect(query.intervalMs).toBe(300000);
+        expect(query).not.toHaveProperty('step');
 
         throw new Error('stop after checking request min interval query');
       });
@@ -428,7 +430,7 @@ describe('PrometheusDatasource', () => {
       }
     });
 
-    it('interpolates $__interval from the effective multi-batch query step', async () => {
+    it('leaves $__interval interpolation to the backend multi-batch parser', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
       const intervalTemplateSrv = {
@@ -455,11 +457,12 @@ describe('PrometheusDatasource', () => {
         intervalTemplateSrv
       );
       const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
-        const body = typeof init?.body === 'string' ? init.body : '';
-        const params = new URLSearchParams(body);
+        const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+        const query = body.queries[0];
 
-        expect(params.get('query')).toBe('rate(up[4m])');
-        expect(params.get('step')).toBe('60');
+        expect(query.expr).toBe('rate(up[$__rate_interval])');
+        expect(query.intervalMs).toBe(60000);
+        expect(query).not.toHaveProperty('step');
 
         throw new Error('stop after checking interpolated multi-batch query');
       });
@@ -485,7 +488,7 @@ describe('PrometheusDatasource', () => {
       }
     });
 
-    it('keeps $__rate_interval based on the pre-factor interval in multi-batch queries', async () => {
+    it('keeps interval factor inputs for backend multi-batch rate interpolation', async () => {
       const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
       config.featureToggles.prometheusMultiBatchStreaming = true;
       const intervalTemplateSrv = {
@@ -503,11 +506,13 @@ describe('PrometheusDatasource', () => {
       } as unknown as TemplateSrv;
       const intervalDs = new PrometheusDatasource(instanceSettings, intervalTemplateSrv);
       const browserFetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_input, init) => {
-        const body = typeof init?.body === 'string' ? init.body : '';
-        const params = new URLSearchParams(body);
+        const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+        const query = body.queries[0];
 
-        expect(params.get('query')).toBe('rate(up[1m]) + 75000');
-        expect(params.get('step')).toBe('600');
+        expect(query.expr).toBe('rate(up[$__rate_interval]) + $__rate_interval_ms');
+        expect(query.intervalFactor).toBe(10);
+        expect(query.intervalMs).toBe(60000);
+        expect(query).not.toHaveProperty('step');
 
         throw new Error('stop after checking interval factor rate interval query');
       });

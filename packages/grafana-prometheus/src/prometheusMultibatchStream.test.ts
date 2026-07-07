@@ -1,4 +1,11 @@
-import { dateTime, DataFrameType, DataQueryRequest, DataQueryResponse, LoadingState } from '@grafana/data';
+import {
+  AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+  dateTime,
+  DataFrameType,
+  DataQueryRequest,
+  DataQueryResponse,
+  LoadingState,
+} from '@grafana/data';
 import { toDataQueryResponse } from '@grafana/runtime';
 
 import {
@@ -200,17 +207,30 @@ describe('Prometheus multi-batch streaming', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/datasources/uid/prometheus/resources/api/v1/query_range',
       expect.objectContaining({
-        body: 'query=sum%28rate%28http_requests_total%5B%24__interval%5D%29%29&start=0&end=0&step=60',
         headers: expect.objectContaining({
           Accept: MULTIBATCH_ACCEPT_HEADER,
+          'Content-Type': 'application/json',
           'X-Grafana-Query-Format': 'compact-v1',
-          'X-Grafana-Prometheus-Multibatch-Legend-Format': 'Result - {{result}}',
-          'X-Grafana-Prometheus-Multibatch-Ref-Id': 'A',
-          'X-Grafana-Prometheus-Multibatch-UTC-Offset-Sec': '3600',
         }),
         method: 'POST',
       })
     );
+    const requestBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(requestBody).toEqual({
+      from: '0',
+      to: '10000',
+      queries: [
+        expect.objectContaining({
+          datasource: { uid: 'prometheus' },
+          expr: 'sum(rate(http_requests_total[$__interval]))',
+          intervalMs: 60000,
+          legendFormat: 'Result - {{result}}',
+          maxDataPoints: AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+          refId: 'A',
+          utcOffsetSec: 3600,
+        }),
+      ],
+    });
     expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
     expect(responses.map((response) => response.compactSeries)).toEqual([{ payload: 'partial' }, { payload: 'final' }]);
     expect(toDataQueryResponseMock).toHaveBeenCalledWith(
@@ -257,15 +277,16 @@ describe('Prometheus multi-batch streaming', () => {
     const responses = await collectResponses(
       queryPrometheusMultiBatch('prometheus', request, target, {
         customQueryParameters: new URLSearchParams(),
-        httpMethod: 'POST',
+        httpMethod: 'GET',
       })
     );
 
     const fetchInit = (global.fetch as jest.Mock).mock.calls[0][1];
+    expect(fetchInit.method).toBe('POST');
     expect(fetchInit.headers).toEqual(
       expect.objectContaining({
         Accept: MULTIBATCH_ACCEPT_HEADER,
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/json',
       })
     );
     expect(fetchInit.headers).not.toHaveProperty('X-Grafana-Query-Format');
@@ -281,6 +302,35 @@ describe('Prometheus multi-batch streaming', () => {
       Date.parse('2026-06-07T19:21:00Z'),
     ]);
     expect(responses[1].data[0].fields[1].values).toEqual([10, 2]);
+  });
+
+  it('keeps non-ASCII legend formats in the JSON body instead of browser headers', async () => {
+    const legendFormat =
+      '[{{app}}] in [{{cluster_short_name}}] ➡️ [{{oai_sd_target_service}}] in [{{oai_sd_routed_to}}] via {{route_type}}';
+    const target: PromQuery = { expr: 'up', legendFormat, refId: 'A' };
+    const request = requestForTarget(target);
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([concatBytes(responseHeaderFrame(), frame('final', FINAL_BATCH_FLAG))]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    const fetchInit = (global.fetch as jest.Mock).mock.calls[0][1];
+    expect(() => new Headers(fetchInit.headers)).not.toThrow();
+    expect(fetchInit.headers).not.toHaveProperty('X-Grafana-Prometheus-Multibatch-Legend-Format');
+    expect(fetchInit.headers).not.toHaveProperty('X-Grafana-Prometheus-Multibatch-Legend-Format-Encoding');
+    expect(JSON.parse(fetchInit.body).queries[0].legendFormat).toBe(legendFormat);
   });
 
   it('emits a non-compact JSONL partial response before the final frame arrives', async () => {
@@ -400,7 +450,7 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[0].error?.message).toBe('401: Unauthorized');
   });
 
-  it('decodes regular JSON query response payload frames through the standard response decoder', async () => {
+  it('rejects successful JSONL payload frames for compact-v1 requests', async () => {
     const target: PromQuery = { expr: 'up', refId: 'A' };
     const request = requestForTarget(target);
     const queryResponse = JSON.stringify({
@@ -435,19 +485,14 @@ describe('Prometheus multi-batch streaming', () => {
       text: jest.fn(),
     });
 
-    const responses = await collectResponses(
-      queryPrometheusMultiBatch('prometheus', request, target, {
-        customQueryParameters: new URLSearchParams(),
-        httpMethod: 'POST',
-      })
-    );
-
-    expect(toDataQueryResponseMock).toHaveBeenCalledWith(
-      expect.objectContaining({ headers: new Headers({ 'content-type': 'application/json' }) }),
-      [target],
-      true
-    );
-    expect(responses.map((response) => response.compactSeries)).toEqual([{ payload: queryResponse }]);
+    await expect(
+      collectResponses(
+        queryPrometheusMultiBatch('prometheus', request, target, {
+          customQueryParameters: new URLSearchParams(),
+          httpMethod: 'POST',
+        })
+      )
+    ).rejects.toThrow(/compact-v1 request returned a successful JSONL payload/);
   });
 
   it('decodes zstd non-compact JSONL payload frames', async () => {
@@ -538,7 +583,7 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[0].data[0].fields[1].values).toEqual([1]);
   });
 
-  it('decodes a non-multibatch Prometheus JSON fallback for a compact dashboard request', async () => {
+  it('rejects a successful non-multibatch JSON fallback for a compact dashboard request', async () => {
     const target: PromQuery = { expr: 'up', legendFormat: '{{job}}', refId: 'A' };
     const request = requestForTarget(target);
     global.fetch = jest.fn().mockResolvedValue({
@@ -559,17 +604,14 @@ describe('Prometheus multi-batch streaming', () => {
       text: jest.fn(),
     });
 
-    const responses = await collectResponses(
-      queryPrometheusMultiBatch('prometheus', request, target, {
-        customQueryParameters: new URLSearchParams(),
-        httpMethod: 'POST',
-      })
-    );
-
-    expect(toDataQueryResponseMock).not.toHaveBeenCalled();
-    expect(responses.map((response) => response.state)).toEqual([LoadingState.Done]);
-    expect(responses[0].data[0].fields[0].values).toEqual([0]);
-    expect(responses[0].data[0].fields[1].values).toEqual([1]);
+    await expect(
+      collectResponses(
+        queryPrometheusMultiBatch('prometheus', request, target, {
+          customQueryParameters: new URLSearchParams(),
+          httpMethod: 'POST',
+        })
+      )
+    ).rejects.toThrow(/compact-v1 request returned a successful JSONL payload/);
   });
 
   it('preserves Prometheus warnings and infos on decoded API payload frames', async () => {
@@ -735,7 +777,7 @@ describe('Prometheus multi-batch streaming', () => {
     ).rejects.toThrow('context canceled');
   });
 
-  it('uses datasource and target interval limits when building query_range parameters', async () => {
+  it('sends interval inputs in the structured query envelope for backend calculation', async () => {
     const target: PromQuery = {
       expr: 'up',
       intervalFactor: 10,
@@ -768,15 +810,24 @@ describe('Prometheus multi-batch streaming', () => {
       })
     );
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      '/api/datasources/uid/prometheus/resources/api/v1/query_range',
-      expect.objectContaining({
-        body: 'query=up&start=0&end=120&step=60&timeout=30s',
-      })
-    );
+    const requestBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(requestBody).toEqual({
+      from: '10500',
+      to: '131000',
+      queries: [
+        expect.objectContaining({
+          datasource: { uid: 'prometheus' },
+          expr: 'up',
+          intervalFactor: 10,
+          intervalMs: 60000,
+          maxDataPoints: AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+          stepSize: '2m',
+        }),
+      ],
+    });
   });
 
-  it('clamps explicit target step sizes with the standard query interval resolver', async () => {
+  it('leaves explicit target step sizes in the structured query envelope', async () => {
     const target: PromQuery = {
       expr: 'up',
       refId: 'A',
@@ -807,12 +858,20 @@ describe('Prometheus multi-batch streaming', () => {
       })
     );
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      '/api/datasources/uid/prometheus/resources/api/v1/query_range',
-      expect.objectContaining({
-        body: 'query=up&start=0&end=172800&step=300',
-      })
-    );
+    const requestBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(requestBody).toEqual({
+      from: '0',
+      to: String(48 * 60 * 60 * 1000),
+      queries: [
+        expect.objectContaining({
+          datasource: { uid: 'prometheus' },
+          expr: 'up',
+          intervalMs: 60000,
+          maxDataPoints: 10_000,
+          stepSize: '1m',
+        }),
+      ],
+    });
   });
 });
 

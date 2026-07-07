@@ -1,3 +1,6 @@
+import { Observable } from 'rxjs';
+import { ZSTDDecoder } from 'zstddec';
+
 import {
   AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
   DataFrame,
@@ -14,8 +17,6 @@ import {
   resolveQueryIntervalWithStepSize,
 } from '@grafana/data';
 import { config, toDataQueryResponse } from '@grafana/runtime';
-import { Observable } from 'rxjs';
-import { ZSTDDecoder } from 'zstddec';
 
 import { PromQuery } from './types';
 
@@ -25,9 +26,6 @@ export const MULTIBATCH_ACCEPT_HEADER = `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; v
 const QUERY_DATA_COMPACT_HEADER = 'X-Grafana-Query-Format';
 const QUERY_DATA_COMPACT_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact;version=1';
 const QUERY_DATA_COMPACT_VERSION = 'compact-v1';
-const MULTIBATCH_REF_ID_HEADER = 'X-Grafana-Prometheus-Multibatch-Ref-Id';
-const MULTIBATCH_LEGEND_FORMAT_HEADER = 'X-Grafana-Prometheus-Multibatch-Legend-Format';
-const MULTIBATCH_UTC_OFFSET_HEADER = 'X-Grafana-Prometheus-Multibatch-UTC-Offset-Sec';
 
 const FRAME_HEADER_SIZE = 12;
 const FINAL_BATCH_FLAG = 1;
@@ -1141,25 +1139,21 @@ async function streamQueryRange(
   signal: AbortSignal,
   emit: (response: DataQueryResponse) => void
 ) {
-  const method = options.httpMethod.toUpperCase();
   const requestCompactResponse = request.preferredQueryResultFormat === QUERY_DATA_COMPACT_VERSION;
   const queryContext = buildMultiBatchQueryContext(request, target, options);
   const headers: Record<string, string> = {
     Accept: MULTIBATCH_ACCEPT_HEADER,
-    ...(method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+    'Content-Type': 'application/json',
   };
   if (requestCompactResponse) {
     headers[QUERY_DATA_COMPACT_HEADER] = QUERY_DATA_COMPACT_VERSION;
-    headers[MULTIBATCH_REF_ID_HEADER] = target.refId ?? 'A';
-    headers[MULTIBATCH_LEGEND_FORMAT_HEADER] = target.legendFormat ?? '';
-    headers[MULTIBATCH_UTC_OFFSET_HEADER] = String(target.utcOffsetSec ?? 0);
   }
 
-  const response = await fetch(buildResourceUrl(datasourceUid, request, target, options), {
-    body: method === 'POST' ? buildQueryParams(request, target, options).toString() : undefined,
+  const response = await fetch(buildResourceUrl(datasourceUid), {
+    body: buildStreamingQueryBody(datasourceUid, request, target, options.minInterval),
     credentials: 'same-origin',
     headers,
-    method,
+    method: 'POST',
     signal,
   });
 
@@ -1176,11 +1170,15 @@ async function streamQueryRange(
     }
 
     if (isQueryDataJsonPayload(body)) {
-      emit(decodeQueryDataJsonResponse(body, response.headers, request, target, LoadingState.Done));
+      const decoded = decodeQueryDataJsonResponse(body, response.headers, request, target, LoadingState.Done);
+      assertCompactResponseFormat(request, decoded, PAYLOAD_TYPE_JSONL);
+      emit(decoded);
       return;
     }
 
-    emit(new JsonlMultiBatchAccumulator().decode(body, queryContext, LoadingState.Done));
+    const decoded = new JsonlMultiBatchAccumulator().decode(body, queryContext, LoadingState.Done);
+    assertCompactResponseFormat(request, decoded, PAYLOAD_TYPE_JSONL);
+    emit(decoded);
     return;
   }
 
@@ -1262,17 +1260,35 @@ async function processMultiBatchChunk(
     const payload = await payloadDecoder.decode(frame.payload, frame.payloadEncoding);
     const isFinal = (frame.flags & FINAL_BATCH_FLAG) !== 0;
     const state = isFinal ? LoadingState.Done : LoadingState.Streaming;
+    let response: DataQueryResponse;
     if (frame.payloadType === PAYLOAD_TYPE_COMPACT_V1) {
-      emit(decodeCompactQueryDataResponse(payload, compactHeaders(), request, target, state));
+      response = decodeCompactQueryDataResponse(payload, compactHeaders(), request, target, state);
     } else if (isQueryDataJsonPayload(payload)) {
-      emit(decodeQueryDataJsonResponse(payload, jsonHeaders(), request, target, state));
+      response = decodeQueryDataJsonResponse(payload, jsonHeaders(), request, target, state);
     } else {
-      emit(jsonlAccumulator.decode(payload, queryContext, state));
+      response = jsonlAccumulator.decode(payload, queryContext, state);
     }
+    assertCompactResponseFormat(request, response, frame.payloadType);
+    emit(response);
 
     if (!isFinal) {
       await yieldToBrowser();
     }
+  }
+}
+
+function assertCompactResponseFormat(
+  request: DataQueryRequest<PromQuery>,
+  response: DataQueryResponse,
+  payloadType: number
+) {
+  if (
+    request.preferredQueryResultFormat === QUERY_DATA_COMPACT_VERSION &&
+    payloadType !== PAYLOAD_TYPE_COMPACT_V1 &&
+    !response.error &&
+    (response.errors?.length ?? 0) === 0
+  ) {
+    throw new Error('Prometheus multi-batch compact-v1 request returned a successful JSONL payload');
   }
 }
 
@@ -1410,49 +1426,31 @@ function yieldToBrowser(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function buildResourceUrl(
+function buildResourceUrl(datasourceUid: string): string {
+  return `${config.appSubUrl ?? ''}/api/datasources/uid/${encodeURIComponent(
+    datasourceUid
+  )}/resources/api/v1/query_range`;
+}
+
+function buildStreamingQueryBody(
   datasourceUid: string,
   request: DataQueryRequest<PromQuery>,
   target: PromQuery,
-  options: {
-    httpMethod: string;
-    customQueryParameters: URLSearchParams;
-    minInterval?: string;
-    queryTimeout?: string;
-  }
+  minInterval?: string
 ): string {
-  const path = `${config.appSubUrl ?? ''}/api/datasources/uid/${encodeURIComponent(
-    datasourceUid
-  )}/resources/api/v1/query_range`;
-
-  if (options.httpMethod.toUpperCase() === 'POST') {
-    return path;
-  }
-
-  const params = buildQueryParams(request, target, options);
-  return `${path}?${params.toString()}`;
-}
-
-function buildQueryParams(
-  request: DataQueryRequest<PromQuery>,
-  target: PromQuery,
-  options: {
-    customQueryParameters: URLSearchParams;
-    minInterval?: string;
-    queryTimeout?: string;
-  }
-): URLSearchParams {
-  const step = getPrometheusStepSeconds(request, target, options.minInterval);
-  const range = getAlignedPrometheusTimeRange(request, target, step);
-  const params = new URLSearchParams(options.customQueryParameters);
-  params.set('query', target.expr);
-  params.set('start', String(range.start));
-  params.set('end', String(range.end));
-  params.set('step', String(step));
-  if (options.queryTimeout) {
-    params.set('timeout', options.queryTimeout);
-  }
-  return params;
+  const intervalMs = Math.max(request.intervalMs ?? 1000, intervalToMs(minInterval));
+  return JSON.stringify({
+    from: String(request.range.from.valueOf()),
+    to: String(request.range.to.valueOf()),
+    queries: [
+      {
+        ...target,
+        datasource: { uid: datasourceUid },
+        intervalMs,
+        maxDataPoints: request.maxDataPoints ?? AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+      },
+    ],
+  });
 }
 
 function buildMultiBatchQueryContext(
@@ -1508,26 +1506,6 @@ export function getPrometheusMultiBatchIntervals(
     stepMs: stepSeconds * 1000,
     stepSeconds,
   };
-}
-
-function getAlignedPrometheusTimeRange(
-  request: DataQueryRequest<PromQuery>,
-  target: PromQuery,
-  stepSeconds: number
-): { start: number; end: number } {
-  const offsetSeconds = target.utcOffsetSec ?? 0;
-
-  return {
-    start: alignPrometheusTime(request.range.from.valueOf(), stepSeconds, offsetSeconds),
-    end: alignPrometheusTime(request.range.to.valueOf(), stepSeconds, offsetSeconds),
-  };
-}
-
-function alignPrometheusTime(timestampMs: number, stepSeconds: number, offsetSeconds: number): number {
-  const stepMs = stepSeconds * 1000;
-  const offsetMs = offsetSeconds * 1000;
-  const alignedMs = Math.floor((timestampMs + offsetMs) / stepMs) * stepMs - offsetMs;
-  return Math.floor(alignedMs / 1000);
 }
 
 function intervalToMs(interval: string | null | undefined): number {

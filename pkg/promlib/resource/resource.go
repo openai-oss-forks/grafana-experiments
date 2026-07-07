@@ -13,20 +13,26 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/gtime"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/tracing"
 	"github.com/grafana/grafana-plugin-sdk-go/data/utils/maputil"
 	scope "github.com/grafana/grafana/apps/scope/pkg/apis/scope/v0alpha1"
 	"github.com/prometheus/prometheus/promql/parser"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/grafana/grafana/pkg/promlib/client"
 	"github.com/grafana/grafana/pkg/promlib/compact"
+	"github.com/grafana/grafana/pkg/promlib/intervalv2"
 	"github.com/grafana/grafana/pkg/promlib/models"
 	"github.com/grafana/grafana/pkg/promlib/utils"
 )
 
 const multiBatchContentType = "application/prometheus.multibatch"
 const preferredMultiBatchContentType = "application/com.openai.prometheus.multibatch"
+const prometheusMultiBatchAcceptHeader = preferredMultiBatchContentType + "; version=1, " + multiBatchContentType + "; version=1, application/jsonl"
 const multiBatchPluginErrorMessage = "An error occurred within the plugin"
+const prometheusQueryRangePath = "api/v1/query_range"
 
 var browserOnlyResourceHeaders = []string{
 	"Accept-Encoding",
@@ -37,14 +43,18 @@ var browserOnlyResourceHeaders = []string{
 }
 
 type Resource struct {
-	promClient *client.Client
-	log        log.Logger
+	promClient         *client.Client
+	log                log.Logger
+	tracer             trace.Tracer
+	intervalCalculator intervalv2.Calculator
+	timeInterval       string
 }
 
 func New(
 	httpClient *http.Client,
 	settings backend.DataSourceInstanceSettings,
 	plog log.Logger,
+	featureToggleArgs ...backend.FeatureToggles,
 ) (*Resource, error) {
 	jsonData, err := utils.GetJsonData(settings)
 	if err != nil {
@@ -56,10 +66,29 @@ func New(
 		httpMethod = http.MethodPost
 	}
 
+	timeInterval, err := maputil.GetStringOptional(jsonData, "timeInterval")
+	if err != nil {
+		return nil, err
+	}
+
+	queryTimeout, err := maputil.GetStringOptional(jsonData, "queryTimeout")
+	if err != nil {
+		return nil, err
+	}
+
+	var featureToggles backend.FeatureToggles
+	if len(featureToggleArgs) > 0 {
+		featureToggles = featureToggleArgs[0]
+	}
+
 	return &Resource{
-		log: plog,
-		// we don't use queryTimeout for resource calls
-		promClient: client.NewClient(httpClient, httpMethod, settings.URL, ""),
+		log:        plog,
+		tracer:     tracing.DefaultTracer(),
+		promClient: client.NewClient(httpClient, httpMethod, settings.URL, queryTimeout),
+		intervalCalculator: intervalv2.NewCalculator(intervalv2.CalculatorOptions{
+			TshirtSizeStepSizeEnabled: featureToggles.IsEnabled("prometheusTshirtSizeStepSize"),
+		}),
+		timeInterval: timeInterval,
 	}, nil
 }
 
@@ -100,6 +129,10 @@ func (r *Resource) Execute(ctx context.Context, req *backend.CallResourceRequest
 }
 
 func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if isStructuredPrometheusMultiBatchRequest(req) {
+		return r.executePrometheusMultiBatchQueryStream(ctx, req, sender)
+	}
+
 	r.log.FromContext(ctx).Debug("Sending resource query", "URL", req.URL)
 	resp, err := r.queryResource(ctx, req)
 	if err != nil {
@@ -141,7 +174,6 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 		)
 		return r.executeCompactMultiBatchStream(req, resp, query, encoder)
 	}
-
 	// frontend sets the X-Grafana-Cache with the desired response cache control value. Streaming
 	// multibatch responses cannot use this complete-response cache because each chunk is sent
 	// separately through CallResourceResponseSender.
@@ -206,6 +238,204 @@ func (r *Resource) ExecuteStream(ctx context.Context, req *backend.CallResourceR
 		},
 	)
 	return r.executeMultiBatchStream(resp, encoder)
+}
+
+// isStructuredPrometheusMultiBatchRequest keeps the established query_range resource route
+// available to existing form-encoded callers while allowing the browser to send Grafana query
+// metadata in JSON instead of private headers.
+func isStructuredPrometheusMultiBatchRequest(req *backend.CallResourceRequest) bool {
+	if req == nil || !strings.EqualFold(req.Path, prometheusQueryRangePath) || !strings.EqualFold(req.Method, http.MethodPost) {
+		return false
+	}
+	contentType, _, err := mime.ParseMediaType(req.GetHTTPHeaders().Get("Content-Type"))
+	return err == nil && strings.EqualFold(contentType, "application/json")
+}
+
+// executePrometheusMultiBatchQueryStream accepts the same one-query envelope as /api/ds/query,
+// then uses the normal Prometheus model parser before opening the upstream query_range request.
+// Grafana-specific query fields stay in JSON instead of being copied into browser headers.
+func (r *Resource) executePrometheusMultiBatchQueryStream(
+	ctx context.Context,
+	req *backend.CallResourceRequest,
+	sender backend.CallResourceResponseSender,
+) error {
+	query, err := r.prometheusMultiBatchQueryFromRequest(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	compactRequest := isCompactMultiBatchRequest(req)
+	restoreHeaders := stripBrowserOnlyResourceHeaders(req)
+	defer restoreHeaders()
+
+	resp, err := r.promClient.QueryRangeWithAccept(ctx, query, prometheusMultiBatchAcceptHeader)
+	if err != nil {
+		return fmt.Errorf("error querying resource: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			r.log.FromContext(ctx).Warn("Failed to close resource response body", "err", closeErr)
+		}
+	}()
+
+	compactQuery := compactMultiBatchQueryFromModel(query)
+	if compactRequest {
+		encoder := newMultiBatchResponseEncoder(
+			ctx,
+			r.log,
+			sender,
+			resp.StatusCode,
+			compactMultiBatchResponseHeaders(resp.Header),
+			"Failed to stream compact Prometheus multi-batch response",
+			func() multiBatchFrame {
+				frame, err := buildJSONDataResponseFrame(
+					compactQuery,
+					backend.DataResponse{
+						Status: backend.StatusInternal,
+						Error:  fmt.Errorf("%s", multiBatchPluginErrorMessage),
+					},
+					true,
+				)
+				if err != nil {
+					return multiBatchErrorFrame(multiBatchPluginErrorMessage)
+				}
+				return frame
+			},
+		)
+		return r.executeCompactMultiBatchStream(req, resp, compactQuery, encoder)
+	}
+
+	headers := compactMultiBatchResponseHeaders(resp.Header)
+	encoder := newMultiBatchResponseEncoder(
+		ctx,
+		r.log,
+		sender,
+		resp.StatusCode,
+		headers,
+		"Failed to stream Prometheus multi-batch response",
+		func() multiBatchFrame {
+			return multiBatchErrorFrame(multiBatchPluginErrorMessage)
+		},
+	)
+	if isMultiBatchContentType(resp.Header.Get("Content-Type")) {
+		return r.executeMultiBatchStream(resp, encoder)
+	}
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		return err
+	}
+	return encoder.finish(encoder.writeFrame(multiBatchFrame{
+		payloadType:     multiBatchPayloadTypeJSONL,
+		flags:           multiBatchFinalFlag,
+		payloadEncoding: multiBatchPayloadEncodingIdentity,
+		payload:         buf.Bytes(),
+	}))
+}
+
+type prometheusMultiBatchQueryRequest struct {
+	From    string            `json:"from"`
+	To      string            `json:"to"`
+	Queries []json.RawMessage `json:"queries"`
+}
+
+type prometheusMultiBatchQueryMetadata struct {
+	RefID         string  `json:"refId"`
+	MaxDataPoints int64   `json:"maxDataPoints"`
+	IntervalMS    float64 `json:"intervalMs"`
+	QueryType     string  `json:"queryType"`
+	TimeRange     *struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	} `json:"timeRange"`
+}
+
+func (r *Resource) prometheusMultiBatchQueryFromRequest(ctx context.Context, req *backend.CallResourceRequest) (*models.Query, error) {
+	if !strings.EqualFold(req.Method, http.MethodPost) {
+		return nil, fmt.Errorf("Prometheus multi-batch stream requires POST")
+	}
+
+	var body prometheusMultiBatchQueryRequest
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		return nil, fmt.Errorf("invalid Prometheus multi-batch query request: %w", err)
+	}
+	if len(body.Queries) != 1 {
+		return nil, fmt.Errorf("Prometheus multi-batch stream requires exactly one query")
+	}
+	if body.From == "" || body.To == "" {
+		return nil, fmt.Errorf("Prometheus multi-batch stream requires from and to")
+	}
+
+	var metadata prometheusMultiBatchQueryMetadata
+	if err := json.Unmarshal(body.Queries[0], &metadata); err != nil {
+		return nil, fmt.Errorf("invalid Prometheus multi-batch query: %w", err)
+	}
+
+	from, to := body.From, body.To
+	if metadata.TimeRange != nil {
+		if metadata.TimeRange.From == "" || metadata.TimeRange.To == "" {
+			return nil, fmt.Errorf("Prometheus multi-batch query timeRange requires from and to")
+		}
+		from, to = metadata.TimeRange.From, metadata.TimeRange.To
+	}
+	timeRange := gtime.NewTimeRange(from, to)
+
+	refID := metadata.RefID
+	if refID == "" {
+		refID = "A"
+	}
+	maxDataPoints := metadata.MaxDataPoints
+	if maxDataPoints == 0 {
+		maxDataPoints = 100
+	}
+	intervalMS := metadata.IntervalMS
+	if intervalMS == 0 {
+		intervalMS = 1000
+	}
+
+	dataQuery := backend.DataQuery{
+		TimeRange: backend.TimeRange{
+			From: timeRange.GetFromAsTimeUTC(),
+			To:   timeRange.GetToAsTimeUTC(),
+		},
+		RefID:         refID,
+		MaxDataPoints: maxDataPoints,
+		Interval:      time.Duration(intervalMS * float64(time.Millisecond)),
+		QueryType:     metadata.QueryType,
+		JSON:          body.Queries[0],
+	}
+
+	traceCtx, span := r.tracer.Start(ctx, "datasource.prometheus")
+	defer span.End()
+	query, err := models.Parse(
+		traceCtx,
+		r.log,
+		span,
+		dataQuery,
+		r.timeInterval,
+		r.intervalCalculator,
+		req.GetHTTPHeaders().Get("FromAlert") == "true",
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !query.RangeQuery || query.InstantQuery || query.ExemplarQuery {
+		return nil, fmt.Errorf("Prometheus multi-batch stream only supports range queries")
+	}
+	return query, nil
+}
+
+func compactMultiBatchQueryFromModel(query *models.Query) compactMultiBatchQuery {
+	timeRange := query.TimeRange()
+	return compactMultiBatchQuery{
+		RefID:        query.RefId,
+		Expr:         query.Expr,
+		LegendFormat: query.LegendFormat,
+		Start:        timeRange.Start,
+		End:          timeRange.End,
+		Step:         timeRange.Step,
+		UTCOffsetSec: query.UtcOffsetSec,
+	}
 }
 
 func (r *Resource) executeMultiBatchStream(
