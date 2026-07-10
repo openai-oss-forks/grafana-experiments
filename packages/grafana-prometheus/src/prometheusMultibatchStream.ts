@@ -1171,13 +1171,11 @@ async function streamQueryRange(
 
     if (isQueryDataJsonPayload(body)) {
       const decoded = decodeQueryDataJsonResponse(body, response.headers, request, target, LoadingState.Done);
-      assertCompactResponseFormat(request, decoded, PAYLOAD_TYPE_JSONL);
       emit(decoded);
       return;
     }
 
     const decoded = new JsonlMultiBatchAccumulator().decode(body, queryContext, LoadingState.Done);
-    assertCompactResponseFormat(request, decoded, PAYLOAD_TYPE_JSONL);
     emit(decoded);
     return;
   }
@@ -1268,27 +1266,11 @@ async function processMultiBatchChunk(
     } else {
       response = jsonlAccumulator.decode(payload, queryContext, state);
     }
-    assertCompactResponseFormat(request, response, frame.payloadType);
     emit(response);
 
     if (!isFinal) {
       await yieldToBrowser();
     }
-  }
-}
-
-function assertCompactResponseFormat(
-  request: DataQueryRequest<PromQuery>,
-  response: DataQueryResponse,
-  payloadType: number
-) {
-  if (
-    request.preferredQueryResultFormat === QUERY_DATA_COMPACT_VERSION &&
-    payloadType !== PAYLOAD_TYPE_COMPACT_V1 &&
-    !response.error &&
-    (response.errors?.length ?? 0) === 0
-  ) {
-    throw new Error('Prometheus multi-batch compact-v1 request returned a successful JSONL payload');
   }
 }
 
