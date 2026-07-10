@@ -450,18 +450,27 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[0].error?.message).toBe('401: Unauthorized');
   });
 
-  it('rejects successful JSONL payload frames for compact-v1 requests', async () => {
+  it('decodes successful JSON fallback frames for compact-v1 requests', async () => {
     const target: PromQuery = { expr: 'up', refId: 'A' };
     const request = requestForTarget(target);
+    const actualToDataQueryResponse =
+      jest.requireActual<typeof import('@grafana/runtime')>('@grafana/runtime').toDataQueryResponse;
+    toDataQueryResponseMock.mockImplementationOnce(actualToDataQueryResponse);
     const queryResponse = JSON.stringify({
       results: {
         A: {
           frames: [
             {
               schema: {
+                refId: 'A',
                 fields: [
-                  { name: 'Time', type: 'time' },
-                  { name: 'Value', type: 'number' },
+                  { name: 'Time', type: 'time', typeInfo: { frame: 'time.Time', nullable: true } },
+                  {
+                    name: 'Value',
+                    type: 'number',
+                    typeInfo: { frame: 'float64', nullable: true },
+                    labels: { job: 'api' },
+                  },
                 ],
               },
               data: { values: [[0], [1]] },
@@ -485,14 +494,25 @@ describe('Prometheus multi-batch streaming', () => {
       text: jest.fn(),
     });
 
-    await expect(
-      collectResponses(
-        queryPrometheusMultiBatch('prometheus', request, target, {
-          customQueryParameters: new URLSearchParams(),
-          httpMethod: 'POST',
-        })
-      )
-    ).rejects.toThrow(/compact-v1 request returned a successful JSONL payload/);
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].compactSeries).toBeUndefined();
+    expect(responses[0].data).toHaveLength(1);
+    expect(responses[0].data[0].fields[0].values).toEqual([0]);
+    expect(responses[0].data[0].fields[1].values).toEqual([1]);
+    expect(responses[0].data[0].fields[1].labels).toEqual({ job: 'api' });
+    expect(toDataQueryResponseMock).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: new Headers({ 'content-type': 'application/json' }) }),
+      [target],
+      true
+    );
   });
 
   it('decodes zstd non-compact JSONL payload frames', async () => {
@@ -583,7 +603,7 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[0].data[0].fields[1].values).toEqual([1]);
   });
 
-  it('rejects a successful non-multibatch JSON fallback for a compact dashboard request', async () => {
+  it('decodes a successful non-multibatch Prometheus JSON fallback for a compact dashboard request', async () => {
     const target: PromQuery = { expr: 'up', legendFormat: '{{job}}', refId: 'A' };
     const request = requestForTarget(target);
     global.fetch = jest.fn().mockResolvedValue({
@@ -604,14 +624,75 @@ describe('Prometheus multi-batch streaming', () => {
       text: jest.fn(),
     });
 
-    await expect(
-      collectResponses(
-        queryPrometheusMultiBatch('prometheus', request, target, {
-          customQueryParameters: new URLSearchParams(),
-          httpMethod: 'POST',
-        })
-      )
-    ).rejects.toThrow(/compact-v1 request returned a successful JSONL payload/);
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].compactSeries).toBeUndefined();
+    expect(responses[0].data[0].fields[0].values).toEqual([0]);
+    expect(responses[0].data[0].fields[1].values).toEqual([1]);
+  });
+
+  it('decodes a successful non-multibatch QueryData JSON fallback for a compact dashboard request', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target);
+    const actualToDataQueryResponse =
+      jest.requireActual<typeof import('@grafana/runtime')>('@grafana/runtime').toDataQueryResponse;
+    toDataQueryResponseMock.mockImplementationOnce(actualToDataQueryResponse);
+    const queryResponse = JSON.stringify({
+      results: {
+        A: {
+          frames: [
+            {
+              schema: {
+                refId: 'A',
+                fields: [
+                  { name: 'Time', type: 'time', typeInfo: { frame: 'time.Time', nullable: true } },
+                  {
+                    name: 'Value',
+                    type: 'number',
+                    typeInfo: { frame: 'float64', nullable: true },
+                    labels: { job: 'api' },
+                  },
+                ],
+              },
+              data: { values: [[0], [1]] },
+            },
+          ],
+        },
+      },
+    });
+    global.fetch = jest.fn().mockResolvedValue({
+      arrayBuffer: jest.fn().mockResolvedValue(new TextEncoder().encode(queryResponse).buffer),
+      body: null,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].compactSeries).toBeUndefined();
+    expect(responses[0].data[0].fields[0].values).toEqual([0]);
+    expect(responses[0].data[0].fields[1].values).toEqual([1]);
+    expect(responses[0].data[0].fields[1].labels).toEqual({ job: 'api' });
+    expect(toDataQueryResponseMock).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: new Headers({ 'content-type': 'application/json' }) }),
+      [target],
+      true
+    );
   });
 
   it('preserves Prometheus warnings and infos on decoded API payload frames', async () => {

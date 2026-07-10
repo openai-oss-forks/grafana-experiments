@@ -5,94 +5,161 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
-const dashboards = [
+const matrix = [
   {
-    file: 'enginev3-dashboard.json',
-    name: 'enginev3',
-    slug: 'enginev3',
-    uid: 'qey-v-oai-migrated-20260225224544-03b804',
+    dataShape: 'eligible',
+    expectedResponse: 'top-level-json',
+    id: 'nonmb-no-compact-plain-eligible',
+    requestCompact: false,
+    requestMultibatch: false,
+    upstreamFormat: 'plain',
   },
   {
-    file: 'ste-dashboard.json',
-    name: 'ste',
-    slug: 'go-ste-turn-exchange-client-availability',
-    uid: 'v63-3j8-73x',
+    dataShape: 'eligible',
+    expectedResponse: 'top-level-compact',
+    id: 'nonmb-compact-plain-eligible',
+    requestCompact: true,
+    requestMultibatch: false,
+    upstreamFormat: 'plain',
   },
   {
-    file: 'service-discovery-dashboard.json',
-    name: 'service-discovery-panel-33',
-    query:
-      'orgId=1&from=now-30m&to=now&timezone=browser&var-dest_host=coreapi-chat&var-protocol=%22.%2A%22&var-env=prod&var-cluster_short_name=$__all&var-service=$__all&var-caller_cluster_short_name=$__all&var-sa_server_include=sa-server-dev-.%2A&refresh=30s&editPanel=33',
-    slug: 'service-discovery-for-service-owners-callees',
-    uid: '00e27986-022a-49d7-a9be-ecabb2383079',
+    dataShape: 'ineligible',
+    expectedResponse: 'top-level-querydata-json',
+    id: 'nonmb-compact-plain-ineligible',
+    requestCompact: true,
+    requestMultibatch: false,
+    upstreamFormat: 'plain',
+  },
+  {
+    dataShape: 'eligible',
+    expectedResponse: 'mb-type1',
+    id: 'mb-no-compact-plain-eligible',
+    requestCompact: false,
+    requestMultibatch: true,
+    upstreamFormat: 'plain',
+  },
+  {
+    dataShape: 'eligible',
+    expectedResponse: 'mb-type1',
+    id: 'mb-no-compact-multibatch-eligible',
+    requestCompact: false,
+    requestMultibatch: true,
+    upstreamFormat: 'multibatch',
+  },
+  {
+    dataShape: 'eligible',
+    expectedResponse: 'mb-type2',
+    id: 'mb-compact-plain-eligible',
+    requestCompact: true,
+    requestMultibatch: true,
+    upstreamFormat: 'plain',
+  },
+  {
+    dataShape: 'eligible',
+    expectedResponse: 'mb-type2',
+    id: 'mb-compact-multibatch-eligible',
+    requestCompact: true,
+    requestMultibatch: true,
+    upstreamFormat: 'multibatch',
+  },
+  {
+    dataShape: 'ineligible',
+    expectedResponse: 'mb-type1-querydata',
+    id: 'mb-compact-plain-ineligible',
+    requestCompact: true,
+    requestMultibatch: true,
+    upstreamFormat: 'plain',
+  },
+  {
+    dataShape: 'ineligible',
+    expectedResponse: 'mb-type1-querydata',
+    id: 'mb-compact-multibatch-ineligible',
+    requestCompact: true,
+    requestMultibatch: true,
+    upstreamFormat: 'multibatch',
   },
 ];
-const datasourceUIDs = ['P4F457DFB421B3C5C', 'P868F181D1D76E0DD'];
-const unicodeLegend =
-  '[{{app}}] in [{{cluster_short_name}}] ➡️ [{{oai_sd_target_service}}] in [{{oai_sd_routed_to}}] via {{route_type}}';
+
 const options = parseArgs(process.argv.slice(2));
 const auth = 'Basic ' + Buffer.from(options.username + ':' + options.password).toString('base64');
 
 await fs.mkdir(options.outputDir, { recursive: true });
-for (const definition of dashboards) {
-  await importDashboard(await readDashboard(definition));
-}
+await configureDatasource();
 
 const results = [];
-for (const gate of [true, false]) {
-  for (const bypass of [false, true]) {
-    await setGate(gate);
-    await configureDatasources(bypass);
-    for (const dashboard of dashboards) {
-      const name = dashboard.name + '-gate-' + (gate ? 'on' : 'off') + '-bypass-' + (bypass ? 'on' : 'off');
-      const report = path.join(options.outputDir, name + '.json');
-      const args = [
-        options.verifyScript,
-        '--enable-multibatch-toggle',
-        '--url',
-        dashboardURL(dashboard),
-        '--name',
-        name,
-        '--output',
-        report,
-        '--username',
-        options.username,
-        '--password',
-        options.password,
-        '--require-compact-request',
-        '--timeout-ms',
-        String(options.timeoutMs),
-      ];
-      if (options.chromiumPath) {
-        args.push('--chromium-path', options.chromiumPath);
-      }
-      if (gate && !bypass) {
-        args.push('--expected-upstream', 'trickster', '--require-cache-status', '--require-partial-before-final');
-      } else {
-        args.push('--expected-upstream', 'chronosphere', '--forbid-cache-status');
-      }
-      const exitCode = await run(process.execPath, args);
-      results.push({ bypass, dashboard: dashboard.name, exitCode, gate, report });
-      await writeIndex(results);
-      if (exitCode !== 0 && !options.keepGoing) {
-        process.exit(exitCode);
-      }
-    }
+for (const [index, testCase] of matrix.entries()) {
+  const dashboard = buildDashboard(testCase, index);
+  await importDashboard(dashboard);
+  await resetFakeRequests();
+  await setFakeMode(testCase);
+
+  const report = path.join(options.outputDir, `${testCase.id}.json`);
+  const screenshot = path.join(options.outputDir, `${testCase.id}.png`);
+  const verifierArgs = [
+    options.verifyScript,
+    '--url',
+    dashboardURL(dashboard),
+    '--name',
+    testCase.id,
+    '--output',
+    report,
+    '--screenshot',
+    screenshot,
+    '--username',
+    options.username,
+    '--password',
+    options.password,
+    '--multibatch-toggle',
+    testCase.requestMultibatch ? 'on' : 'off',
+    '--expect-request-multibatch',
+    String(testCase.requestMultibatch),
+    '--expect-request-compact',
+    String(testCase.requestCompact),
+    '--expected-response',
+    testCase.expectedResponse,
+    '--timeout-ms',
+    String(options.timeoutMs),
+  ];
+  if (options.chromiumPath) {
+    verifierArgs.push('--chromium-path', options.chromiumPath);
+  }
+
+  let exitCode = await run(process.execPath, verifierArgs);
+  let fakeUpstream;
+  let fakeEvidenceError;
+  try {
+    fakeUpstream = await validateFakeUpstreamEvidence(testCase);
+  } catch (error) {
+    fakeEvidenceError = error instanceof Error ? error.message : String(error);
+    exitCode = 1;
+  }
+  await augmentReport(report, { fakeEvidenceError, fakeUpstream, matrixCase: testCase });
+
+  results.push({
+    exitCode,
+    fakeEvidenceError,
+    id: testCase.id,
+    report,
+    screenshot,
+  });
+  await writeIndex(results);
+  if (exitCode !== 0 && options.failFast) {
+    process.exit(exitCode);
   }
 }
 
 if (results.some((result) => result.exitCode !== 0)) {
   process.exitCode = 1;
 } else {
-  console.log('PASS matrix: ' + results.length + ' browser run(s)');
+  console.log(`PASS matrix: ${results.length} browser run(s)`);
 }
 
 function parseArgs(argv) {
   const parsed = {
-    dashboardDir: '',
+    datasourceUID: 'PROMETHEUS_BROWSER_MATRIX',
     fakeControlURL: 'http://127.0.0.1:19090',
+    failFast: false,
     grafanaURL: 'http://127.0.0.1:3000',
-    keepGoing: false,
     outputDir: '/tmp/prometheus-multibatch-browser-matrix',
     password: process.env.GRAFANA_PASSWORD ?? 'admin',
     timeoutMs: 240_000,
@@ -104,8 +171,8 @@ function parseArgs(argv) {
     const arg = argv[index];
     const value = argv[index + 1];
     switch (arg) {
-      case '--dashboard-dir':
-        parsed.dashboardDir = value;
+      case '--datasource-uid':
+        parsed.datasourceUID = value;
         index++;
         break;
       case '--fake-control-url':
@@ -140,19 +207,23 @@ function parseArgs(argv) {
         parsed.chromiumPath = value;
         index++;
         break;
+      case '--verify-script':
+        parsed.verifyScript = path.resolve(value);
+        index++;
+        break;
+      case '--fail-fast':
+        parsed.failFast = true;
+        break;
       case '--keep-going':
-        parsed.keepGoing = true;
+        parsed.failFast = false;
         break;
       case '--help':
       case '-h':
         usage(0);
         break;
       default:
-        throw new Error('Unknown argument: ' + arg);
+        throw new Error(`Unknown argument: ${arg}`);
     }
-  }
-  if (!parsed.dashboardDir) {
-    usage(1);
   }
   if (!Number.isFinite(parsed.timeoutMs) || parsed.timeoutMs <= 0) {
     throw new Error('--timeout-ms must be a positive number');
@@ -162,38 +233,99 @@ function parseArgs(argv) {
 
 function usage(exitCode) {
   console.error(
-    'Usage: node scripts/run-prometheus-multibatch-browser-matrix.mjs --dashboard-dir PATH [options]\n\n' +
-      'The directory must contain enginev3-dashboard.json, ste-dashboard.json, and service-discovery-dashboard.json.\n' +
+    'Usage: node scripts/run-prometheus-multibatch-browser-matrix.mjs [options]\n\n' +
+      'Runs the nine browser → Grafana/Oscope → fake-upstream protocol cases.\n' +
       'Options: --grafana-url URL --upstream-url URL --fake-control-url URL --output-dir PATH\n' +
-      '         --chromium-path PATH --timeout-ms N --keep-going'
+      '         --datasource-uid UID --chromium-path PATH --timeout-ms N --fail-fast'
   );
   process.exit(exitCode);
 }
 
-async function readDashboard(definition) {
-  const payload = JSON.parse(await fs.readFile(path.join(options.dashboardDir, definition.file), 'utf8'));
-  const dashboard = structuredClone(payload.dashboard ?? payload);
-  dashboard.id = null;
-  dashboard.uid = definition.uid;
-  if (definition.uid === '00e27986-022a-49d7-a9be-ecabb2383079') {
-    restorePanel33Legend(dashboard);
+function buildDashboard(testCase, index) {
+  const uid = `prom-mb-browser-${index + 1}`;
+  const panelOptions = {
+    legend: {
+      calcs: [],
+      displayMode: 'list',
+      placement: 'bottom',
+      showLegend: true,
+    },
+    tooltip: {
+      mode: 'single',
+      sort: 'none',
+    },
+  };
+  if (!testCase.requestCompact) {
+    // Vertical timeseries is renderable but intentionally outside compact-v1's panel policy.
+    panelOptions.orientation = 'vertical';
   }
-  return dashboard;
+  return {
+    annotations: { list: [] },
+    editable: true,
+    fiscalYearStartMonth: 0,
+    graphTooltip: 0,
+    id: null,
+    panels: [
+      {
+        datasource: { type: 'prometheus', uid: options.datasourceUID },
+        fieldConfig: { defaults: {}, overrides: [] },
+        gridPos: { h: 14, w: 24, x: 0, y: 0 },
+        id: 1,
+        options: panelOptions,
+        targets: [
+          {
+            datasource: { type: 'prometheus', uid: options.datasourceUID },
+            expr: 'up',
+            format: 'time_series',
+            instant: false,
+            range: true,
+            refId: 'A',
+          },
+        ],
+        title: testCase.id,
+        transformations: [],
+        type: 'timeseries',
+      },
+    ],
+    refresh: '',
+    schemaVersion: 41,
+    tags: ['prometheus-multibatch-browser-matrix'],
+    templating: { list: [] },
+    time: { from: 'now-5m', to: 'now' },
+    timezone: 'browser',
+    title: `Prometheus browser matrix ${testCase.id}`,
+    uid,
+    version: 0,
+  };
 }
 
-function restorePanel33Legend(dashboard) {
-  const queue = [...(dashboard.panels ?? [])];
-  while (queue.length > 0) {
-    const panel = queue.shift();
-    if (panel?.id === 33) {
-      for (const target of panel.targets ?? []) {
-        target.legendFormat = unicodeLegend;
-      }
-      return;
+async function configureDatasource() {
+  const existing = await grafanaRequest('/api/datasources/uid/' + encodeURIComponent(options.datasourceUID));
+  const datasource = existing.ok
+    ? await existing.json()
+    : {
+        access: 'proxy',
+        isDefault: false,
+        name: 'prometheus-browser-matrix',
+        type: 'prometheus',
+        uid: options.datasourceUID,
+      };
+  const response = await grafanaRequest(
+    existing.ok ? '/api/datasources/uid/' + encodeURIComponent(options.datasourceUID) : '/api/datasources',
+    {
+      body: JSON.stringify({
+        ...datasource,
+        access: 'proxy',
+        jsonData: { ...(datasource.jsonData ?? {}), httpMethod: 'POST' },
+        url: options.upstreamURL,
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: existing.ok ? 'PUT' : 'POST',
     }
-    queue.push(...(panel?.panels ?? []));
+  );
+  if (!response.ok) {
+    throw new Error(`datasource update failed for ${options.datasourceUID}: HTTP ${response.status}`);
   }
-  throw new Error('service discovery dashboard did not contain panel 33');
 }
 
 async function importDashboard(dashboard) {
@@ -203,53 +335,132 @@ async function importDashboard(dashboard) {
     method: 'POST',
   });
   if (!response.ok) {
-    throw new Error('dashboard import failed for ' + dashboard.uid + ': HTTP ' + response.status);
+    throw new Error(`dashboard import failed for ${dashboard.uid}: HTTP ${response.status}`);
   }
 }
 
-async function configureDatasources(bypass) {
-  for (const uid of datasourceUIDs) {
-    const existing = await grafanaRequest('/api/datasources/uid/' + uid);
-    const datasource = existing.ok
-      ? await existing.json()
-      : { access: 'proxy', name: 'multibatch-' + uid, type: 'prometheus', uid };
-    datasource.access = 'proxy';
-    datasource.url = options.upstreamURL;
-    datasource.jsonData = { ...(datasource.jsonData ?? {}), httpMethod: 'POST' };
-    delete datasource.jsonData.httpHeaderName1;
-    const secureJsonData = { httpHeaderValue1: '' };
-    if (bypass) {
-      datasource.jsonData.httpHeaderName1 = 'x-oqp-cache-control';
-      secureJsonData.httpHeaderValue1 = 'no-cache';
-    }
-    const response = await grafanaRequest(existing.ok ? '/api/datasources/uid/' + uid : '/api/datasources', {
-      body: JSON.stringify({ ...datasource, secureJsonData }),
-      headers: { 'content-type': 'application/json' },
-      method: existing.ok ? 'PUT' : 'POST',
-    });
-    if (!response.ok) {
-      throw new Error('datasource update failed for ' + uid + ': HTTP ' + response.status);
-    }
+async function resetFakeRequests() {
+  const response = await fakeRequest('/debug/requests/reset', { method: 'POST' });
+  if (!response.ok) {
+    throw new Error(`fake request reset failed: HTTP ${response.status}`);
   }
 }
 
-async function setGate(gate) {
-  if (!options.fakeControlURL) {
-    return;
-  }
-  const response = await fetch(new URL('/debug/mode', options.fakeControlURL), {
-    body: new URLSearchParams({ gate: String(gate) }),
+async function setFakeMode(testCase) {
+  const response = await fakeRequest('/debug/mode', {
+    body: new URLSearchParams({
+      dataShape: testCase.dataShape,
+      upstreamFormat: testCase.upstreamFormat,
+    }),
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     method: 'POST',
   });
   if (!response.ok) {
-    throw new Error('fake gate update failed: HTTP ' + response.status);
+    throw new Error(`fake mode update failed: HTTP ${response.status}`);
   }
 }
 
+async function validateFakeUpstreamEvidence(testCase) {
+  const response = await fakeRequest('/debug/requests');
+  if (!response.ok) {
+    throw new Error(`fake request evidence failed: HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  const requests = Array.isArray(payload.requests) ? payload.requests : [];
+  const rangeRequests = requests.filter((request) => request.path === '/api/v1/query_range');
+  if (rangeRequests.length === 0) {
+    throw new Error('fake upstream observed no /api/v1/query_range request');
+  }
+
+  const evidence = rangeRequests.map((request) => ({
+    bodyKind: actualBodyKind(request),
+    contentType: actualContentType(request),
+    dataShape: actualDataShape(request),
+    format: actualFormat(request),
+    payloadType: actualPayloadType(request),
+    request,
+  }));
+  for (const [index, entry] of evidence.entries()) {
+    if (!entry.format) {
+      throw new Error(`fake upstream request ${index + 1} did not report its actual returned format`);
+    }
+    if (entry.format !== testCase.upstreamFormat) {
+      throw new Error(
+        `fake upstream request ${index + 1} returned ${entry.format}; expected ${testCase.upstreamFormat}`
+      );
+    }
+    if (!entry.dataShape) {
+      throw new Error(`fake upstream request ${index + 1} did not report its actual returned data shape`);
+    }
+    if (entry.dataShape !== testCase.dataShape) {
+      throw new Error(`fake upstream request ${index + 1} returned ${entry.dataShape}; expected ${testCase.dataShape}`);
+    }
+    if (entry.request.compactHeader) {
+      throw new Error(
+        `fake upstream request ${index + 1} unexpectedly received compact header ${entry.request.compactHeader}`
+      );
+    }
+    if (testCase.upstreamFormat === 'plain') {
+      if (entry.bodyKind !== 'prometheus-json' || !String(entry.contentType).startsWith('application/json')) {
+        throw new Error(`fake upstream request ${index + 1} did not return ordinary Prometheus JSON`);
+      }
+    } else if (
+      entry.bodyKind !== 'jsonl' ||
+      !String(entry.contentType).includes('prometheus.multibatch') ||
+      Number(entry.payloadType) !== 1
+    ) {
+      throw new Error(`fake upstream request ${index + 1} did not return multibatch type-1 JSONL`);
+    }
+  }
+  return {
+    rangeRequestCount: rangeRequests.length,
+    returnedBodyKinds: evidence.map((entry) => entry.bodyKind),
+    returnedContentTypes: evidence.map((entry) => entry.contentType),
+    returnedDataShapes: evidence.map((entry) => entry.dataShape),
+    returnedFormats: evidence.map((entry) => entry.format),
+    returnedPayloadTypes: evidence.map((entry) => entry.payloadType),
+    requests: rangeRequests,
+  };
+}
+
+function actualFormat(request) {
+  return (
+    request.returnedFormat ??
+    request.actualFormat ??
+    request.responseFormat ??
+    request.returnedUpstreamFormat ??
+    request.upstreamFormatReturned
+  );
+}
+
+function actualDataShape(request) {
+  return request.returnedDataShape ?? request.actualDataShape ?? request.responseDataShape ?? request.dataShapeReturned;
+}
+
+function actualBodyKind(request) {
+  return request.returnedBodyKind ?? request.actualBodyKind ?? request.responseBodyKind;
+}
+
+function actualContentType(request) {
+  return request.returnedContentType ?? request.actualContentType ?? request.responseContentType;
+}
+
+function actualPayloadType(request) {
+  return request.returnedPayloadType ?? request.actualPayloadType ?? request.responsePayloadType;
+}
+
+async function augmentReport(reportPath, extra) {
+  let report = {};
+  try {
+    report = JSON.parse(await fs.readFile(reportPath, 'utf8'));
+  } catch {
+    // Preserve the runner evidence even if the verifier failed before writing a report.
+  }
+  await fs.writeFile(reportPath, `${JSON.stringify({ ...report, ...extra }, null, 2)}\n`);
+}
+
 function dashboardURL(dashboard) {
-  const base = options.grafanaURL + '/d/' + dashboard.uid + '/' + dashboard.slug;
-  return dashboard.query ? base + '?' + dashboard.query : base + '?from=now-30m&to=now';
+  return options.grafanaURL + '/d/' + dashboard.uid + '/prometheus-browser-matrix?from=now-5m&to=now&timezone=browser';
 }
 
 async function grafanaRequest(endpoint, init = {}) {
@@ -257,6 +468,10 @@ async function grafanaRequest(endpoint, init = {}) {
     ...init,
     headers: { Authorization: auth, ...(init.headers ?? {}) },
   });
+}
+
+async function fakeRequest(endpoint, init = {}) {
+  return fetch(new URL(endpoint, options.fakeControlURL), init);
 }
 
 function run(command, args) {
@@ -268,5 +483,5 @@ function run(command, args) {
 }
 
 async function writeIndex(results) {
-  await fs.writeFile(path.join(options.outputDir, 'index.json'), JSON.stringify(results, null, 2) + '\n');
+  await fs.writeFile(path.join(options.outputDir, 'index.json'), `${JSON.stringify(results, null, 2)}\n`);
 }

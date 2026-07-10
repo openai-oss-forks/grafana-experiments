@@ -620,7 +620,160 @@ func TestExecuteStreamPassesPlainJSONThroughWithoutMultiBatchAccept(t *testing.T
 	require.Equal(t, payload, response.Body)
 }
 
-func compactMultiBatchRequest() *backend.CallResourceRequest {
+func TestExecuteStreamOscopeBackendMultiBatchMatrix(t *testing.T) {
+	plainPayload := []byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"api"},"values":[[0,"1"],[60,"2"]]}]}}`)
+	jsonlPayload := []byte(`{"type":"schema","frame":"series:1","columns":[{"name":"time","type":"time"},{"name":"value","type":"number","labels":{"job":"api"}}]}
+{"type":"data","frame":"series:1","data":["2026-06-07T19:20:00Z","1"]}
+`)
+
+	zstdWithContentSizeEncoder, err := zstd.NewWriter(nil, zstd.WithSingleSegment(true))
+	require.NoError(t, err)
+	zstdWithContentSizePayload := zstdWithContentSizeEncoder.EncodeAll(jsonlPayload, nil)
+	zstdWithContentSizeEncoder.Close()
+	var zstdWithContentSizeHeader zstd.Header
+	require.NoError(t, zstdWithContentSizeHeader.Decode(zstdWithContentSizePayload))
+	require.True(t, zstdWithContentSizeHeader.HasFCS)
+
+	var zstdWithoutContentSize bytes.Buffer
+	zstdWithoutContentSizeEncoder, err := zstd.NewWriter(&zstdWithoutContentSize)
+	require.NoError(t, err)
+	_, err = zstdWithoutContentSizeEncoder.Write(jsonlPayload)
+	require.NoError(t, err)
+	require.NoError(t, zstdWithoutContentSizeEncoder.Close())
+	var zstdWithoutContentSizeHeader zstd.Header
+	require.NoError(t, zstdWithoutContentSizeHeader.Decode(zstdWithoutContentSize.Bytes()))
+	require.False(t, zstdWithoutContentSizeHeader.HasFCS)
+
+	testCases := []struct {
+		name                    string
+		upstreamMultiBatch      bool
+		upstreamPayloadEncoding byte
+		upstreamPayload         []byte
+		upstreamHTTPGzip        bool
+		wantPayloadEncoding     byte
+		wantPayload             []byte
+	}{
+		{
+			name:                    "multibatch type-1 identity payload passes through",
+			upstreamMultiBatch:      true,
+			upstreamPayloadEncoding: multiBatchPayloadEncodingIdentity,
+			upstreamPayload:         jsonlPayload,
+			wantPayloadEncoding:     multiBatchPayloadEncodingIdentity,
+			wantPayload:             jsonlPayload,
+		},
+		{
+			name:                    "multibatch type-1 zstd payload passes through",
+			upstreamMultiBatch:      true,
+			upstreamPayloadEncoding: multiBatchPayloadEncodingZstd,
+			upstreamPayload:         zstdWithContentSizePayload,
+			wantPayloadEncoding:     multiBatchPayloadEncodingZstd,
+			wantPayload:             zstdWithContentSizePayload,
+		},
+		{
+			name:                    "multibatch type-1 zstd payload without content size passes through",
+			upstreamMultiBatch:      true,
+			upstreamPayloadEncoding: multiBatchPayloadEncodingZstd,
+			upstreamPayload:         zstdWithoutContentSize.Bytes(),
+			wantPayloadEncoding:     multiBatchPayloadEncodingZstd,
+			wantPayload:             zstdWithoutContentSize.Bytes(),
+		},
+		{
+			name:                "plain JSON identity fallback is wrapped as final multibatch type-1",
+			wantPayloadEncoding: multiBatchPayloadEncodingIdentity,
+			wantPayload:         plainPayload,
+		},
+		{
+			name:                "plain JSON gzip fallback is Go-decompressed and wrapped as final multibatch type-1",
+			upstreamHTTPGzip:    true,
+			wantPayloadEncoding: multiBatchPayloadEncodingIdentity,
+			wantPayload:         plainPayload,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var upstreamHeaders http.Header
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				upstreamHeaders = req.Header.Clone()
+				if testCase.upstreamMultiBatch {
+					w.Header().Set("Content-Type", preferredMultiBatchContentType+"; version=1")
+					_, writeErr := w.Write(append(
+						multiBatchResponseHeader(),
+						multiBatchPayloadFrame(
+							multiBatchPayloadTypeJSONL,
+							multiBatchFinalFlag,
+							testCase.upstreamPayloadEncoding,
+							testCase.upstreamPayload,
+						)...,
+					))
+					require.NoError(t, writeErr)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				if testCase.upstreamHTTPGzip {
+					w.Header().Set("Content-Encoding", "gzip")
+					writer := gzip.NewWriter(w)
+					_, writeErr := writer.Write(plainPayload)
+					require.NoError(t, writeErr)
+					require.NoError(t, writer.Close())
+					return
+				}
+				_, writeErr := w.Write(plainPayload)
+				require.NoError(t, writeErr)
+			}))
+			defer server.Close()
+
+			res, err := New(
+				server.Client(),
+				backend.DataSourceInstanceSettings{URL: server.URL, JSONData: []byte(`{}`)},
+				log.DefaultLogger,
+			)
+			require.NoError(t, err)
+
+			req := structuredMultiBatchRequest()
+			req.Headers["Accept"] = []string{prometheusMultiBatchAcceptHeader}
+			req.Headers["Accept-Encoding"] = []string{"gzip, deflate, br, zstd"}
+
+			sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 4)}
+			require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
+
+			responses := make([]*backend.CallResourceResponse, 0, len(sender.responses))
+			for len(sender.responses) > 0 {
+				responses = append(responses, <-sender.responses)
+			}
+			require.NotEmpty(t, responses)
+
+			require.Equal(t, prometheusMultiBatchAcceptHeader, upstreamHeaders.Get("Accept"))
+			require.Empty(t, upstreamHeaders.Get("X-Grafana-Query-Format"))
+			require.Equal(t, "gzip", upstreamHeaders.Get("Accept-Encoding"))
+			require.NotEqual(t, req.GetHTTPHeaders().Get("Accept-Encoding"), upstreamHeaders.Get("Accept-Encoding"))
+
+			downstreamHeaders := http.Header(responses[0].Headers)
+			require.True(t, isMultiBatchContentType(downstreamHeaders.Get("Content-Type")))
+			require.Empty(t, downstreamHeaders.Get("Content-Encoding"))
+			for _, response := range responses {
+				require.Empty(t, http.Header(response.Headers).Get("Content-Encoding"))
+			}
+
+			var downstream bytes.Buffer
+			for _, response := range responses {
+				downstream.Write(response.Body)
+			}
+			reader := bytes.NewReader(downstream.Bytes())
+			require.NoError(t, readMultiBatchResponseHeader(reader))
+			responseFrame, err := readMultiBatchFrame(reader)
+			require.NoError(t, err)
+			require.Equal(t, byte(multiBatchPayloadTypeJSONL), responseFrame.payloadType)
+			require.Equal(t, byte(multiBatchFinalFlag), responseFrame.flags&multiBatchFinalFlag)
+			require.Equal(t, testCase.wantPayloadEncoding, responseFrame.payloadEncoding)
+			require.Equal(t, testCase.wantPayload, responseFrame.payload)
+			require.Zero(t, reader.Len())
+		})
+	}
+}
+
+func structuredMultiBatchRequest() *backend.CallResourceRequest {
 	return &backend.CallResourceRequest{
 		Method: http.MethodPost,
 		Path:   prometheusQueryRangePath,
@@ -639,10 +792,15 @@ func compactMultiBatchRequest() *backend.CallResourceRequest {
 			}]
 		}`),
 		Headers: map[string][]string{
-			"Content-Type":           {"application/json"},
-			"X-Grafana-Query-Format": {"compact-v1"},
+			"Content-Type": {"application/json"},
 		},
 	}
+}
+
+func compactMultiBatchRequest() *backend.CallResourceRequest {
+	req := structuredMultiBatchRequest()
+	req.Headers["X-Grafana-Query-Format"] = []string{"compact-v1"}
+	return req
 }
 
 func TestPrometheusMultiBatchQueryFromRequestPreservesUnicodeLegendFormat(t *testing.T) {
