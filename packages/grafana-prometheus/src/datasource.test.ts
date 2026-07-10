@@ -176,6 +176,39 @@ describe('PrometheusDatasource', () => {
       expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBeUndefined();
     });
 
+    it('aligns Prometheus range queries to UTC regardless of dashboard timezone', () => {
+      const target: PromQuery = { expr: 'up', refId: 'A', range: true };
+      const request = createDataRequest([target], {
+        timezone: 'America/Los_Angeles',
+        range: {
+          from: dateTime('2026-06-09T07:00:00Z'),
+          to: dateTime('2026-07-09T07:00:00Z'),
+          raw: { from: 'now-30d', to: 'now' },
+        },
+      });
+
+      expect(ds.processTargetV2(target, request)[0].utcOffsetSec).toBe(0);
+    });
+
+    it('sends UTC-aligned targets through the backend query path', async () => {
+      const previousToggle = config.featureToggles.prometheusMultiBatchStreaming;
+      config.featureToggles.prometheusMultiBatchStreaming = false;
+
+      try {
+        await lastValueFrom(
+          ds.query(
+            createDataRequest([{ expr: 'up', refId: 'A', range: true }], {
+              timezone: 'America/Los_Angeles',
+            })
+          )
+        );
+
+        expect(fetchMock.mock.calls[0][0].data.queries[0].utcOffsetSec).toBe(0);
+      } finally {
+        config.featureToggles.prometheusMultiBatchStreaming = previousToggle;
+      }
+    });
+
     it('throws if using direct access', async () => {
       const instanceSettings = {
         url: 'proxied',
@@ -358,6 +391,7 @@ describe('PrometheusDatasource', () => {
                 app: CoreApp.Dashboard,
                 panelPluginId: 'timeseries',
                 preferredQueryResultFormat: 'compact-v1',
+                timezone: 'America/Los_Angeles',
               }
             )
           )
@@ -373,6 +407,9 @@ describe('PrometheusDatasource', () => {
           'rate(metric_a[$__rate_interval])',
           'rate(metric_b[$__rate_interval])',
         ]);
+        expect(
+          browserFetchSpy.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).queries[0].utcOffsetSec)
+        ).toEqual([0, 0]);
       } finally {
         browserFetchSpy.mockRestore();
         replaceMock.mockImplementation(defaultReplaceMock ?? ((a: string) => a));
