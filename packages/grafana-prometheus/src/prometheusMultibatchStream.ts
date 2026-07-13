@@ -1188,6 +1188,7 @@ async function streamQueryRange(
   const payloadDecoder = new ZstdPayloadDecoder();
   const jsonlAccumulator = new JsonlMultiBatchAccumulator();
   const reader = response.body.getReader();
+  const emitWithRetainedData = retainLastRenderableDataOnError(emit);
 
   try {
     const initialChunks: Uint8Array[] = [];
@@ -1216,7 +1217,7 @@ async function streamQueryRange(
         target,
         queryContext,
         jsonlAccumulator,
-        emit
+        emitWithRetainedData
       );
     }
 
@@ -1234,7 +1235,7 @@ async function streamQueryRange(
         target,
         queryContext,
         jsonlAccumulator,
-        emit
+        emitWithRetainedData
       );
     }
   } finally {
@@ -1242,6 +1243,33 @@ async function streamQueryRange(
   }
 
   frameDecoder.finish();
+}
+
+function retainLastRenderableDataOnError(
+  emit: (response: DataQueryResponse) => void
+): (response: DataQueryResponse) => void {
+  let lastRenderableData: Pick<DataQueryResponse, 'data' | 'compactSeries'> | undefined;
+
+  return (response) => {
+    const hasRenderableData = response.data.length > 0 || (response.compactSeries?.series?.length ?? 0) > 0;
+    if (hasRenderableData) {
+      lastRenderableData = {
+        data: response.data,
+        compactSeries: response.compactSeries,
+      };
+    }
+
+    const hasError = Boolean(response.error || response.errors?.length);
+    if (hasError && !hasRenderableData && lastRenderableData) {
+      emit({
+        ...response,
+        ...lastRenderableData,
+      });
+      return;
+    }
+
+    emit(response);
+  };
 }
 
 async function processMultiBatchChunk(
