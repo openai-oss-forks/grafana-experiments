@@ -24,6 +24,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/auth/authtest"
 	"github.com/grafana/grafana/pkg/services/authn"
 	"github.com/grafana/grafana/pkg/services/authn/authntest"
+	"github.com/grafana/grafana/pkg/services/authn/clients"
 	"github.com/grafana/grafana/pkg/setting"
 )
 
@@ -259,6 +260,124 @@ func TestService_Authenticate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestService_Authenticate_AuthProxySharedSecretSelection(t *testing.T) {
+	cfg := setting.NewCfg()
+	cfg.AuthProxy.HeaderName = "Proxy-Header"
+	cfg.AuthProxy.SharedSecretEnabled = true
+	cfg.AuthProxy.SharedSecret = "secret"
+	cfg.AuthProxy.SharedSecretHeader = "Secret-Header"
+	cfg.AuthProxy.SyncTTL = 0
+
+	proxyIdentity := &authn.Identity{ID: "proxy", Type: claims.TypeUser}
+	proxy, err := clients.ProvideProxy(
+		cfg,
+		nil,
+		tracing.InitializeTracerForTest(),
+		authntest.MockProxyClient{
+			AuthenticateProxyFunc: func(context.Context, *authn.Request, string, map[string]string) (*authn.Identity, error) {
+				return proxyIdentity, nil
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	existingIdentity := &authn.Identity{ID: "existing", Type: claims.TypeUser}
+
+	for _, tc := range []struct {
+		name                   string
+		hasProxyHeader         bool
+		hasSecretHeader        bool
+		secretHeader           string
+		expectedIdentity       *authn.Identity
+		expectErr              bool
+		expectInvalidSecretErr bool
+	}{
+		{name: "uses existing authentication without the shared secret", hasProxyHeader: true, expectedIdentity: existingIdentity},
+		{name: "rejects an empty shared secret without falling back", hasProxyHeader: true, hasSecretHeader: true, expectErr: true, expectInvalidSecretErr: true},
+		{name: "rejects an invalid shared secret without falling back", hasProxyHeader: true, hasSecretHeader: true, secretHeader: "wrong secret", expectErr: true, expectInvalidSecretErr: true},
+		{name: "rejects a valid shared secret without a proxy user header", hasSecretHeader: true, secretHeader: "secret", expectErr: true},
+		{name: "selects auth proxy with a valid shared secret", hasProxyHeader: true, hasSecretHeader: true, secretHeader: "secret", expectedIdentity: proxyIdentity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fallbackCalled := false
+			service := setupTests(t, func(svc *Service) {
+				svc.RegisterClient(&authntest.MockClient{
+					NameFunc:         proxy.Name,
+					TestFunc:         proxy.Test,
+					PriorityFunc:     proxy.Priority,
+					AuthenticateFunc: proxy.Authenticate,
+				})
+				svc.RegisterClient(&authntest.MockClient{
+					NameFunc:     func() string { return "existing" },
+					PriorityFunc: (&clients.Provisioning{}).Priority,
+					TestFunc:     func(context.Context, *authn.Request) bool { return true },
+					AuthenticateFunc: func(context.Context, *authn.Request) (*authn.Identity, error) {
+						fallbackCalled = true
+						return existingIdentity, nil
+					},
+				})
+			})
+
+			headers := http.Header{}
+			if tc.hasProxyHeader {
+				headers.Set("Proxy-Header", "username")
+			}
+			if tc.hasSecretHeader {
+				headers.Set("Secret-Header", tc.secretHeader)
+			}
+
+			identity, err := service.Authenticate(context.Background(), &authn.Request{HTTPRequest: &http.Request{Header: headers, URL: &url.URL{}}})
+			if tc.expectErr {
+				require.Error(t, err)
+				if tc.expectInvalidSecretErr {
+					assert.ErrorIs(t, err, authn.ErrInvalidAuthProxySharedSecret)
+				}
+				assert.Nil(t, identity)
+				assert.False(t, fallbackCalled)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedIdentity, identity)
+			assert.Equal(t, tc.expectedIdentity == existingIdentity, fallbackCalled)
+		})
+	}
+
+	t.Run("does not fall back after a shared-secret proxy post-auth failure", func(t *testing.T) {
+		fallbackCalled := false
+		postAuthErr := errors.New("post auth failed")
+		service := setupTests(t, func(svc *Service) {
+			svc.RegisterClient(&authntest.MockClient{
+				NameFunc:         proxy.Name,
+				TestFunc:         proxy.Test,
+				PriorityFunc:     proxy.Priority,
+				AuthenticateFunc: proxy.Authenticate,
+			})
+			svc.RegisterClient(&authntest.MockClient{
+				NameFunc:     func() string { return "existing" },
+				PriorityFunc: (&clients.Provisioning{}).Priority,
+				TestFunc:     func(context.Context, *authn.Request) bool { return true },
+				AuthenticateFunc: func(context.Context, *authn.Request) (*authn.Identity, error) {
+					fallbackCalled = true
+					return existingIdentity, nil
+				},
+			})
+			svc.RegisterPostAuthHook(func(context.Context, *authn.Identity, *authn.Request) error {
+				return postAuthErr
+			}, 0)
+		})
+
+		headers := http.Header{
+			"Proxy-Header":  {"username"},
+			"Secret-Header": {"secret"},
+		}
+		identity, err := service.Authenticate(context.Background(), &authn.Request{HTTPRequest: &http.Request{Header: headers, URL: &url.URL{}}})
+		assert.ErrorIs(t, err, postAuthErr)
+		assert.Nil(t, identity)
+		assert.False(t, fallbackCalled)
+	})
 }
 
 func TestService_OrgID(t *testing.T) {

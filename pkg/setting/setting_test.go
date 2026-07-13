@@ -278,6 +278,56 @@ func TestLoadingSettings(t *testing.T) {
 		require.Equal(t, 2, cfg.AuthProxy.SyncTTL)
 	})
 
+	t.Run("Auth proxy shared secret settings can be configured", func(t *testing.T) {
+		cfg := NewCfg()
+		err := cfg.Load(CommandLineArgs{
+			HomePath: "../../",
+			Args: []string{
+				"cfg:auth.proxy.shared_secret_enabled=true",
+				"cfg:auth.proxy.shared_secret=secret",
+				"cfg:auth.proxy.shared_secret_header=X-Auth-Proxy-Secret",
+			},
+		})
+		require.NoError(t, err)
+
+		require.True(t, cfg.AuthProxy.SharedSecretEnabled)
+		require.Equal(t, "secret", cfg.AuthProxy.SharedSecret)
+		require.Equal(t, "X-Auth-Proxy-Secret", cfg.AuthProxy.SharedSecretHeader)
+	})
+
+	for _, tc := range []struct {
+		name   string
+		secret string
+	}{
+		{name: "empty", secret: ""},
+		{name: "whitespace only", secret: "   "},
+	} {
+		t.Run("Auth proxy shared secret cannot be enabled with "+tc.name+" value", func(t *testing.T) {
+			cfg := NewCfg()
+			err := cfg.Load(CommandLineArgs{
+				HomePath: "../../",
+				Args: []string{
+					"cfg:auth.proxy.shared_secret_enabled=true",
+					"cfg:auth.proxy.shared_secret=" + tc.secret,
+				},
+			})
+			require.Error(t, err)
+			require.ErrorContains(t, err, "shared_secret must not be empty")
+		})
+	}
+
+	t.Run("Auth proxy shared secret enablement must be a boolean", func(t *testing.T) {
+		cfg := NewCfg()
+		err := cfg.Load(CommandLineArgs{
+			HomePath: "../../",
+			Args: []string{
+				"cfg:auth.proxy.shared_secret_enabled=tru",
+			},
+		})
+		require.Error(t, err)
+		require.ErrorContains(t, err, "shared_secret_enabled must be true or false")
+	})
+
 	t.Run("Test reading string values from .ini file", func(t *testing.T) {
 		cfg := NewCfg()
 		err := cfg.Load(CommandLineArgs{HomePath: "../../"})

@@ -1405,7 +1405,9 @@ func (cfg *Cfg) parseINIFile(iniFile *ini.File) error {
 	cfg.readAzureSettings()
 	cfg.readAuthJWTSettings()
 	cfg.readAuthExtJWTSettings()
-	cfg.readAuthProxySettings()
+	if err := cfg.readAuthProxySettings(); err != nil {
+		return err
+	}
 	cfg.readSessionConfig()
 	cfg.readPasswordlessMagicLinkSettings()
 	if err := cfg.readSmtpSettings(); err != nil {

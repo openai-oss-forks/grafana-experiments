@@ -1,6 +1,7 @@
 package setting
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/grafana/grafana/pkg/util"
@@ -8,18 +9,21 @@ import (
 
 type AuthProxySettings struct {
 	// Auth Proxy
-	Enabled          bool
-	HeaderName       string
-	HeaderProperty   string
-	AutoSignUp       bool
-	EnableLoginToken bool
-	Whitelist        string
-	Headers          map[string]string
-	HeadersEncoded   bool
-	SyncTTL          int
+	Enabled             bool
+	HeaderName          string
+	HeaderProperty      string
+	AutoSignUp          bool
+	EnableLoginToken    bool
+	Whitelist           string
+	Headers             map[string]string
+	HeadersEncoded      bool
+	SyncTTL             int
+	SharedSecretEnabled bool
+	SharedSecret        string
+	SharedSecretHeader  string
 }
 
-func (cfg *Cfg) readAuthProxySettings() {
+func (cfg *Cfg) readAuthProxySettings() error {
 	authProxySettings := AuthProxySettings{}
 	authProxy := cfg.Raw.Section("auth.proxy")
 	authProxySettings.Enabled = authProxy.Key("enabled").MustBool(false)
@@ -29,6 +33,21 @@ func (cfg *Cfg) readAuthProxySettings() {
 	authProxySettings.EnableLoginToken = authProxy.Key("enable_login_token").MustBool(false)
 	authProxySettings.SyncTTL = authProxy.Key("sync_ttl").MustInt(15)
 	authProxySettings.Whitelist = valueAsString(authProxy, "whitelist", "")
+	if authProxy.HasKey("shared_secret_enabled") {
+		sharedSecretEnabled, err := authProxy.Key("shared_secret_enabled").Bool()
+		if err != nil {
+			return fmt.Errorf("[auth.proxy].shared_secret_enabled must be true or false: %w", err)
+		}
+		authProxySettings.SharedSecretEnabled = sharedSecretEnabled
+	}
+	authProxySettings.SharedSecret = valueAsString(authProxy, "shared_secret", "")
+	authProxySettings.SharedSecretHeader = valueAsString(authProxy, "shared_secret_header", "X-WEBAUTH-SECRET")
+	if authProxySettings.SharedSecretEnabled && strings.TrimSpace(authProxySettings.SharedSecret) == "" {
+		return fmt.Errorf("[auth.proxy].shared_secret must not be empty when shared_secret_enabled is true")
+	}
+	if authProxySettings.SharedSecretEnabled && strings.TrimSpace(authProxySettings.SharedSecretHeader) == "" {
+		return fmt.Errorf("[auth.proxy].shared_secret_header must not be empty when shared_secret_enabled is true")
+	}
 	authProxySettings.Headers = make(map[string]string)
 	headers := valueAsString(authProxy, "headers", "")
 
@@ -42,4 +61,5 @@ func (cfg *Cfg) readAuthProxySettings() {
 	authProxySettings.HeadersEncoded = authProxy.Key("headers_encoded").MustBool(false)
 
 	cfg.AuthProxy = authProxySettings
+	return nil
 }

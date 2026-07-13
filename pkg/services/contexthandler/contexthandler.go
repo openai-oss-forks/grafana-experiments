@@ -224,6 +224,9 @@ func GetAuthHTTPHeaders(jwtAuth *setting.AuthJWTSettings, authProxy *setting.Aut
 	// if auth proxy is enabled add the main proxy header and all configured headers
 	if authProxy.Enabled {
 		items = append(items, authProxy.HeaderName)
+		if authProxy.SharedSecret != "" && authProxy.SharedSecretHeader != "" {
+			items = append(items, authProxy.SharedSecretHeader)
+		}
 		for _, header := range authProxy.Headers {
 			if header != "" {
 				items = append(items, header)

@@ -35,10 +35,11 @@ const (
 )
 
 const (
-	MetaKeyUsername            = "username"
-	MetaKeyAuthModule          = "authModule"
-	MetaKeyIsLogin             = "isLogin"
-	defaultRedirectToCookieKey = "redirect_to"
+	MetaKeyUsername              = "username"
+	MetaKeyAuthModule            = "authModule"
+	MetaKeyIsLogin               = "isLogin"
+	MetaKeyAuthProxySharedSecret = "authProxySharedSecret"
+	defaultRedirectToCookieKey   = "redirect_to"
 )
 
 // ClientParams are hints to the auth service about how to handle the identity management

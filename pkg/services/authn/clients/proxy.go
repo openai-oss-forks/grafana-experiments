@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -30,6 +31,9 @@ const (
 	proxyFieldRole   = "Role"
 	proxyFieldGroups = "Groups"
 	proxyCachePrefix = "authn-proxy-sync-ttl"
+
+	proxyPriority             = 50
+	sharedSecretProxyPriority = 0
 )
 
 var proxyFields = [...]string{proxyFieldName, proxyFieldEmail, proxyFieldLogin, proxyFieldRole, proxyFieldGroups}
@@ -75,8 +79,16 @@ func (c *Proxy) Name() string {
 func (c *Proxy) Authenticate(ctx context.Context, r *authn.Request) (*authn.Identity, error) {
 	ctx, span := c.tracer.Start(ctx, "authn.proxy.Authenticate")
 	defer span.End()
+	if c.sharedSecretEnabled() && hasProxyHeader(r, c.cfg.AuthProxy.SharedSecretHeader) {
+		// Once a caller explicitly chooses shared-secret auth proxy, no
+		// downstream authentication failure may fall through to another client.
+		r.SetMeta(authn.MetaKeyAuthProxySharedSecret, "true")
+	}
 	if !c.isAllowedIP(r) {
 		return nil, errNotAcceptedIP.Errorf("request ip is not in the configured accept list")
+	}
+	if c.sharedSecretEnabled() && !c.hasValidSharedSecret(r) {
+		return nil, authn.ErrInvalidAuthProxySharedSecret.Errorf("request does not include a valid auth proxy shared secret")
 	}
 
 	username := getProxyHeader(r, c.cfg.AuthProxy.HeaderName, c.cfg.AuthProxy.HeadersEncoded)
@@ -145,11 +157,34 @@ func (c *Proxy) retrieveIDFromCache(ctx context.Context, cacheKey string, r *aut
 }
 
 func (c *Proxy) Test(ctx context.Context, r *authn.Request) bool {
+	if c.sharedSecretEnabled() {
+		// A missing secret header means this is not an auth proxy request and lets
+		// normal authentication continue. A present header selects auth proxy even
+		// when its value or accompanying user header is invalid so Authenticate can
+		// reject it without fallback.
+		return hasProxyHeader(r, c.cfg.AuthProxy.SharedSecretHeader)
+	}
+
 	return len(getProxyHeader(r, c.cfg.AuthProxy.HeaderName, c.cfg.AuthProxy.HeadersEncoded)) != 0
 }
 
 func (c *Proxy) Priority() uint {
-	return 50
+	if c.sharedSecretEnabled() {
+		// A shared-secret header explicitly selects auth proxy authentication. Run
+		// before every other client so no credential can shadow it.
+		return sharedSecretProxyPriority
+	}
+
+	return proxyPriority
+}
+
+func (c *Proxy) sharedSecretEnabled() bool {
+	return c.cfg.AuthProxy.SharedSecretEnabled
+}
+
+func (c *Proxy) hasValidSharedSecret(r *authn.Request) bool {
+	provided := getProxyHeader(r, c.cfg.AuthProxy.SharedSecretHeader, false)
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(c.cfg.AuthProxy.SharedSecret)) == 1
 }
 
 func (c *Proxy) Hook(ctx context.Context, id *authn.Identity, r *authn.Request) error {
@@ -265,6 +300,20 @@ func getProxyHeader(r *authn.Request, headerName string, encoded bool) string {
 		v = util.DecodeQuotedPrintable(v)
 	}
 	return v
+}
+
+func hasProxyHeader(r *authn.Request, headerName string) bool {
+	if r.HTTPRequest == nil || headerName == "" {
+		return false
+	}
+
+	for key := range r.HTTPRequest.Header {
+		if strings.EqualFold(key, headerName) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func getAdditionalProxyHeaders(r *authn.Request, cfg *setting.Cfg) map[string]string {
