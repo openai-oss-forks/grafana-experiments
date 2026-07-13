@@ -1188,7 +1188,7 @@ async function streamQueryRange(
   const payloadDecoder = new ZstdPayloadDecoder();
   const jsonlAccumulator = new JsonlMultiBatchAccumulator();
   const reader = response.body.getReader();
-  const emitWithRetainedData = retainLastRenderableDataOnError(emit);
+  const emitWithRetainedData = createDataRetainingEmitter(emit);
 
   try {
     const initialChunks: Uint8Array[] = [];
@@ -1245,7 +1245,7 @@ async function streamQueryRange(
   frameDecoder.finish();
 }
 
-function retainLastRenderableDataOnError(
+function createDataRetainingEmitter(
   emit: (response: DataQueryResponse) => void
 ): (response: DataQueryResponse) => void {
   let lastRenderableData: Pick<DataQueryResponse, 'data' | 'compactSeries'> | undefined;
