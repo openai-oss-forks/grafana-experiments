@@ -1,3 +1,4 @@
+import { css } from '@emotion/css';
 import { ReactNode } from 'react';
 
 import {
@@ -5,15 +6,19 @@ import {
   Field,
   FieldType,
   formattedValueToString,
+  GrafanaTheme2,
   InterpolateFunction,
   LinkModel,
   usePluginContext,
 } from '@grafana/data';
+import { t } from '@grafana/i18n';
 import { SortOrder, TooltipDisplayMode } from '@grafana/schema';
+import { useStyles2 } from '@grafana/ui';
 import {
   VizTooltipContent,
   VizTooltipFooter,
   VizTooltipHeader,
+  VizTooltipRow,
   VizTooltipWrapper,
   getContentItems,
   VizTooltipItem,
@@ -54,6 +59,7 @@ export interface TimeSeriesTooltipProps {
   filterByGroupedLabels?: FilterByGroupedLabelsModel;
   canExecuteActions?: boolean;
   compareDiffMs?: number[];
+  highlightSeriesOnHover?: boolean;
 }
 
 export const TimeSeriesTooltip = ({
@@ -73,8 +79,10 @@ export const TimeSeriesTooltip = ({
   canExecuteActions,
   compareDiffMs,
   filterByGroupedLabels,
+  highlightSeriesOnHover = false,
 }: TimeSeriesTooltipProps) => {
   const pluginContext = usePluginContext();
+  const styles = useStyles2(getStyles);
 
   const xField = series.fields[0];
   let xVal = xField.values[dataIdxs[0]!];
@@ -96,6 +104,11 @@ export const TimeSeriesTooltip = ({
     hideZeros,
     _rest
   );
+  const focusedItem =
+    highlightSeriesOnHover && mode === TooltipDisplayMode.Multi && contentItems.length > 1
+      ? contentItems.find((item) => item.isActive)
+      : undefined;
+  const regularItems = focusedItem ? contentItems.filter((item) => item !== focusedItem) : contentItems;
 
   let footer: ReactNode;
 
@@ -130,8 +143,23 @@ export const TimeSeriesTooltip = ({
   return (
     <VizTooltipWrapper>
       {headerItem != null && <VizTooltipHeader item={headerItem} isPinned={isPinned} />}
+      {focusedItem && (
+        <div
+          className={styles.focusedSeries}
+          style={{ borderLeftColor: focusedItem.color }}
+          aria-label={t('timeseries.tooltip.focused-series-label', 'Focused series: {{series}}', {
+            series: `${focusedItem.label}: ${focusedItem.value}`,
+          })}
+          data-testid="timeseries-tooltip-focused-series"
+        >
+          <div className={styles.focusedSeriesHeading}>
+            {t('timeseries.tooltip.focused-series-heading', 'Focused series')}
+          </div>
+          <VizTooltipRow {...focusedItem} isActive isPinned={isPinned} wrapLabel />
+        </div>
+      )}
       <VizTooltipContent
-        items={contentItems}
+        items={regularItems}
         isPinned={isPinned}
         scrollable={isTooltipScrollable({ mode, maxHeight })}
         maxHeight={maxHeight}
@@ -140,3 +168,20 @@ export const TimeSeriesTooltip = ({
     </VizTooltipWrapper>
   );
 };
+
+const getStyles = (theme: GrafanaTheme2) => ({
+  focusedSeries: css({
+    borderTop: `1px solid ${theme.colors.border.weak}`,
+    borderLeft: `3px solid ${theme.colors.border.medium}`,
+    background: theme.colors.background.secondary,
+    padding: theme.spacing(1),
+    whiteSpace: 'normal',
+  }),
+  focusedSeriesHeading: css({
+    color: theme.colors.text.secondary,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontWeight: theme.typography.fontWeightMedium,
+    lineHeight: 1,
+    marginBottom: theme.spacing(0.75),
+  }),
+});

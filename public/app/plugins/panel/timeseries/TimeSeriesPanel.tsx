@@ -205,6 +205,7 @@ export const TimeSeriesPanel = ({
       height={height}
       legend={options.legend}
       options={options}
+      highlightSeriesOnHover={options.highlightSeriesOnHover !== false}
       replaceVariables={replaceVariables}
       dataLinkPostProcessor={dataLinkPostProcessor}
       cursorSync={cursorSync}
@@ -336,6 +337,7 @@ export const TimeSeriesPanel = ({
                       }
                       canExecuteActions={userCanExecuteActions}
                       compareDiffMs={compareDiffMs}
+                      highlightSeriesOnHover={options.highlightSeriesOnHover !== false}
                     />
                   );
                 }}

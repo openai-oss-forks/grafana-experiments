@@ -11,9 +11,17 @@ import { CompactNativeRenderPlan } from '../GraphNG/compactNativePlan';
 import { CompactPlotLegend } from './CompactPlotLegend';
 import { getXAxisConfig, prepareCompactPlotConfigBuilder, preparePlotConfigBuilder } from './utils';
 
-const propsToDiff: Array<string | PropDiffFn> = ['legend', 'options', 'annotationLanes', 'theme'];
+const propsToDiff: Array<string | PropDiffFn> = [
+  'legend',
+  'options',
+  'annotationLanes',
+  'theme',
+  'highlightSeriesOnHover',
+];
 
-type TimeSeriesProps = Omit<GraphNGProps, 'prepConfig' | 'propsToDiff' | 'renderLegend'>;
+type TimeSeriesProps = Omit<GraphNGProps, 'prepConfig' | 'propsToDiff' | 'renderLegend'> & {
+  highlightSeriesOnHover?: boolean;
+};
 
 export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
   prepConfig = (
@@ -22,9 +30,9 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
     getTimeRange: () => TimeRange,
     annotationLanes?: number
   ) => {
-    const { theme, timeZone, options, renderers, tweakAxis, tweakScale } = this.props;
+    const { theme, timeZone, options, renderers, tweakAxis, tweakScale, highlightSeriesOnHover } = this.props;
 
-    return preparePlotConfigBuilder({
+    const config = preparePlotConfigBuilder({
       frame: alignedFrame,
       theme,
       timeZones: Array.isArray(timeZone) ? timeZone : [timeZone],
@@ -37,6 +45,8 @@ export class UnthemedTimeSeries extends Component<TimeSeriesProps> {
       orientation: options?.orientation,
       xAxisConfig: getXAxisConfig(annotationLanes),
     });
+    config.setFocus({ alpha: highlightSeriesOnHover ? 0.3 : 1 });
+    return config;
   };
 
   prepCompactConfig = (plan: CompactNativeRenderPlan, getTimeRange: () => TimeRange, annotationLanes?: number) => {

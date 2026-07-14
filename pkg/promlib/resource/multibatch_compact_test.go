@@ -19,6 +19,7 @@ import (
 	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/grafana/grafana-plugin-sdk-go/experimental/featuretoggles"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/require"
 )
@@ -286,6 +287,37 @@ func TestPrometheusMultiBatchStreamUsesParsedQueryAndOnlyUpstreamPrometheusField
 	require.NotEmpty(t, upstreamBody.Get("start"))
 	require.NotEmpty(t, upstreamBody.Get("end"))
 	require.NotEmpty(t, upstreamBody.Get("step"))
+}
+
+func TestPrometheusMultiBatchStreamReportsBackendQueryStep(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		require.NoError(t, req.ParseForm())
+		require.Equal(t, "300", req.Form.Get("step"))
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	cfg := backend.NewGrafanaCfg(map[string]string{
+		featuretoggles.EnabledFeatures: "prometheusTshirtSizeStepSize",
+	})
+	res, err := New(
+		server.Client(),
+		backend.DataSourceInstanceSettings{URL: server.URL, JSONData: []byte(`{"timeInterval":"15s"}`)},
+		log.DefaultLogger,
+		cfg.FeatureToggles(),
+	)
+	require.NoError(t, err)
+
+	req := structuredMultiBatchRequest()
+	delete(req.Headers, "X-Grafana-Query-Format")
+	req.Body = []byte(`{"from":"0","to":"21600000","queries":[{"expr":"up","range":true,"refId":"A","intervalMs":30000,"maxDataPoints":720}]}`)
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
+
+	response := receiveResponse(t, sender.responses)
+	require.Equal(t, "300000", http.Header(response.Headers).Get(prometheusQueryStepMSHeader))
 }
 
 func TestPrometheusMultiBatchStreamRespectsConfiguredUpstreamGETMethod(t *testing.T) {

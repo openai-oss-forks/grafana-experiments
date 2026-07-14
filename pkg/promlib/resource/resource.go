@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ const preferredMultiBatchContentType = "application/com.openai.prometheus.multib
 const prometheusMultiBatchAcceptHeader = preferredMultiBatchContentType + "; version=1, " + multiBatchContentType + "; version=1, application/jsonl"
 const multiBatchPluginErrorMessage = "An error occurred within the plugin"
 const prometheusQueryRangePath = "api/v1/query_range"
+const prometheusQueryStepMSHeader = "X-Grafana-Prometheus-Query-Step-Ms"
 
 var browserOnlyResourceHeaders = []string{
 	"Accept-Encoding",
@@ -279,13 +281,15 @@ func (r *Resource) executePrometheusMultiBatchQueryStream(
 	}()
 
 	compactQuery := compactMultiBatchQueryFromModel(query)
+	responseHeaders := compactMultiBatchResponseHeaders(resp.Header)
+	responseHeaders.Set(prometheusQueryStepMSHeader, strconv.FormatInt(query.Step.Milliseconds(), 10))
 	if compactRequest {
 		encoder := newMultiBatchResponseEncoder(
 			ctx,
 			r.log,
 			sender,
 			resp.StatusCode,
-			compactMultiBatchResponseHeaders(resp.Header),
+			responseHeaders,
 			"Failed to stream compact Prometheus multi-batch response",
 			func() multiBatchFrame {
 				frame, err := buildJSONDataResponseFrame(
@@ -305,13 +309,12 @@ func (r *Resource) executePrometheusMultiBatchQueryStream(
 		return r.executeCompactMultiBatchStream(req, resp, compactQuery, encoder)
 	}
 
-	headers := compactMultiBatchResponseHeaders(resp.Header)
 	encoder := newMultiBatchResponseEncoder(
 		ctx,
 		r.log,
 		sender,
 		resp.StatusCode,
-		headers,
+		responseHeaders,
 		"Failed to stream Prometheus multi-batch response",
 		func() multiBatchFrame {
 			return multiBatchErrorFrame(multiBatchPluginErrorMessage)
