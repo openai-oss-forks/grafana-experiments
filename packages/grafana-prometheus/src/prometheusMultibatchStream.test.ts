@@ -241,6 +241,67 @@ describe('Prometheus multi-batch streaming', () => {
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 0);
   });
 
+  it('keeps a half-complete compact batch when the final batch returns an error', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target);
+    const totalPointCount = 20;
+    const batchOnePoints = Array.from({ length: totalPointCount / 2 }, (_, index) => index + 1);
+    const partialPayload = JSON.stringify({ expectedPointCount: totalPointCount, points: batchOnePoints });
+    const partialCompactSeries = {
+      axes: [{ count: batchOnePoints.length, start: 0, step: 60_000 }],
+      payload: partialPayload,
+      series: [{ refId: 'A' }],
+    };
+    const error = { message: 'synthetic final batch error', refId: 'A' };
+    toDataQueryResponseMock.mockImplementation((raw) => {
+      const payload = new TextDecoder().decode(('data' in raw ? raw.data : undefined) as ArrayBuffer);
+      if (payload === partialPayload) {
+        return {
+          compactSeries: partialCompactSeries,
+          data: [],
+          state: LoadingState.Done,
+        } as unknown as DataQueryResponse;
+      }
+
+      return {
+        compactSeries: { payload: 'error', series: [] },
+        data: [],
+        error,
+        errors: [error],
+        state: LoadingState.Error,
+      } as unknown as DataQueryResponse;
+    });
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(responseHeaderFrame(), frame(partialPayload, 0), frame('error', FINAL_BATCH_FLAG)),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(2);
+    expect(batchOnePoints).toHaveLength(totalPointCount / 2);
+    expect(responses[0].compactSeries).toBe(partialCompactSeries);
+    expect(responses[1]).toMatchObject({
+      compactSeries: partialCompactSeries,
+      data: [],
+      error,
+      errors: [error],
+      state: LoadingState.Done,
+    });
+  });
+
   it('emits non-compact JSONL partial and final accumulated responses without compact headers', async () => {
     const target: PromQuery = {
       expr: 'sum(rate(http_requests_total[$__interval]))',
