@@ -49,6 +49,7 @@ export class UPlotConfigBuilder {
   // to prevent more than one threshold per scale
   private thresholds: Record<string, UPlotThresholdOptions> = {};
   private padding?: Padding = undefined;
+  private focus?: uPlot.Options['focus'];
   private state: PlotState = { isPanning: false };
 
   private cachedConfig?: PlotConfig;
@@ -127,6 +128,10 @@ export class UPlotConfigBuilder {
     this.cursor = merge({}, this.cursor, cursor);
   }
 
+  setFocus(focus: uPlot.Options['focus']) {
+    this.focus = merge({}, this.focus, focus);
+  }
+
   setMode(mode: uPlot.Mode) {
     this.mode = mode;
   }
@@ -200,6 +205,7 @@ export class UPlotConfigBuilder {
             },
       ],
     };
+    config.focus = merge({}, config.focus, this.focus);
     config.axes = this.ensureNonOverlappingAxes(Object.values(this.axes)).map((a) => a.getConfig());
     config.series = [...config.series, ...this.series.map((s) => s.getConfig())];
     config.scales = this.scales.reduce((acc, s) => {
