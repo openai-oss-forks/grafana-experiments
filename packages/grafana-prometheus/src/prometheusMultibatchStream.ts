@@ -25,6 +25,7 @@ export const MULTIBATCH_PREFERRED_CONTENT_TYPE = 'application/com.openai.prometh
 export const MULTIBATCH_ACCEPT_HEADER = `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1, ${MULTIBATCH_CONTENT_TYPE}; version=1, application/jsonl`;
 const QUERY_DATA_COMPACT_HEADER = 'X-Grafana-Query-Format';
 const QUERY_DATA_COMPACT_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact;version=1';
+const PROMETHEUS_CALCULATED_STEP_HEADER = 'X-Grafana-Prometheus-Calculated-Step-Ms';
 const QUERY_DATA_COMPACT_VERSION = 'compact-v1';
 
 const FRAME_HEADER_SIZE = 12;
@@ -1156,6 +1157,11 @@ async function streamQueryRange(
     method: 'POST',
     signal,
   });
+
+  const calculatedStepMs = Number(response.headers.get(PROMETHEUS_CALCULATED_STEP_HEADER));
+  if (Number.isSafeInteger(calculatedStepMs) && calculatedStepMs > 0) {
+    queryContext.stepMs = calculatedStepMs;
+  }
 
   const responseContentType = response.headers.get('Content-Type');
   if (!isMultiBatchContentType(responseContentType)) {

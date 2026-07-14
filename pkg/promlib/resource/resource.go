@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ const preferredMultiBatchContentType = "application/com.openai.prometheus.multib
 const prometheusMultiBatchAcceptHeader = preferredMultiBatchContentType + "; version=1, " + multiBatchContentType + "; version=1, application/jsonl"
 const multiBatchPluginErrorMessage = "An error occurred within the plugin"
 const prometheusQueryRangePath = "api/v1/query_range"
+const prometheusCalculatedStepHeader = "X-Grafana-Prometheus-Calculated-Step-Ms"
 
 var browserOnlyResourceHeaders = []string{
 	"Accept-Encoding",
@@ -306,6 +308,7 @@ func (r *Resource) executePrometheusMultiBatchQueryStream(
 	}
 
 	headers := compactMultiBatchResponseHeaders(resp.Header)
+	headers.Set(prometheusCalculatedStepHeader, strconv.FormatInt(compactQuery.Step.Milliseconds(), 10))
 	encoder := newMultiBatchResponseEncoder(
 		ctx,
 		r.log,

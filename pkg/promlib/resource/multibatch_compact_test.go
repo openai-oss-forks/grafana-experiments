@@ -19,6 +19,7 @@ import (
 	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/grafana/grafana-plugin-sdk-go/experimental/featuretoggles"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/require"
 )
@@ -346,6 +347,47 @@ func TestPrometheusMultiBatchStreamFramesNonCompactFallbackWhenUpstreamDeclines(
 		t.Fatalf("unexpected extra fallback response: %#v", extra)
 	default:
 	}
+}
+
+func TestPrometheusMultiBatchStreamReturnsCalculatedStepForNonCompactResponses(t *testing.T) {
+	var upstreamStep string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		require.NoError(t, req.ParseForm())
+		upstreamStep = req.Form.Get("step")
+		w.Header().Set("Content-Type", preferredMultiBatchContentType+"; version=1")
+		_, err := w.Write(append(
+			multiBatchResponseHeader(),
+			multiBatchPayloadFrame(
+				multiBatchPayloadTypeJSONL,
+				multiBatchFinalFlag,
+				multiBatchPayloadEncodingIdentity,
+				[]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`),
+			)...,
+		))
+		require.NoError(t, err)
+	}))
+	defer server.Close()
+
+	cfg := backend.NewGrafanaCfg(map[string]string{
+		featuretoggles.EnabledFeatures: "prometheusTshirtSizeStepSize",
+	})
+	res, err := New(
+		server.Client(),
+		backend.DataSourceInstanceSettings{URL: server.URL, JSONData: []byte(`{"timeInterval":"60s"}`)},
+		log.DefaultLogger,
+		cfg.FeatureToggles(),
+	)
+	require.NoError(t, err)
+
+	req := structuredMultiBatchRequest()
+	req.Body = []byte(`{"from":"0","to":"86400000","queries":[{"expr":"up","range":true,"refId":"A","intervalMs":60000,"maxDataPoints":1500}]}`)
+	req.Headers["Accept"] = []string{prometheusMultiBatchAcceptHeader}
+	sender := recordingSender{responses: make(chan *backend.CallResourceResponse, 2)}
+	require.NoError(t, res.ExecuteStream(context.Background(), req, sender))
+
+	response := receiveResponse(t, sender.responses)
+	require.Equal(t, "300", upstreamStep)
+	require.Equal(t, "300000", http.Header(response.Headers).Get("X-Grafana-Prometheus-Calculated-Step-Ms"))
 }
 
 func TestPrometheusMultiBatchQueryFromRequestRejectsUnsupportedEnvelopes(t *testing.T) {

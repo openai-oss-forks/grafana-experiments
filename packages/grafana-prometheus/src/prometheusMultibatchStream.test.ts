@@ -1,4 +1,5 @@
 import {
+  applyNullInsertThreshold,
   AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
   dateTime,
   DataFrameType,
@@ -302,6 +303,52 @@ describe('Prometheus multi-batch streaming', () => {
       Date.parse('2026-06-07T19:21:00Z'),
     ]);
     expect(responses[1].data[0].fields[1].values).toEqual([10, 2]);
+  });
+
+  it('uses the backend-calculated step for non-compact multibatch frames', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = {
+      ...requestForTarget(target, false),
+      maxDataPoints: 1500,
+      range: {
+        from: dateTime(0),
+        to: dateTime(24 * 60 * 60 * 1000),
+      },
+    } as DataQueryRequest<PromQuery>;
+    const jsonl = [
+      jsonlSchema('series:1'),
+      jsonlData('series:1', '0', '10'),
+      jsonlData('series:1', '300', '11'),
+      jsonlData('series:1', '600', '12'),
+      jsonlData('series:1', '900', '13'),
+    ].join('\n');
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(jsonl, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: new Headers({
+        'content-type': `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1`,
+        'X-Grafana-Prometheus-Calculated-Step-Ms': '300000',
+      }),
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    const responseFrame = responses[0].data[0];
+    expect(responseFrame.fields[0].config.interval).toBe(300000);
+    expect(responseFrame.meta?.custom?.calculatedMinStep).toBe(300000);
+    expect(responseFrame.meta?.executedQueryString).toContain('Step: 5m');
+    expect(applyNullInsertThreshold({ frame: responseFrame }).fields[1].values).toEqual([10, 11, 12, 13]);
   });
 
   it('keeps non-ASCII legend formats in the JSON body instead of browser headers', async () => {
