@@ -241,7 +241,7 @@ describe('Prometheus multi-batch streaming', () => {
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 0);
   });
 
-  it('emits non-compact JSONL partial and final accumulated responses without compact headers', async () => {
+  it('uses the backend query step for non-compact JSONL frames', async () => {
     const target: PromQuery = {
       expr: 'sum(rate(http_requests_total[$__interval]))',
       legendFormat: '{{job}}',
@@ -255,7 +255,7 @@ describe('Prometheus multi-batch streaming', () => {
     ].join('\n');
     const finalJsonl = [
       jsonlData('series:1', '2026-06-07T19:20:00Z', '10'),
-      jsonlData('series:1', '2026-06-07T19:21:00Z', '2'),
+      jsonlData('series:1', '2026-06-07T19:25:00Z', '2'),
       jsonlStatus('series:1', false),
     ].join('\n');
     global.fetch = jest.fn().mockResolvedValue({
@@ -267,8 +267,16 @@ describe('Prometheus multi-batch streaming', () => {
         ),
       ]),
       headers: {
-        get: (name: string) =>
-          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+        get: (name: string) => {
+          switch (name.toLowerCase()) {
+            case 'content-type':
+              return `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1`;
+            case 'x-grafana-prometheus-query-step-ms':
+              return '300000';
+            default:
+              return null;
+          }
+        },
       },
       ok: true,
       text: jest.fn(),
@@ -294,14 +302,56 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
     expect(responses[0].data[0].length).toBe(1);
     expect(responses[0].data[0].fields[0].values).toEqual([Date.parse('2026-06-07T19:20:00Z')]);
+    expect(responses[0].data[0].fields[0].config.interval).toBe(300_000);
     expect(responses[0].data[0].fields[1].values).toEqual([1]);
     expect(responses[0].data[0].fields[1].config.displayNameFromDS).toBe('api');
     expect(responses[1].data[0].length).toBe(2);
     expect(responses[1].data[0].fields[0].values).toEqual([
       Date.parse('2026-06-07T19:20:00Z'),
-      Date.parse('2026-06-07T19:21:00Z'),
+      Date.parse('2026-06-07T19:25:00Z'),
     ]);
+    expect(responses[1].data[0].fields[0].config.interval).toBe(300_000);
     expect(responses[1].data[0].fields[1].values).toEqual([10, 2]);
+  });
+
+  it.each([
+    ['missing', null],
+    ['malformed', 'invalid'],
+    ['zero', '0'],
+    ['negative', '-1'],
+  ])('keeps the request-derived query step when the response header is %s', async (_, responseStep) => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const jsonl = [
+      jsonlSchema('series:1'),
+      jsonlData('series:1', '2026-06-07T19:20:00Z', '1'),
+      jsonlStatus('series:1', false),
+    ].join('\n');
+    const headers = new Headers({ 'content-type': `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` });
+    if (responseStep !== null) {
+      headers.set('x-grafana-prometheus-query-step-ms', responseStep);
+    }
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(jsonl, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers,
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].data[0].fields[0].config.interval).toBe(60_000);
   });
 
   it('keeps non-ASCII legend formats in the JSON body instead of browser headers', async () => {

@@ -1,5 +1,3 @@
-/// <reference types="jest-canvas-mock" />
-
 import uPlot from 'uplot';
 
 describe('uPlot compact X host', () => {
@@ -336,38 +334,6 @@ describe('uPlot compact X host', () => {
 
     expect(transientPath).toHaveBeenCalledTimes(transientCalls + 1);
     expect(retainedPath).toHaveBeenCalledTimes(retainedCalls);
-    plot.destroy();
-  });
-
-  test.each([1, -1] as const)('keeps dense legacy spline coordinates finite with X direction %s', async (dir) => {
-    const plot = new uPlot(
-      {
-        width: 100,
-        height: 100,
-        padding: [0, 0, 0, 0],
-        series: [{}, { stroke: '#f00', paths: uPlot.paths.spline!() }],
-        axes: [{ show: false }, { show: false }],
-        scales: {
-          x: { time: false, dir, range: [0, 1000] },
-        },
-      },
-      [
-        [0, 1, 2],
-        [0, 1, -1],
-      ],
-      document.createElement('div')
-    );
-    await flushCommit();
-
-    const curves = plot.ctx
-      .__getDrawCalls()
-      .flatMap((call) => call.props.path ?? [])
-      .filter((event) => event.type === 'bezierCurveTo');
-    expect(curves).toHaveLength(2);
-    for (const curve of curves) {
-      expect(Object.values(curve.props).every(Number.isFinite)).toBe(true);
-    }
-
     plot.destroy();
   });
 

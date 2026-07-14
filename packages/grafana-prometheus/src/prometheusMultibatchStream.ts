@@ -26,6 +26,7 @@ export const MULTIBATCH_ACCEPT_HEADER = `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; v
 const QUERY_DATA_COMPACT_HEADER = 'X-Grafana-Query-Format';
 const QUERY_DATA_COMPACT_MEDIA_TYPE = 'application/vnd.grafana.querydata.compact;version=1';
 const QUERY_DATA_COMPACT_VERSION = 'compact-v1';
+const PROMETHEUS_QUERY_STEP_MS_HEADER = 'X-Grafana-Prometheus-Query-Step-Ms';
 
 const FRAME_HEADER_SIZE = 12;
 const FINAL_BATCH_FLAG = 1;
@@ -1156,6 +1157,7 @@ async function streamQueryRange(
     method: 'POST',
     signal,
   });
+  const responseQueryContext = queryContextWithResponseStep(queryContext, response.headers);
 
   const responseContentType = response.headers.get('Content-Type');
   if (!isMultiBatchContentType(responseContentType)) {
@@ -1175,7 +1177,7 @@ async function streamQueryRange(
       return;
     }
 
-    const decoded = new JsonlMultiBatchAccumulator().decode(body, queryContext, LoadingState.Done);
+    const decoded = new JsonlMultiBatchAccumulator().decode(body, responseQueryContext, LoadingState.Done);
     emit(decoded);
     return;
   }
@@ -1214,7 +1216,7 @@ async function streamQueryRange(
         payloadDecoder,
         request,
         target,
-        queryContext,
+        responseQueryContext,
         jsonlAccumulator,
         emit
       );
@@ -1232,7 +1234,7 @@ async function streamQueryRange(
         payloadDecoder,
         request,
         target,
-        queryContext,
+        responseQueryContext,
         jsonlAccumulator,
         emit
       );
@@ -1448,6 +1450,14 @@ function buildMultiBatchQueryContext(
     refId: target.refId ?? 'A',
     stepMs: getPrometheusStepSeconds(request, target, options.minInterval) * 1000,
   };
+}
+
+function queryContextWithResponseStep(
+  query: MultiBatchQueryContext,
+  headers: Pick<Headers, 'get'>
+): MultiBatchQueryContext {
+  const stepMs = Number(headers.get(PROMETHEUS_QUERY_STEP_MS_HEADER));
+  return Number.isSafeInteger(stepMs) && stepMs > 0 ? { ...query, stepMs } : query;
 }
 
 export function getPrometheusStepSeconds(

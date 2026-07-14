@@ -461,27 +461,6 @@ index 98b7582dff68d4f4d9e0068cc77bec9d33ea4904..49ec4eb7592989b7f70e3ab7b5134072
  {
  	uPlot.join = join;
  }
-diff --git a/dist/uPlot.cjs.js b/dist/uPlot.cjs.js
-index 69bb66bf7e0ce9621f27490ec93b6a363721f4fa..1adac96ee98317794f1987c554c12b010d823d87 100644
---- a/dist/uPlot.cjs.js
-+++ b/dist/uPlot.cjs.js
-@@ -2783 +2783 @@ function _monotoneCubic(xs, ys, moveTo, lineTo, bezierCurveTo, pxRound) {
--			ds[i]  = dys[i] / dxs[i];
-+			ds[i]  = dxs[i] === 0 ? 0 : dys[i] / dxs[i];
-diff --git a/dist/uPlot.esm.js b/dist/uPlot.esm.js
-index 0b022b858229aea8b2b4f78fc2c46ed2d8f6460f..a373f470ea95e5510d2e97a2d1ee132ad22ad2fe 100644
---- a/dist/uPlot.esm.js
-+++ b/dist/uPlot.esm.js
-@@ -2781 +2781 @@ function _monotoneCubic(xs, ys, moveTo, lineTo, bezierCurveTo, pxRound) {
--			ds[i]  = dys[i] / dxs[i];
-+			ds[i]  = dxs[i] === 0 ? 0 : dys[i] / dxs[i];
-diff --git a/dist/uPlot.iife.js b/dist/uPlot.iife.js
-index 9fcd76516226f341c88313fca2c749e89f924d49..2a5a5b39121cb7fa6c90b05a7f21cb0bb8c18be2 100644
---- a/dist/uPlot.iife.js
-+++ b/dist/uPlot.iife.js
-@@ -2784 +2784 @@ var uPlot = (function () {
--				ds[i]  = dys[i] / dxs[i];
-+				ds[i]  = dxs[i] === 0 ? 0 : dys[i] / dxs[i];
 diff --git a/dist/uPlot.d.ts b/dist/uPlot.d.ts
 index a97e9e62f6a7cc896a3f1e3e27ea52f9159f17a8..54d992e098e5a15f2ffb9d91afb9c751e7b0ee53 100644
 --- a/dist/uPlot.d.ts
