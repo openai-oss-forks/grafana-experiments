@@ -29,9 +29,12 @@ function createModelMock(
   transformations?: DataTransformerConfig[],
   onChangeTransformationsMock?: Function
 ) {
+  const dataTransformer = new SceneDataTransformer({ data: panelData, transformations: transformations || [] });
+  const queryRunner = new SceneQueryRunner({ queries: [], data: panelData });
+
   return {
-    getDataTransformer: () => new SceneDataTransformer({ data: panelData, transformations: transformations || [] }),
-    getQueryRunner: () => new SceneQueryRunner({ queries: [], data: panelData }),
+    getDataTransformer: () => dataTransformer,
+    getQueryRunner: () => queryRunner,
     onChangeTransformations: onChangeTransformationsMock,
   } as unknown as PanelDataTransformationsTab;
 }
@@ -52,7 +55,7 @@ const mockData = {
 
 describe('PanelDataTransformationsModel', () => {
   it('can change transformations', () => {
-    const { transformsTab } = setupTabScene('panel-1');
+    const { transformsTab } = setupTabScene('panel-2');
     transformsTab.onChangeTransformations([{ id: 'calculateField', options: {} }]);
     expect(transformsTab.getDataTransformer().state.transformations).toEqual([{ id: 'calculateField', options: {} }]);
   });

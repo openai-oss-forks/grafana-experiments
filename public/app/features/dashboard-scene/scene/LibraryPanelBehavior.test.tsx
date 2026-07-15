@@ -3,14 +3,7 @@ import { of } from 'rxjs';
 import { FieldType, LoadingState, PanelData, getDefaultTimeRange, toDataFrame } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
 import { config, setPluginImportUtils, setRunRequest } from '@grafana/runtime';
-import {
-  SceneCanvasText,
-  SceneDataTransformer,
-  sceneGraph,
-  SceneGridLayout,
-  SceneQueryRunner,
-  VizPanel,
-} from '@grafana/scenes';
+import { SceneCanvasText, sceneGraph, SceneGridLayout, SceneQueryRunner, VizPanel } from '@grafana/scenes';
 import { LibraryPanel } from '@grafana/schema';
 import * as libpanels from 'app/features/library-panels/state/api';
 
@@ -198,12 +191,9 @@ describe('LibraryPanelBehavior', () => {
     expect(dashboardPanelId).toBe(1); // Based on key 'panel-1'
 
     // Verify the data provider uses the dashboard panel ID for filtering
-    const dataProvider = vizPanel.state.$data as SceneDataTransformer;
+    const dataProvider = vizPanel.state.$data as SceneQueryRunner;
     expect(dataProvider).toBeDefined();
-
-    // Access the SceneQueryRunner through the SceneDataTransformer
-    const queryRunner = dataProvider.state?.$data as SceneQueryRunner;
-    expect(queryRunner?.state?.dataLayerFilter?.panelId).toBe(dashboardPanelId);
+    expect(dataProvider.state.dataLayerFilter?.panelId).toBe(dashboardPanelId);
   });
 });
 
