@@ -16,7 +16,7 @@ permissions:
 jobs:
   main:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    if: github.repository == 'grafana/grafana' && github.event.pull_request.draft == false
     steps:
       # Note: Github will not trigger other actions from this because it uses
       # the GITHUB_TOKEN token

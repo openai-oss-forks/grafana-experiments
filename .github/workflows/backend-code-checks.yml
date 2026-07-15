@@ -64,13 +64,13 @@ jobs:
       # Enterprise setup is needed for complete OpenAPI spec generation
       # We only do this for internal PRs
       - name: Setup Grafana Enterprise
-        if: github.event.pull_request.head.repo.fork == false
+        if: (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
         uses: ./.github/actions/setup-enterprise
 
       - name: Generate and Validate OpenAPI Specs
         run: |
           # For PRs from forks, we'll just run the basic swagger-gen without validation
-          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.head.repo.fork }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "pull_request" && ( "${{ github.event.pull_request.head.repo.fork }}" == "true" || "${{ github.repository }}" != "grafana/grafana" ) ]]; then
             echo "PR is from a fork, skipping enterprise-based validation"
             make swagger-gen
             exit 0

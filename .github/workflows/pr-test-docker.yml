@@ -26,7 +26,7 @@ jobs:
   build-dockerfile:
     needs: detect-changes
     if: needs.detect-changes.outputs.changed == 'true'
-    runs-on: ubuntu-x64-large-io
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:

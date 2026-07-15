@@ -13,14 +13,14 @@ jobs:
     # Run on `grafana/grafana` main branch, or on pull requests to prevent double-running on mirrors
     if: (github.event_name == 'pull_request' || (github.event_name == 'push' && github.repository == 'grafana/grafana'))
     name: Detect whether code changed
-    runs-on: ubuntu-x64-small
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       changed: ${{ steps.detect-changes.outputs.frontend }}
       devenv-changed: ${{ steps.detect-changes.outputs.devenv }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -38,8 +38,8 @@ jobs:
       - detect-changes
     # Run this workflow only for PRs from forks; if it gets merged into `main` or `release-*`,
     # the `frontend-unit-tests-enterprise` workflow will run instead
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && needs.detect-changes.outputs.changed == 'true'
-    runs-on: ubuntu-x64-large
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == true || github.repository != 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
     name: "Unit tests (${{ matrix.shard }} / ${{ matrix.total }})"
     strategy:
       fail-fast: false
@@ -47,7 +47,7 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         total: [16]
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node.js
@@ -70,8 +70,8 @@ jobs:
     needs:
       - detect-changes
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false && needs.detect-changes.outputs.changed == 'true'
-    runs-on: ubuntu-x64-large
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
     name: "Unit tests (${{ matrix.shard }} / ${{ matrix.total }})"
     strategy:
       fail-fast: false
@@ -79,7 +79,7 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         total: [16]
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Enterprise
@@ -92,7 +92,7 @@ jobs:
       run: yarn install --immutable
       env:
         # Switch from default hardened mode to faster mode for internal PRs
-        YARN_ENABLE_HARDENED_MODE: ${{ github.event.pull_request.head.repo.fork == false && '1' || '0' }}
+        YARN_ENABLE_HARDENED_MODE: ${{ (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && '1' || '0' }}
         PUPPETEER_SKIP_DOWNLOAD: true
         CYPRESS_INSTALL_BINARY: 0
     - run: yarn run test:ci
@@ -107,10 +107,10 @@ jobs:
     needs:
       - detect-changes
     if: needs.detect-changes.outputs.changed == 'true'
-    runs-on: ubuntu-x64-large
+    runs-on: ubuntu-latest
     name: "Decoupled plugin tests"
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node.js
@@ -119,7 +119,7 @@ jobs:
       run: yarn install --immutable
       env:
         # Switch from default hardened mode to faster mode for internal PRs
-        YARN_ENABLE_HARDENED_MODE: ${{ github.event.pull_request.head.repo.fork == false && '1' || '0' }}
+        YARN_ENABLE_HARDENED_MODE: ${{ (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && '1' || '0' }}
         PUPPETEER_SKIP_DOWNLOAD: true
         CYPRESS_INSTALL_BINARY: 0
     - run: yarn run plugin:test:ci
@@ -130,10 +130,10 @@ jobs:
     needs:
       - detect-changes
     if: needs.detect-changes.outputs.changed == 'true'
-    runs-on: ubuntu-x64-large
+    runs-on: ubuntu-latest
     name: "Packages unit tests"
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node.js
@@ -142,7 +142,7 @@ jobs:
       run: yarn install --immutable
       env:
         # Switch from default hardened mode to faster mode for internal PRs
-        YARN_ENABLE_HARDENED_MODE: ${{ github.event.pull_request.head.repo.fork == false && '1' || '0' }}
+        YARN_ENABLE_HARDENED_MODE: ${{ (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && '1' || '0' }}
         PUPPETEER_SKIP_DOWNLOAD: true
         CYPRESS_INSTALL_BINARY: 0
     - run: yarn run packages:test:ci
@@ -165,9 +165,9 @@ jobs:
       contents: read
 
     name: All frontend unit tests complete
-    runs-on: ubuntu-x64-small
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Check test suites
@@ -183,10 +183,10 @@ jobs:
     needs:
       - detect-changes
     if: needs.detect-changes.outputs.devenv-changed == 'true'
-    runs-on: ubuntu-x64-large
+    runs-on: ubuntu-latest
     name: "Devenv frontend-service build"
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Docker

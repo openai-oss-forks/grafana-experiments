@@ -14,4 +14,16 @@ jobs:
   verify-i18n:
     # Run on `grafana/grafana` main branch, or on pull requests to prevent double-running on mirrors
     if: (github.event_name == 'pull_request' || (github.event_name == 'push' && github.repository == 'grafana/grafana'))
-    uses: grafana/grafana-github-actions/.github/workflows/verify-i18n.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: yarn
+      - run: yarn install --immutable --check-cache
+      - run: yarn i18n-extract
+      - name: Check for uncommitted translations
+        run: git diff --exit-code

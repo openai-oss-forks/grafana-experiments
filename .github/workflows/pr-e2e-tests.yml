@@ -44,15 +44,15 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.changed == 'true'
     name: Build & Package Grafana
-    runs-on: ubuntu-latest-16-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: grafana/shared-workflows/actions/dockerhub-login@ccd82960521026200c6b51f6c61100732a1a62f3 # main
-        if: github.event.pull_request.head.repo.fork == false
+        if: (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
       - uses: grafana/shared-workflows/actions/login-to-gar@ccd82960521026200c6b51f6c61100732a1a62f3 # main
-        if: github.event.pull_request.head.repo.fork == false
+        if: (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
@@ -72,7 +72,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         uses: dagger/dagger-for-github@d913e70051faf3b907d4dd96ef1161083c88c644
         env:
-          CACHE_BUILDERS: ${{ github.event.pull_request.head.repo.fork == false }}
+          CACHE_BUILDERS: ${{ (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') }}
         with:
           version: 0.18.8
           verb: run
@@ -132,7 +132,7 @@ jobs:
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
-          cache: ${{ !github.event.pull_request.head.repo.fork }}
+          cache: ${{ (github.repository == 'grafana/grafana' && !github.event.pull_request.head.repo.fork) }}
       - name: Build E2E test runner
         id: artifact
         run: |
@@ -148,7 +148,7 @@ jobs:
           path: e2e-runner
 
   push-docker-image:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana'
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && github.repository == 'grafana/grafana'
     permissions:
       contents: read
       id-token: write
@@ -220,7 +220,7 @@ jobs:
             path: e2e/old-arch/panels-suite
             flags: --flags="--env dashboardScene=false"
     name: ${{ matrix.suite }}
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
 
@@ -291,7 +291,7 @@ jobs:
     needs:
       - build-grafana
     name: Playwright E2E tests (${{ matrix.shard }}/${{ matrix.shardTotal }})
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
 
@@ -322,8 +322,8 @@ jobs:
           retention-days: 1
 
   run-azure-monitor-e2e:
-    if: needs.detect-changes.outputs.cloud_plugins_changed == 'true' && github.event.pull_request.head.repo.fork == false && github.event_name == 'pull_request' && github.repository == 'grafana/grafana'
-    runs-on: ubuntu-x64-large
+    if: needs.detect-changes.outputs.cloud_plugins_changed == 'true' && (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && github.event_name == 'pull_request' && github.repository == 'grafana/grafana'
+    runs-on: ubuntu-latest
     needs:
       - build-grafana
       - detect-changes
@@ -478,7 +478,7 @@ jobs:
     needs:
       - build-grafana
     name: A11y test
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
 

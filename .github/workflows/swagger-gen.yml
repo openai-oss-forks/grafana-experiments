@@ -53,7 +53,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Setup Enterprise
-        if: ${{ github.event.pull_request.head.repo.fork == false }}
+        if: ${{ (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') }}
         uses: ./.github/actions/setup-enterprise
         with:
           github-app-name: 'grafana-ci-bot'

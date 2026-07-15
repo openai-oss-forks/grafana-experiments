@@ -38,7 +38,7 @@ jobs:
     # Run this workflow only for PRs from forks
     # the `pr-backend-unit-tests-enterprise` workflow will run instead
     needs: detect-changes
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && needs.detect-changes.outputs.changed == 'true'
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == true || github.repository != 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
     strategy:
       matrix:
         shard: [
@@ -73,7 +73,7 @@ jobs:
   grafana-enterprise:
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
     needs: detect-changes
-    if: github.event_name != 'pull_request' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false && needs.detect-changes.outputs.changed == 'true')
+    if: github.event_name != 'pull_request' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true')
     strategy:
       matrix:
         shard: [
@@ -83,7 +83,7 @@ jobs:
       fail-fast: false
 
     name: Grafana Enterprise (${{ matrix.shard }})
-    runs-on: ubuntu-x64-large
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
