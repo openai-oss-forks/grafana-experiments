@@ -12,7 +12,7 @@ runs:
   steps:
     - name: Retrieve GitHub App secrets
       id: get-secrets
-      uses: grafana/shared-workflows/actions/get-vault-secrets@get-vault-secrets-v1.0.1 # zizmor: ignore[unpinned-uses]
+      uses: grafana/shared-workflows/actions/get-vault-secrets@97c6f45f01d4bca8a3b1acfe397113ce88858a81 # get-vault-secrets-v1.0.1
       with:
         repo_secrets: |
           APP_ID=${{ inputs.github-app-name }}:app-id
@@ -21,7 +21,7 @@ runs:
 
     - name: Generate GitHub App token
       id: generate_token
-      uses: actions/create-github-app-token@v1
+      uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
       with:
         app-id: ${{ env.APP_ID }}
         private-key: ${{ env.PRIVATE_KEY }}

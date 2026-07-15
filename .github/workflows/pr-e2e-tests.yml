@@ -30,7 +30,7 @@ jobs:
       changed: ${{ steps.detect-changes.outputs.e2e }}
       cloud_plugins_changed: ${{ steps.detect-changes.outputs.e2e-cloud-plugins }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -49,18 +49,18 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: grafana/shared-workflows/actions/dockerhub-login@main
+      - uses: grafana/shared-workflows/actions/dockerhub-login@ccd82960521026200c6b51f6c61100732a1a62f3 # main
         if: github.event.pull_request.head.repo.fork == false
-      - uses: grafana/shared-workflows/actions/login-to-gar@main
+      - uses: grafana/shared-workflows/actions/login-to-gar@ccd82960521026200c6b51f6c61100732a1a62f3 # main
         if: github.event.pull_request.head.repo.fork == false
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
       # TODO: add a cleanup workflow to remove the cache when the PR is closed
       # https://github.com/actions/cache/blob/main/tips-and-workarounds.md#force-deletion-of-caches-overriding-default-cache-eviction-policy
       # TODO: maybe we could just use the cache to store the build, instead of uploading as an artifact?
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: cache
         with:
           key: "build-grafana-${{ runner.os }}-${{ hashFiles('yarn.lock', 'public/*',  'packages/*', 'conf/*', 'pkg/**/*.go', '**/go.mod', '**/go.sum', '!**_test.go', '!**.test.ts', '!**.test.tsx', 'Dockerfile') }}"
@@ -101,14 +101,14 @@ jobs:
         id: artifact
 
       - name: Upload grafana.tar.gz
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           retention-days: 1
           name: grafana-tar-gz
           path: build-dir/grafana.tar.gz
 
       - name: Upload grafana docker tarball
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           retention-days: 1
           name: grafana-docker-tar-gz
@@ -125,11 +125,11 @@ jobs:
     outputs:
       artifact: ${{ steps.artifact.outputs.artifact }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Setup Go
-        uses: actions/setup-go@v6.0.0
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
           cache: ${{ !github.event.pull_request.head.repo.fork }}
@@ -140,7 +140,7 @@ jobs:
           # We want a static binary, so we need to set CGO_ENABLED=0
           CGO_ENABLED=0 go build -o ./e2e-runner ./e2e/
           echo "artifact=e2e-runner-${{github.run_number}}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         id: upload
         with:
           retention-days: 1
@@ -161,7 +161,7 @@ jobs:
         uses: grafana/shared-workflows/actions/create-github-app-token@eb02241ed0a92aff205feab8ac3afcdf51c757c8 # create-github-app-token-v0.2.0
         with:
           github_app: "delivery-bot-app"
-      - uses: grafana/shared-workflows/actions/login-to-gar@main
+      - uses: grafana/shared-workflows/actions/login-to-gar@ccd82960521026200c6b51f6c61100732a1a62f3 # main
         id: login-to-gar
         with:
           registry: 'us-docker.pkg.dev'
@@ -225,13 +225,13 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: grafana-tar-gz
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: ${{ needs.build-e2e-runner.outputs.artifact }}
       - name: chmod +x
@@ -252,7 +252,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "suite=$(echo "$SUITE" | sed 's/\//-/g')" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         if: success() || failure()
         with:
           name: ${{ steps.set-suite-name.outputs.suite }}-${{ github.run_number }}
@@ -269,12 +269,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
 
@@ -302,10 +302,10 @@ jobs:
         shardTotal: [8]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: grafana-tar-gz
       - name: Run E2E tests
@@ -314,7 +314,7 @@ jobs:
           version: 0.18.8
           verb: run
           args: go run ./pkg/build/e2e-playwright --package=grafana.tar.gz --shard=${{ matrix.shard }}/${{ matrix.shardTotal }} --blob-dir=./blob-report
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         if: success() || failure()
         with:
           name: playwright-blob-${{ github.run_number }}-${{ matrix.shard }}
@@ -331,11 +331,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
-      - uses: grafana/shared-workflows/actions/login-to-gar@login-to-gar-v0.4.0
+      - uses: grafana/shared-workflows/actions/login-to-gar@974c33049d0967c5c9cfc249fe675daf341dc78f # login-to-gar-v0.4.0
         id: login-to-gar
         with:
           registry: "us-docker.pkg.dev"
@@ -346,7 +346,7 @@ jobs:
           docker pull us-docker.pkg.dev/grafanalabs-dev/docker-oss-plugin-partnerships-dev/e2e-playwright:latest
 
       - id: vault-secrets
-        uses: grafana/shared-workflows/actions/get-vault-secrets@main
+        uses: grafana/shared-workflows/actions/get-vault-secrets@ccd82960521026200c6b51f6c61100732a1a62f3 # main
         with:
           repo_secrets: |
             AZURE_SP_APP_ID=cpp-azure-resourcemanager-credentials:application_id
@@ -367,7 +367,7 @@ jobs:
         run: |
           docker cp cpp-e2e-deploy:/outputs.json /tmp/outputs.json
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: grafana-tar-gz
 
@@ -398,16 +398,16 @@ jobs:
     name: All Playwright tests complete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
 
       - name: Download blob reports from GitHub Actions Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           path: blobs
           pattern: playwright-blob-*
@@ -446,7 +446,7 @@ jobs:
 
       - name: Upload HTML report
         id: upload-html
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: playwright-html-${{ github.run_number }}
           path: playwright-report
@@ -483,10 +483,10 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: grafana-tar-gz
       - name: Run PR a11y test
@@ -505,7 +505,7 @@ jobs:
           args: go run ./pkg/build/a11y --package=grafana.tar.gz --no-threshold-fail --results=./pa11y-ci-results.json
       - name: Upload pa11y results
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           retention-days: 1
           name: pa11y-ci-results
@@ -523,22 +523,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: vault-secrets
-        uses: grafana/shared-workflows/actions/get-vault-secrets@main
+        uses: grafana/shared-workflows/actions/get-vault-secrets@ccd82960521026200c6b51f6c61100732a1a62f3 # main
         with:
           repo_secrets: |
             GRAFANA_MISC_STATS_API_KEY=grafana-misc-stats:api_key
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
       - name: Install dependencies
         run: yarn install --immutable
       - name: Get pa11y results
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: pa11y-ci-results
       - name: Extract and publish metrics
@@ -565,7 +565,7 @@ jobs:
     name: All E2E tests complete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
