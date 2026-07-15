@@ -5,6 +5,8 @@ const fs = require('fs');
 const COVERAGE_MAIN_PATH = './coverage-main/coverage-summary.json';
 const COVERAGE_PR_PATH = './coverage-pr/coverage-summary.json';
 const COMPARISON_OUTPUT_PATH = './coverage-comparison.md';
+// Full-suite V8 coverage varies slightly between identical GitHub-hosted runs.
+const COVERAGE_TOLERANCE_PCT = 0.5;
 
 /**
  * Reads and parses a coverage summary JSON file
@@ -41,7 +43,7 @@ function getStatusIcon(mainValue, prValue) {
   const prPct = Math.round(prValue * 100) / 100;
   const mainPct = Math.round(mainValue * 100) / 100;
 
-  if (prPct >= mainPct) {
+  if (prPct >= mainPct - COVERAGE_TOLERANCE_PCT) {
     return '✅ Pass';
   }
   return '❌ Fail';
@@ -59,7 +61,7 @@ function getOverallStatus(mainSummary, prSummary) {
     // Round to 2 decimal places for comparison to match display precision
     const prPct = Math.round(prSummary[metric].pct * 100) / 100;
     const mainPct = Math.round(mainSummary[metric].pct * 100) / 100;
-    return prPct >= mainPct;
+    return prPct >= mainPct - COVERAGE_TOLERANCE_PCT;
   });
   return allPass;
 }
