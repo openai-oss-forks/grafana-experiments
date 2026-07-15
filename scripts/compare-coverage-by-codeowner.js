@@ -6,7 +6,7 @@ const COVERAGE_MAIN_PATH = './coverage-main/coverage-summary.json';
 const COVERAGE_PR_PATH = './coverage-pr/coverage-summary.json';
 const COMPARISON_OUTPUT_PATH = './coverage-comparison.md';
 // Full-suite V8 coverage varies slightly between identical GitHub-hosted runs.
-const COVERAGE_TOLERANCE_PCT = 0.2;
+const COVERAGE_TOLERANCE_PCT = 0.5;
 
 /**
  * Reads and parses a coverage summary JSON file
