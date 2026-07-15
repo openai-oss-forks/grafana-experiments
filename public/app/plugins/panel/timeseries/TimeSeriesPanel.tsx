@@ -25,6 +25,7 @@ import {
 } from '@grafana/ui';
 import { FILTER_OUT_OPERATOR, TimeRange2, TooltipHoverMode } from '@grafana/ui/internal';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
+import { getEffectiveCursorSync } from 'app/core/utils/cursorSync';
 import {
   getCompactTimeSeriesCapability,
   isCompactTimeSeriesPanelConfigurationSupported,
@@ -175,7 +176,7 @@ export const TimeSeriesPanel = ({
 
   const enableAnnotationCreation = Boolean(canAddAnnotations && canAddAnnotations());
   const [newAnnotationRange, setNewAnnotationRange] = useState<TimeRange2 | null>(null);
-  const cursorSync = sync?.() ?? DashboardCursorSync.Off;
+  const cursorSync = getEffectiveCursorSync(sync?.());
 
   if ((!frames && !compactSeries) || suggestions) {
     return (

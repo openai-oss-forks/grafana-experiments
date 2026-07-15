@@ -32,6 +32,9 @@ preferencesV1alpha1: {
 			// Selected locale (beta)
 			regionalFormat?: string
 
+			// Show a shared crosshair on dashboards without cursor sync
+			sharedCrosshair?: bool
+
 			// Explore query history preferences
 			queryHistory?: #QueryHistoryPreference
 

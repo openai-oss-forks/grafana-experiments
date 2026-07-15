@@ -8254,6 +8254,9 @@
           "regionalFormat": {
             "type": "string"
           },
+          "sharedCrosshair": {
+            "type": "boolean"
+          },
           "theme": {
             "enum": [
               "light",
@@ -8922,6 +8925,10 @@
           "regionalFormat": {
             "description": "Selected locale (beta)",
             "type": "string"
+          },
+          "sharedCrosshair": {
+            "description": "Show a shared crosshair on dashboards without cursor sync",
+            "type": "boolean"
           },
           "theme": {
             "description": "light, dark, empty is default",
@@ -12624,6 +12631,9 @@
           },
           "regionalFormat": {
             "type": "string"
+          },
+          "sharedCrosshair": {
+            "type": "boolean"
           },
           "theme": {
             "enum": [

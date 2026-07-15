@@ -35,6 +35,7 @@ import {
 } from '@grafana/ui';
 import { appEvents } from 'app/core/app_events';
 import { profiler } from 'app/core/profiler';
+import { getEffectiveCursorSync } from 'app/core/utils/cursorSync';
 import { annotationServer } from 'app/features/annotations/api';
 import { applyPanelTimeOverrides } from 'app/features/dashboard/utils/panel';
 import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
@@ -133,7 +134,8 @@ export class PanelStateWrapper extends PureComponent<Props, State> {
   }
 
   // Due to a mutable panel model we get the sync settings via function that proactively reads from the model
-  getSync = () => (this.props.isEditing ? DashboardCursorSync.Off : this.props.dashboard.graphTooltip);
+  getSync = () =>
+    this.props.isEditing ? DashboardCursorSync.Off : getEffectiveCursorSync(this.props.dashboard.graphTooltip);
 
   onInstanceStateChange = (value: unknown) => {
     this.props.onInstanceStateChange(value);
@@ -520,7 +522,7 @@ export class PanelStateWrapper extends PureComponent<Props, State> {
 
     // Update the event filter (dashboard settings may have changed)
     // Yes this is called ever render for a function that is triggered on every mouse move
-    this.eventFilter.onlyLocal = dashboard.graphTooltip === 0;
+    this.eventFilter.onlyLocal = this.getSync() === DashboardCursorSync.Off;
 
     return (
       <>

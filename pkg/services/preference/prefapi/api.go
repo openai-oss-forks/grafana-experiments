@@ -56,6 +56,7 @@ func UpdatePreferencesFor(ctx context.Context,
 		TeamID:           teamId,
 		Theme:            dtoCmd.Theme,
 		Language:         dtoCmd.Language,
+		SharedCrosshair:  dtoCmd.SharedCrosshair,
 		Timezone:         dtoCmd.Timezone,
 		WeekStart:        dtoCmd.WeekStart,
 		HomeDashboardID:  dtoCmd.HomeDashboardID,
@@ -104,6 +105,7 @@ func GetPreferencesFor(ctx context.Context,
 		if preference.JSONData.Language != "" {
 			dto.Language = &preference.JSONData.Language
 		}
+		dto.SharedCrosshair = preference.JSONData.SharedCrosshair
 
 		//nolint:staticcheck // not yet migrated to OpenFeature
 		if features.IsEnabled(ctx, featuremgmt.FlagLocaleFormatPreference) {

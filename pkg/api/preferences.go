@@ -176,6 +176,7 @@ func (hs *HTTPServer) patchPreferencesFor(ctx context.Context, orgID, userID, te
 		HomeDashboardID:  dtoCmd.HomeDashboardID, // nolint:staticcheck
 		HomeDashboardUID: dtoCmd.HomeDashboardUID,
 		Language:         dtoCmd.Language,
+		SharedCrosshair:  dtoCmd.SharedCrosshair,
 		RegionalFormat:   dtoCmd.RegionalFormat,
 		QueryHistory:     dtoCmd.QueryHistory,
 		Navbar:           dtoCmd.Navbar,

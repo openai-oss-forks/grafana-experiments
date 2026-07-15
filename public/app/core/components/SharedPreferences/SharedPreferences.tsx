@@ -9,6 +9,7 @@ import { PSEUDO_LOCALE, t, Trans } from '@grafana/i18n';
 import { config, reportInteraction } from '@grafana/runtime';
 import {
   Button,
+  Switch,
   Field,
   FieldSet,
   Label,
@@ -111,6 +112,7 @@ export class SharedPreferences extends PureComponent<Props, State> {
       weekStart: '',
       language: '',
       regionalFormat: '',
+      sharedCrosshair: false,
       queryHistory: { homeTab: '' },
       navbar: { bookmarkUrls: [] },
     };
@@ -145,6 +147,7 @@ export class SharedPreferences extends PureComponent<Props, State> {
       weekStart: prefs.weekStart,
       language: prefs.language,
       regionalFormat: prefs.regionalFormat,
+      sharedCrosshair: prefs.sharedCrosshair,
       queryHistory: prefs.queryHistory,
       navbar: prefs.navbar,
     });
@@ -155,8 +158,17 @@ export class SharedPreferences extends PureComponent<Props, State> {
     const confirmationResult = this.props.onConfirm ? await this.props.onConfirm() : true;
 
     if (confirmationResult) {
-      const { homeDashboardUID, theme, timezone, weekStart, language, regionalFormat, queryHistory, navbar } =
-        this.state;
+      const {
+        homeDashboardUID,
+        theme,
+        timezone,
+        weekStart,
+        language,
+        regionalFormat,
+        sharedCrosshair,
+        queryHistory,
+        navbar,
+      } = this.state;
       reportInteraction('grafana_preferences_save_button_clicked', {
         preferenceType: this.props.preferenceType,
         theme,
@@ -171,6 +183,7 @@ export class SharedPreferences extends PureComponent<Props, State> {
           weekStart,
           language,
           regionalFormat,
+          sharedCrosshair,
           queryHistory,
           navbar,
         })
@@ -227,8 +240,17 @@ export class SharedPreferences extends PureComponent<Props, State> {
   };
 
   render() {
-    const { theme, timezone, weekStart, homeDashboardUID, language, isLoading, isSubmitting, regionalFormat } =
-      this.state;
+    const {
+      theme,
+      timezone,
+      weekStart,
+      homeDashboardUID,
+      language,
+      isLoading,
+      isSubmitting,
+      regionalFormat,
+      sharedCrosshair,
+    } = this.state;
     const { disabled } = this.props;
     const styles = getStyles();
     const currentThemeOption = this.themeOptions.find((x) => x.value === theme) ?? this.themeOptions[0];
@@ -262,6 +284,24 @@ export class SharedPreferences extends PureComponent<Props, State> {
               id="shared-preferences-theme-select"
             />
           </Field>
+
+          {this.props.preferenceType === 'user' && (
+            <Field
+              noMargin
+              disabled={disabled || isLoading}
+              label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
+              description={t(
+                'shared-preferences.fields.shared-crosshair-description',
+                'Show a vertical line across all dashboard graphs'
+              )}
+            >
+              <Switch
+                value={sharedCrosshair ?? false}
+                onChange={(event) => this.setState({ sharedCrosshair: event.currentTarget.checked })}
+                aria-label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
+              />
+            </Field>
+          )}
 
           <Field
             loading={isLoading}
