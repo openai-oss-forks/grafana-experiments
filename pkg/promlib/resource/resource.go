@@ -355,7 +355,7 @@ type prometheusMultiBatchQueryMetadata struct {
 
 func (r *Resource) prometheusMultiBatchQueryFromRequest(ctx context.Context, req *backend.CallResourceRequest) (*models.Query, error) {
 	if !strings.EqualFold(req.Method, http.MethodPost) {
-		return nil, fmt.Errorf("Prometheus multi-batch stream requires POST")
+		return nil, fmt.Errorf("prometheus multi-batch stream requires POST")
 	}
 
 	var body prometheusMultiBatchQueryRequest
@@ -363,10 +363,10 @@ func (r *Resource) prometheusMultiBatchQueryFromRequest(ctx context.Context, req
 		return nil, fmt.Errorf("invalid Prometheus multi-batch query request: %w", err)
 	}
 	if len(body.Queries) != 1 {
-		return nil, fmt.Errorf("Prometheus multi-batch stream requires exactly one query")
+		return nil, fmt.Errorf("prometheus multi-batch stream requires exactly one query")
 	}
 	if body.From == "" || body.To == "" {
-		return nil, fmt.Errorf("Prometheus multi-batch stream requires from and to")
+		return nil, fmt.Errorf("prometheus multi-batch stream requires from and to")
 	}
 
 	var metadata prometheusMultiBatchQueryMetadata
@@ -377,7 +377,7 @@ func (r *Resource) prometheusMultiBatchQueryFromRequest(ctx context.Context, req
 	from, to := body.From, body.To
 	if metadata.TimeRange != nil {
 		if metadata.TimeRange.From == "" || metadata.TimeRange.To == "" {
-			return nil, fmt.Errorf("Prometheus multi-batch query timeRange requires from and to")
+			return nil, fmt.Errorf("prometheus multi-batch query timeRange requires from and to")
 		}
 		from, to = metadata.TimeRange.From, metadata.TimeRange.To
 	}
@@ -423,7 +423,7 @@ func (r *Resource) prometheusMultiBatchQueryFromRequest(ctx context.Context, req
 		return nil, err
 	}
 	if !query.RangeQuery || query.InstantQuery || query.ExemplarQuery {
-		return nil, fmt.Errorf("Prometheus multi-batch stream only supports range queries")
+		return nil, fmt.Errorf("prometheus multi-batch stream only supports range queries")
 	}
 	return query, nil
 }

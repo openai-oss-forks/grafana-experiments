@@ -7,6 +7,7 @@ import {
   DataQueryRequest,
   DataSourceInstanceSettings,
   dateTime,
+  Field,
   FieldType,
   LoadingState,
   preProcessPanelData,
@@ -123,9 +124,13 @@ describe('Prometheus multibatch JSON fallback rendering', () => {
     expect(response.state).toBe(LoadingState.Done);
     expect(response.compactSeries).toBeUndefined();
     expect(response.data).toHaveLength(1);
-    expect(response.data[0].fields.map((field) => field.type)).toEqual([FieldType.time, FieldType.number]);
+    expect(response.data[0].fields.map((field: Field) => field.type)).toEqual([FieldType.time, FieldType.number]);
     expect(response.data[0].fields[0].values).toEqual([0, 60_000]);
     expect(response.data[0].fields[1].values).toEqual([1, 2]);
+
+    if (response.state === undefined) {
+      throw new Error('Missing Prometheus response state');
+    }
 
     const panelData = preProcessPanelData({
       annotations: [],

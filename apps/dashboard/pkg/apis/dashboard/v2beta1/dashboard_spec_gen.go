@@ -299,25 +299,6 @@ const (
 )
 
 // +k8s:openapi-gen=true
-type DashboardQueryStepSize string
-
-const (
-	DashboardQueryStepSize1m  DashboardQueryStepSize = "1m"
-	DashboardQueryStepSize5m  DashboardQueryStepSize = "5m"
-	DashboardQueryStepSize10m DashboardQueryStepSize = "10m"
-	DashboardQueryStepSize20m DashboardQueryStepSize = "20m"
-	DashboardQueryStepSize30m DashboardQueryStepSize = "30m"
-	DashboardQueryStepSize1h  DashboardQueryStepSize = "1h"
-	DashboardQueryStepSize2h  DashboardQueryStepSize = "2h"
-	DashboardQueryStepSize5h  DashboardQueryStepSize = "5h"
-)
-
-// OpenAPIModelName returns the OpenAPI model name for DashboardQueryStepSize.
-func (DashboardQueryStepSize) OpenAPIModelName() string {
-	return "com.github.grafana.grafana.apps.dashboard.pkg.apis.dashboard.v2beta1.DashboardQueryStepSize"
-}
-
-// +k8s:openapi-gen=true
 type DashboardQueryOptionsSpec struct {
 	TimeFrom         *string                 `json:"timeFrom,omitempty"`
 	MaxDataPoints    *int64                  `json:"maxDataPoints,omitempty"`
@@ -334,6 +315,20 @@ type DashboardQueryOptionsSpec struct {
 func NewDashboardQueryOptionsSpec() *DashboardQueryOptionsSpec {
 	return &DashboardQueryOptionsSpec{}
 }
+
+// +k8s:openapi-gen=true
+type DashboardQueryStepSize string
+
+const (
+	DashboardQueryStepSize1M  DashboardQueryStepSize = "1m"
+	DashboardQueryStepSize5M  DashboardQueryStepSize = "5m"
+	DashboardQueryStepSize10M DashboardQueryStepSize = "10m"
+	DashboardQueryStepSize20M DashboardQueryStepSize = "20m"
+	DashboardQueryStepSize30M DashboardQueryStepSize = "30m"
+	DashboardQueryStepSize1H  DashboardQueryStepSize = "1h"
+	DashboardQueryStepSize2H  DashboardQueryStepSize = "2h"
+	DashboardQueryStepSize5H  DashboardQueryStepSize = "5h"
+)
 
 // +k8s:openapi-gen=true
 type DashboardVizConfigKind struct {

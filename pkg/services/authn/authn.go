@@ -38,7 +38,7 @@ const (
 	MetaKeyUsername              = "username"
 	MetaKeyAuthModule            = "authModule"
 	MetaKeyIsLogin               = "isLogin"
-	MetaKeyAuthProxySharedSecret = "authProxySharedSecret"
+	MetaKeyAuthProxySharedSecret = "authProxySharedSecret" //nolint:gosec // G101: metadata-key identifier, not a credential.
 	defaultRedirectToCookieKey   = "redirect_to"
 )
 

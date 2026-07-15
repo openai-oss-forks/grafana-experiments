@@ -28,6 +28,7 @@ import {
   ApplyFieldOverrideOptions,
   StreamingDataFrame,
   DataTopic,
+  resolveQueryIntervalWithStepSize,
 } from '@grafana/data';
 import { toDataQueryError } from '@grafana/runtime';
 import { ExpressionDatasourceRef } from '@grafana/runtime/internal';
@@ -37,7 +38,6 @@ import { getTemplateSrv } from 'app/features/templating/template_srv';
 
 import { isSharedDashboardQuery, runSharedRequest } from '../../../plugins/datasource/dashboard/runSharedRequest';
 import { type PanelModel } from '../../dashboard/state/PanelModel';
-import { resolveQueryIntervalWithStepSize } from '../utils/stepSize';
 
 import { getDashboardQueryRunner } from './DashboardQueryRunner/DashboardQueryRunner';
 import { mergePanelAndDashData } from './mergePanelAndDashData';

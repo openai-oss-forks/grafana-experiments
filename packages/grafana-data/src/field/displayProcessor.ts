@@ -50,7 +50,13 @@ export function getDisplayProcessor(options?: DisplayProcessorOptions): DisplayP
     type: input.type ?? FieldType.other,
     config: input.config ?? {},
     labels: input.labels,
-    state: input.state,
+    // Color calculators read state lazily, so keep it linked to the input field.
+    get state() {
+      return input.state;
+    },
+    set state(state) {
+      input.state = state;
+    },
     display: input.display,
     values: input.values,
   };

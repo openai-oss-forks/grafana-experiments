@@ -469,7 +469,9 @@ function getVizPanelQueryOptions(vizPanel: VizPanel): QueryOptionsSpec {
     if (queryRunner.state.minInterval) {
       queryOptions.interval = queryRunner.state.minInterval;
     }
-    const stepSize = (queryRunner.state as { stepSize?: QueryOptionsSpec['stepSize'] | null }).stepSize;
+    const queryRunnerState: SceneQueryRunner['state'] & { stepSize?: QueryOptionsSpec['stepSize'] | null } =
+      queryRunner.state;
+    const stepSize = queryRunnerState.stepSize;
     if (stepSize) {
       queryOptions.stepSize = stepSize;
     }

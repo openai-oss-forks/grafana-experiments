@@ -7,8 +7,6 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/stretchr/testify/require"
-
-	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 )
 
 func TestResponseHeadersPreserveMultipleUpstreamValues(t *testing.T) {
@@ -20,7 +18,7 @@ func TestResponseHeadersPreserveMultipleUpstreamValues(t *testing.T) {
 	addResponseHeadersToDataResponse(&response, headers)
 
 	custom := response.Frames[0].Meta.Custom.(map[string]any)
-	require.Equal(t, []string{"cache-hit", "proxy-miss"}, custom[querydataresponse.MetadataKey].(http.Header).Values("X-Trickster-Result"))
+	require.Equal(t, []string{"cache-hit", "proxy-miss"}, custom[proxiedUpstreamHeadersMetadataKey].(http.Header).Values("X-Trickster-Result"))
 }
 
 func TestExtractProxiedResponseHeadersOnlyAllowsTricksterPrefix(t *testing.T) {

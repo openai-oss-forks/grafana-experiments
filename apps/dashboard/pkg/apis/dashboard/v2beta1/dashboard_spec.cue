@@ -491,12 +491,15 @@ AnnotationQueryKind: {
 	spec: AnnotationQuerySpec
 }
 
+QueryStepSize: "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h"
+
 QueryOptionsSpec: {
 	timeFrom?:         string
 	maxDataPoints?:    int
 	timeShift?:        string
 	queryCachingTTL?:  int
 	interval?:         string
+	stepSize?:         QueryStepSize
 	cacheTimeout?:     string
 	hideTimeOverride?: bool
 	timeCompare?:      string

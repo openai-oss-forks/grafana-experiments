@@ -119,7 +119,7 @@ func (e *multiBatchResponseEncoder) start() error {
 // The encoder serializes the typed frame itself, so it cannot emit raw JSON.
 func (e *multiBatchResponseEncoder) writeFrame(frame multiBatchFrame) error {
 	if e.finished {
-		return errors.New("Prometheus multi-batch response was already finalized")
+		return errors.New("prometheus multi-batch response was already finalized")
 	}
 	if err := validateMultiBatchFrame(frame); err != nil {
 		return err

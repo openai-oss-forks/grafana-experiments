@@ -230,8 +230,6 @@ export type DataTopic = "series" | "annotations" | "alertStates";
 
 export const defaultDataTopic = (): DataTopic => ("series");
 
-export type QueryStepSize = "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h";
-
 export interface QueryOptionsSpec {
 	timeFrom?: string;
 	maxDataPoints?: number;
@@ -245,6 +243,10 @@ export interface QueryOptionsSpec {
 
 export const defaultQueryOptionsSpec = (): QueryOptionsSpec => ({
 });
+
+export type QueryStepSize = "1m" | "5m" | "10m" | "20m" | "30m" | "1h" | "2h" | "5h";
+
+export const defaultQueryStepSize = (): QueryStepSize => ("1m");
 
 export interface VizConfigKind {
 	// The kind of a VizConfigKind is the plugin ID

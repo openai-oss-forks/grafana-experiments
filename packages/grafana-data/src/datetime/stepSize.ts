@@ -1,6 +1,7 @@
-import * as rangeUtil from './rangeutil';
 import { type SelectableValue } from '../types/select';
 import { type TimeRange } from '../types/time';
+
+import * as rangeUtil from './rangeutil';
 
 export const MAX_STEP_SIZE_DATA_POINTS = 1500;
 export const AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS = MAX_STEP_SIZE_DATA_POINTS;
@@ -20,13 +21,16 @@ const STEP_SIZE_LABELS: Record<QueryStepSize, string> = {
   '5h': '5 hr',
 };
 
-const STEP_SIZE_MS = ALLOWED_STEP_SIZES.reduce<Record<QueryStepSize, number>>(
-  (acc, stepSize) => {
-    acc[stepSize] = rangeUtil.intervalToMs(stepSize);
-    return acc;
-  },
-  {} as Record<QueryStepSize, number>
-);
+const STEP_SIZE_MS: Record<QueryStepSize, number> = {
+  '1m': rangeUtil.intervalToMs('1m'),
+  '5m': rangeUtil.intervalToMs('5m'),
+  '10m': rangeUtil.intervalToMs('10m'),
+  '20m': rangeUtil.intervalToMs('20m'),
+  '30m': rangeUtil.intervalToMs('30m'),
+  '1h': rangeUtil.intervalToMs('1h'),
+  '2h': rangeUtil.intervalToMs('2h'),
+  '5h': rangeUtil.intervalToMs('5h'),
+};
 
 export interface QueryIntervalWithStepSize {
   interval: string;
@@ -44,7 +48,7 @@ export interface ResolveQueryIntervalWithStepSizeOptions {
 }
 
 export function isValidStepSize(value?: string | null): value is QueryStepSize {
-  return ALLOWED_STEP_SIZES.includes(value as QueryStepSize);
+  return ALLOWED_STEP_SIZES.some((stepSize) => stepSize === value);
 }
 
 export function getStepSizeMs(stepSize: QueryStepSize): number {

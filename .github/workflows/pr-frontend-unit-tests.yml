@@ -122,7 +122,7 @@ jobs:
         YARN_ENABLE_HARDENED_MODE: ${{ (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && '1' || '0' }}
         PUPPETEER_SKIP_DOWNLOAD: true
         CYPRESS_INSTALL_BINARY: 0
-    - run: yarn run plugin:test:ci
+    - run: yarn nx run-many -t test:ci --projects='tag:scope:plugin' --parallel=1
 
   frontend-packages-unit-tests:
     permissions:
@@ -201,3 +201,5 @@ jobs:
         touch devenv/frontend-service/configs/frontend-service.local.ini
     - name: Test frontend-service Tiltfile
       run: tilt ci --file devenv/frontend-service/Tiltfile
+      env:
+        GOMAXPROCS: 1

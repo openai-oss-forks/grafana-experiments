@@ -13,11 +13,10 @@ import {
   LoadingState,
   type DataSourceRef,
   preProcessPanelData,
+  resolveQueryIntervalWithStepSize,
 } from '@grafana/data';
 import { getTemplateSrv } from '@grafana/runtime';
 import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
-
-import { resolveQueryIntervalWithStepSize } from '../utils/stepSize';
 
 import { getNextRequestId } from './PanelQueryRunner';
 import { setStructureRevision } from './processing/revision';

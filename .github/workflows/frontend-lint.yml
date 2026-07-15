@@ -228,7 +228,11 @@ jobs:
         persist-credentials: false
         ref: ${{ github.event.pull_request.base.ref }}
     - name: Setup Node
-      uses: ./.github/actions/setup-node
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version-file: '.nvmrc'
+        cache: yarn
+        cache-dependency-path: yarn.lock
     - name: Install dependencies
       run: yarn install --immutable
     - name: Check circular dependencies on base branch

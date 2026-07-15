@@ -3052,6 +3052,9 @@
             "type": "integer",
             "format": "int64"
           },
+          "stepSize": {
+            "type": "string"
+          },
           "timeCompare": {
             "type": "string"
           },

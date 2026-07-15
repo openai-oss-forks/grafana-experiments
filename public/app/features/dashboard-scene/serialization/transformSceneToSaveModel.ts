@@ -235,6 +235,7 @@ export function vizPanelToPanel(
       title: vizPanel.state.title,
       description: vizPanel.state.description || undefined,
       gridPos,
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
       fieldConfig: (vizPanel.state.fieldConfig as FieldConfigSource) ?? { defaults: {}, overrides: [] },
       transformations: [],
       transparent: vizPanel.state.displayMode === 'transparent',
@@ -244,7 +245,8 @@ export function vizPanelToPanel(
   }
 
   if (vizPanel.state.options) {
-    const { angularOptions, ...rest } = vizPanel.state.options as any;
+    const options: { angularOptions?: Partial<Panel> } = vizPanel.state.options;
+    const { angularOptions, ...rest } = options;
     panel.options = rest;
 
     if (angularOptions) {
@@ -276,6 +278,7 @@ export function vizPanelToPanel(
   }
 
   const panelLinks = dashboardSceneGraph.getPanelLinks(vizPanel);
+  // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
   panel.links = (panelLinks?.state.rawLinks as DashboardLink[]) ?? [];
 
   if (panel.links.length === 0) {
@@ -338,13 +341,15 @@ function vizPanelDataToPanel(
     if (queryRunner.state.minInterval) {
       panel.interval = queryRunner.state.minInterval;
     }
-    const stepSize = (queryRunner.state as { stepSize?: string | null }).stepSize;
+    const queryRunnerState: typeof queryRunner.state & { stepSize?: string | null } = queryRunner.state;
+    const stepSize = queryRunnerState.stepSize;
     if (isValidStepSize(stepSize)) {
       panel.stepSize = stepSize;
     }
   }
 
   if (dataProvider instanceof SceneDataTransformer) {
+    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
     panel.transformations = dataProvider.state.transformations as DataTransformerConfig[];
   }
 
@@ -396,7 +401,10 @@ export function panelRepeaterToPanels(repeater: DashboardGridItem, isSnapshot = 
 
       const gridPos = { x, y, w, h };
 
-      const localVariable = panel.state.$variables!.getByName(repeater.state.variableName!) as LocalValueVariable;
+      const localVariable = panel.state.$variables!.getByName(repeater.state.variableName!);
+      if (!(localVariable instanceof LocalValueVariable)) {
+        throw new Error(`Missing local variable ${repeater.state.variableName}`);
+      }
 
       const result: Panel = {
         id: djb2Hash(panel.state.key!),
@@ -404,6 +412,7 @@ export function panelRepeaterToPanels(repeater: DashboardGridItem, isSnapshot = 
         title: panel.state.title,
         gridPos,
         options: panel.state.options,
+        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
         fieldConfig: (panel.state.fieldConfig as FieldConfigSource) ?? { defaults: {}, overrides: [] },
         transformations: [],
         transparent: panel.state.displayMode === 'transparent',
@@ -450,7 +459,10 @@ export function gridRowToSaveModel(gridRow: SceneGridRow, panelsArray: Array<Pan
     // Rows that are repeated has SceneVariableSet attached to them.
     if (gridRow.state.$variables) {
       const localVariable = gridRow.state.$variables;
-      const scopedVars: ScopedVars = (localVariable.state.variables as LocalValueVariable[]).reduce((acc, variable) => {
+      const scopedVars: ScopedVars = localVariable.state.variables.reduce((acc, variable) => {
+        if (!(variable instanceof LocalValueVariable)) {
+          throw new Error(`Expected local variable ${variable.state.name}`);
+        }
         return {
           ...acc,
           [variable.state.name]: {

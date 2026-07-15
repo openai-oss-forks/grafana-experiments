@@ -370,7 +370,8 @@ export class PanelDataPaneNext extends SceneObjectBase<PanelDataPaneNextState> {
       dataObjStateUpdate.minInterval = options.minInterval ?? undefined;
     }
 
-    if (options.stepSize !== (queryRunner.state as { stepSize?: string | null }).stepSize) {
+    const queryRunnerState: SceneQueryRunner['state'] & { stepSize?: string | null } = queryRunner.state;
+    if (options.stepSize !== queryRunnerState.stepSize) {
       dataObjStateUpdate.stepSize = options.stepSize ?? undefined;
     }
 

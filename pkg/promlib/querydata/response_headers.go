@@ -6,9 +6,9 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-
-	"github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 )
+
+const proxiedUpstreamHeadersMetadataKey = "proxied_upstream_headers"
 
 // proxiedResponseHeaderPrefixes lists the only upstream response header
 // families exposed in query result metadata.
@@ -63,5 +63,5 @@ func addResponseHeadersToDataResponse(response *backend.DataResponse, headers ht
 	if !ok {
 		return
 	}
-	custom[querydataresponse.MetadataKey] = headers
+	custom[proxiedUpstreamHeadersMetadataKey] = headers
 }

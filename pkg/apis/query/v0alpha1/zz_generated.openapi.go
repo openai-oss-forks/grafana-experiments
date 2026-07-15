@@ -434,23 +434,6 @@ func schema_pkg_apis_query_v0alpha1_QueryDataResponse(ref common.ReferenceCallba
 							Format:      "",
 						},
 					},
-					"proxied_upstream_headers": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"object"},
-							AdditionalProperties: &spec.SchemaOrBool{
-								Allows: true,
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Type: []string{"object"},
-										AdditionalProperties: &spec.SchemaOrBool{
-											Allows: true,
-											Schema: &spec.Schema{SchemaProps: spec.SchemaProps{Type: []string{"string"}}},
-										},
-									},
-								},
-							},
-						},
-					},
 					"results": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Responses is a map of RefIDs (Unique Query ID) to *DataResponse.",
@@ -461,6 +444,29 @@ func schema_pkg_apis_query_v0alpha1_QueryDataResponse(ref common.ReferenceCallba
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
 										Ref:     ref(backend.DataResponse{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"proxied_upstream_headers": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type: []string{"object"},
+										AdditionalProperties: &spec.SchemaOrBool{
+											Allows: true,
+											Schema: &spec.Schema{
+												SchemaProps: spec.SchemaProps{
+													Default: "",
+													Type:    []string{"string"},
+													Format:  "",
+												},
+											},
+										},
 									},
 								},
 							},

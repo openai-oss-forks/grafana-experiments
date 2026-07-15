@@ -21,7 +21,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-	"github.com/json-iterator/go"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/grafana/grafana/pkg/promlib/compact"
@@ -336,7 +336,7 @@ func readMultiBatchFrame(reader io.Reader) (multiBatchFrame, error) {
 	}
 	payloadLength := binary.BigEndian.Uint32(header[8:12])
 	if payloadLength > maxMultiBatchPayloadSize {
-		return multiBatchFrame{}, fmt.Errorf("Prometheus multi-batch payload length %d exceeds limit %d", payloadLength, maxMultiBatchPayloadSize)
+		return multiBatchFrame{}, fmt.Errorf("prometheus multi-batch payload length %d exceeds limit %d", payloadLength, maxMultiBatchPayloadSize)
 	}
 	payload := make([]byte, payloadLength)
 	if _, err := io.ReadFull(reader, payload); err != nil {
@@ -756,7 +756,7 @@ func (a *compactMultiBatchJSONLAccumulator) batchFrame(batch *compactMultiBatchJ
 	}
 	schema, ok := a.schemas[frameKey]
 	if !ok {
-		return nil, fmt.Errorf("Prometheus multi-batch data event referenced unknown frame: %s", frameKey)
+		return nil, fmt.Errorf("prometheus multi-batch data event referenced unknown frame: %s", frameKey)
 	}
 	frame, err := compactMultiBatchJSONLFrame(schema, query)
 	if err != nil {
@@ -769,10 +769,10 @@ func (a *compactMultiBatchJSONLAccumulator) batchFrame(batch *compactMultiBatchJ
 
 func compactMultiBatchJSONLFrame(schema compactMultiBatchJSONLSchema, query compactMultiBatchQuery) (*data.Frame, error) {
 	if len(schema.Columns) != 2 {
-		return nil, fmt.Errorf("Prometheus multi-batch compact-v1 requires two-column time series frames, got %d columns", len(schema.Columns))
+		return nil, fmt.Errorf("prometheus multi-batch compact-v1 requires two-column time series frames, got %d columns", len(schema.Columns))
 	}
 	if schema.Columns[0].Type != "time" || schema.Columns[1].Type != "number" {
-		return nil, fmt.Errorf("Prometheus multi-batch compact-v1 only supports time/number frames, got %s/%s", schema.Columns[0].Type, schema.Columns[1].Type)
+		return nil, fmt.Errorf("prometheus multi-batch compact-v1 only supports time/number frames, got %s/%s", schema.Columns[0].Type, schema.Columns[1].Type)
 	}
 	name := schema.Name
 	if name == "" {
@@ -808,7 +808,7 @@ func compactMultiBatchJSONLRowValues(schema compactMultiBatchJSONLSchema, row co
 		}
 	}
 	if len(values) != len(schema.Columns) {
-		return nil, fmt.Errorf("Prometheus multi-batch data row has %d values for %d columns", len(values), len(schema.Columns))
+		return nil, fmt.Errorf("prometheus multi-batch data row has %d values for %d columns", len(values), len(schema.Columns))
 	}
 	timestamp, err := compactMultiBatchTimeValue(values[0])
 	if err != nil {

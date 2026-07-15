@@ -1,6 +1,10 @@
-import { type DataQueryRequest, type DataSourceApi, type TimeRange } from '@grafana/data';
+import {
+  type DataQueryRequest,
+  type DataSourceApi,
+  resolveQueryIntervalWithStepSize,
+  type TimeRange,
+} from '@grafana/data';
 import { SceneQueryRunner, sceneGraph, type QueryRunnerState } from '@grafana/scenes';
-import { resolveQueryIntervalWithStepSize } from 'app/features/query/utils/stepSize';
 
 import { runWithSelectedQueryValues } from '../variables/DashboardVariableSet';
 
