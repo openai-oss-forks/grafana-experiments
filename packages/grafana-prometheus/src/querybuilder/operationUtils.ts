@@ -5,6 +5,8 @@ import pluralize from 'pluralize';
 import { SelectableValue } from '@grafana/data';
 import { t } from '@grafana/i18n';
 
+import { utf8Support } from '../utf8_support';
+
 import {
   QueryBuilderLabelFilter,
   QueryBuilderOperation,
@@ -244,15 +246,28 @@ export function createAggregationOperationWithParam(
   return operations;
 }
 
+function renderAggregationLabels(params: QueryBuilderOperationParamValue[]) {
+  return params
+    .map((param) => {
+      if (typeof param !== 'string') {
+        return param;
+      }
+
+      const unquoted = param.match(/^"(.*)"$/)?.[1] ?? param;
+      return utf8Support(unquoted);
+    })
+    .join(', ');
+}
+
 export function getAggregationByRenderer(aggregation: string) {
   return function aggregationRenderer(model: QueryBuilderOperation, def: QueryBuilderOperationDef, innerExpr: string) {
-    return `${aggregation} by(${model.params.join(', ')}) (${innerExpr})`;
+    return `${aggregation} by(${renderAggregationLabels(model.params)}) (${innerExpr})`;
   };
 }
 
 function getAggregationWithoutRenderer(aggregation: string) {
   return function aggregationRenderer(model: QueryBuilderOperation, def: QueryBuilderOperationDef, innerExpr: string) {
-    return `${aggregation} without(${model.params.join(', ')}) (${innerExpr})`;
+    return `${aggregation} without(${renderAggregationLabels(model.params)}) (${innerExpr})`;
   };
 }
 
@@ -293,7 +308,7 @@ function getAggregationByRendererWithParameter(aggregation: string) {
     const params = model.params.slice(0, restParamIndex);
     const restParams = model.params.slice(restParamIndex);
 
-    return `${aggregation} by(${restParams.join(', ')}) (${params
+    return `${aggregation} by(${renderAggregationLabels(restParams)}) (${params
       .map((param, idx) => (def.params[idx].type === 'string' ? `\"${param}\"` : param))
       .join(', ')}, ${innerExpr})`;
   };

@@ -169,6 +169,64 @@ describe('createAggregationOperationWithParams', () => {
       )
     ).toBe('test_aggregation by(source, place) ("5", rate({place="luna"} |= `` [5m]))');
   });
+
+  it('returns correct query string using aggregation definitions with overrides and string type param and dot label', () => {
+    const def = createAggregationOperationWithParam(
+      'test_aggregation',
+      {
+        params: [{ name: 'Identifier', type: 'string' }],
+        defaultParams: ['count'],
+      },
+      { category: 'test_category' }
+    );
+
+    const countValueDefinition = def[1];
+    expect(
+      countValueDefinition.renderer(
+        { id: 'count_values', params: ['5', 'source.name', 'place'] },
+        def[1],
+        'rate({place="luna"} |= `` [5m])'
+      )
+    ).toBe('test_aggregation by("source.name", place) ("5", rate({place="luna"} |= `` [5m]))');
+  });
+
+  it('returns correct query string using aggregation definitions with overrides and dot label', () => {
+    const def = createAggregationOperation('test_aggregation', {
+      params: [{ name: 'Identifier', type: 'string' }],
+      defaultParams: ['count'],
+    });
+
+    const countValueDefinition = def[1];
+    expect(
+      countValueDefinition.renderer(
+        { id: 'count_values', params: ['source.name', 'place.name'] },
+        def[1],
+        '{"place.name"="luna"}'
+      )
+    ).toBe('test_aggregation by("source.name", "place.name") ({"place.name"="luna"})');
+  });
+
+  it('does not double-quote an aggregation label parsed from code mode', () => {
+    const def = createAggregationOperation('test_aggregation', {
+      params: [{ name: 'Identifier', type: 'string' }],
+      defaultParams: ['count'],
+    });
+
+    expect(def[1].renderer({ id: '__test_aggregation_by', params: ['"source.name"', 'place'] }, def[1], 'metric')).toBe(
+      'test_aggregation by("source.name", place) (metric)'
+    );
+  });
+
+  it('returns correct query string using aggregation without and dot label', () => {
+    const def = createAggregationOperation('test_aggregation', {
+      params: [{ name: 'Identifier', type: 'string' }],
+      defaultParams: ['count'],
+    });
+
+    expect(
+      def[2].renderer({ id: '__test_aggregation_without', params: ['source.name', 'place'] }, def[2], 'metric')
+    ).toBe('test_aggregation without("source.name", place) (metric)');
+  });
 });
 
 describe('isConflictingSelector', () => {
