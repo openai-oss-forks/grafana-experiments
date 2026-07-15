@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     # Don't run from forks for the moment. If we find this useful we can do the workflow_run dance
     # to make it work for forks.
-    if: github.event.pull_request.head.repo.fork == false
+    if: github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana'
     permissions:
       contents: read
       id-token: write
@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
@@ -64,7 +64,7 @@ jobs:
           echo "deploy-name=pr_${PR_NUMBER}_${SANITIZED_BRANCH:0:30}" >> "$GITHUB_OUTPUT"
 
       - name: Upload Storybook
-        uses: grafana/shared-workflows/actions/push-to-gcs@main
+        uses: grafana/shared-workflows/actions/push-to-gcs@ccd82960521026200c6b51f6c61100732a1a62f3 # main
         with:
           environment: prod
           bucket: ${{ env.BUCKET_NAME }}
