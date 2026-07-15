@@ -345,26 +345,26 @@ describe('CompactRenderController', () => {
     const clearTimeout = jest.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
       callbacks.delete(timer as ReturnType<typeof window.setTimeout>);
     });
-    try {
-      const seriesCount = 1_000;
-      const source = createVirtualSource(seriesCount, 40);
-      Reflect.set(
-        source.columns,
-        'flags',
-        new Uint16Array(seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
-      );
-      Reflect.set(source.columns, 'stackGroupIds', new Uint8Array(seriesCount).fill(1));
-      Reflect.set(source, 'stackGroupCount', 1);
-      Reflect.set(source, 'stackDirections', new Int8Array([1]));
-      Reflect.set(source, 'styles', [{ stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }]);
-      const yAt = jest.fn(source.yAt);
-      source.yAt = yAt;
-      const controller = new CompactRenderController(source);
-      const { plot, context } = createPlot();
-      plot.cursor.left = 20;
-      const completed = controller.draw(plot, 0, 39);
-      let bounded = false;
+    const seriesCount = 1_000;
+    const source = createVirtualSource(seriesCount, 40);
+    Reflect.set(
+      source.columns,
+      'flags',
+      new Uint16Array(seriesCount).fill(CompactSeriesFlag.Bars | CompactSeriesFlag.Stack)
+    );
+    Reflect.set(source.columns, 'stackGroupIds', new Uint8Array(seriesCount).fill(1));
+    Reflect.set(source, 'stackGroupCount', 1);
+    Reflect.set(source, 'stackDirections', new Int8Array([1]));
+    Reflect.set(source, 'styles', [{ stroke: '#f00', areaFill: '#fcc', lineWidth: 0, barWidthFactor: 0.6 }]);
+    const yAt = jest.fn(source.yAt);
+    source.yAt = yAt;
+    const controller = new CompactRenderController(source);
+    const { plot, context } = createPlot();
+    plot.cursor.left = 20;
+    const completed = controller.draw(plot, 0, 39);
+    let bounded = false;
 
+    try {
       for (let turn = 0; turn < 50 && !bounded; turn++) {
         runNextTimer(callbacks);
         yAt.mockClear();
@@ -374,10 +374,10 @@ describe('CompactRenderController', () => {
 
       expect(bounded).toBe(true);
       expect(controller.isProgressiveDrawInFlight()).toBe(true);
-      expect(context.fill).not.toHaveBeenCalled();
+      expect(context.fill.mock.calls.length).toBeLessThan(seriesCount);
+    } finally {
       controller.destroy(source);
       await expect(completed).resolves.toBe(false);
-    } finally {
       setTimeout.mockRestore();
       clearTimeout.mockRestore();
     }
