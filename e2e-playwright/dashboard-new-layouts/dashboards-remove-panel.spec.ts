@@ -60,7 +60,7 @@ async function removePanelsByTitle(dashboardPage: DashboardPage, selectors: E2ES
   for (const panelTitle of panelTitles) {
     await dashboardPage
       .getByGrafanaSelector(selectors.components.Panels.Panel.headerContainer)
-      .filter({ hasText: panelTitle })
+      .filter({ hasText: new RegExp(`^${panelTitle}$`) })
       .click({
         modifiers: ['Shift'],
       });
