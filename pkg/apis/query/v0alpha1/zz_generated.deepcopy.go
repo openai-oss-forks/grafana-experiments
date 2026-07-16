@@ -8,6 +8,7 @@
 package v0alpha1
 
 import (
+	querydataresponse "github.com/grafana/grafana/pkg/plugins/backendplugin/querydataresponse"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -196,15 +197,17 @@ func (in *QueryDataResponse) DeepCopyInto(out *QueryDataResponse) {
 	in.QueryDataResponse.DeepCopyInto(&out.QueryDataResponse)
 	if in.ProxiedUpstreamHeaders != nil {
 		in, out := &in.ProxiedUpstreamHeaders, &out.ProxiedUpstreamHeaders
-		*out = make(map[string]map[string]string, len(*in))
+		*out = make(querydataresponse.ProxiedUpstreamHeaders, len(*in))
 		for key, val := range *in {
+			var outVal map[string]string
 			if val == nil {
 				(*out)[key] = nil
-				continue
-			}
-			outVal := make(map[string]string, len(val))
-			for header, value := range val {
-				outVal[header] = value
+			} else {
+				in, out := &val, &outVal
+				*out = make(map[string]string, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
 			}
 			(*out)[key] = outVal
 		}

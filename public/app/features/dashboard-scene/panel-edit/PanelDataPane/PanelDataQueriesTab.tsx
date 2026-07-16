@@ -173,6 +173,7 @@ export class PanelDataQueriesTab extends SceneObjectBase<PanelDataQueriesTabStat
 
     let queries: QueryGroupOptions['queries'] = queryRunner.state.queries;
     const dsSettings = this.state.dsSettings;
+    const queryRunnerState: SceneQueryRunner['state'] & { stepSize?: string | null } = queryRunner.state;
 
     return {
       cacheTimeout: dsSettings?.meta.queryOptions?.cacheTimeout ? queryRunner.state.cacheTimeout : undefined,
@@ -184,7 +185,7 @@ export class PanelDataQueriesTab extends SceneObjectBase<PanelDataQueriesTabStat
       queries,
       maxDataPoints: queryRunner.state.maxDataPoints,
       minInterval: queryRunner.state.minInterval,
-      stepSize: (queryRunner.state as { stepSize?: string | null }).stepSize,
+      stepSize: queryRunnerState.stepSize,
       timeRange: timeRangeOpts,
     };
   }
@@ -230,7 +231,8 @@ export class PanelDataQueriesTab extends SceneObjectBase<PanelDataQueriesTabStat
       dataObjStateUpdate.minInterval = options.minInterval ?? undefined;
     }
 
-    if (options.stepSize !== (dataObj.state as { stepSize?: string | null }).stepSize) {
+    const dataObjState: SceneQueryRunner['state'] & { stepSize?: string | null } = dataObj.state;
+    if (options.stepSize !== dataObjState.stepSize) {
       dataObjStateUpdate.stepSize = options.stepSize ?? undefined;
     }
 

@@ -507,7 +507,7 @@ class JsonlMultiBatchAccumulator {
 
       let event: JsonlEvent;
       try {
-        event = JSON.parse(trimmed) as JsonlEvent;
+        event = JSON.parse(trimmed);
       } catch {
         const payloadError = dataQueryErrorFromText(trimmed);
         return { data: this.snapshot(), error: payloadError, errors: [payloadError], state };
@@ -618,7 +618,7 @@ function isPrometheusApiPayload(payload: string): boolean {
 }
 
 function prometheusApiPayloadError(payload: string): DataQueryError | undefined {
-  const parsed = JSON.parse(payload) as PrometheusApiPayload;
+  const parsed: PrometheusApiPayload = JSON.parse(payload);
   if (parsed.status !== 'error' && !parsed.error) {
     return undefined;
   }
@@ -628,7 +628,7 @@ function prometheusApiPayloadError(payload: string): DataQueryError | undefined 
 }
 
 function decodePrometheusApiResponse(payload: string, query: MultiBatchQueryContext): DataFrame[] {
-  const parsed = JSON.parse(payload) as PrometheusApiPayload;
+  const parsed: PrometheusApiPayload = JSON.parse(payload);
   if (parsed.status === 'error' || parsed.error) {
     throw new Error(prometheusApiErrorMessage(parsed));
   }
@@ -790,15 +790,15 @@ function jsonlRows(event: JsonlEvent): JsonlRow[] {
       return [];
     }
 
-    if (Array.isArray(event.data[0])) {
-      return (event.data as unknown[][]).map((values) => ({ values }));
+    if (event.data.every(Array.isArray)) {
+      return event.data.map((values) => ({ values }));
     }
 
     return [{ values: event.data }];
   }
 
   if (typeof event.data === 'object') {
-    return [{ named: event.data as Record<string, unknown> }];
+    return [{ named: { ...event.data } }];
   }
 
   throw new Error('Unsupported Prometheus multi-batch JSONL data event shape');

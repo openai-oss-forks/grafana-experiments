@@ -9517,9 +9517,7 @@
       "ariaLabel-panel-loading": "Panel loading bar",
       "ariaLabel-panel-status": "Panel status",
       "tooltip-cancel": "Cancel query",
-      "tooltip-cancel-loading": "Cancel query",
-      "tooltip-stop-streaming": "Stop streaming",
-      "tooltip-streaming": "Streaming"
+      "tooltip-cancel-loading": "Cancel query"
     },
     "panel-menu": {
       "label": "Menu for panel {{ title }}",
@@ -11638,6 +11636,7 @@
       "view": "View"
     },
     "panel-data-error-view": {
+      "loading": "Loading...",
       "missing-value": {
         "number": "Data is missing a number field",
         "string": "Data is missing a string field",
@@ -14174,6 +14173,11 @@
       "select-search-input": "Type to search (country, city, abbreviation)"
     }
   },
+  "time-series": {
+    "compact-plot-legend": {
+      "load-more": "Load more legend series ({{remaining}} remaining)"
+    }
+  },
   "timeline": {
     "missing-field": {
       "all": "No graphable fields",
@@ -14196,6 +14200,10 @@
       "tooltip-edit": "Edit"
     },
     "category-axis": "Axis",
+    "compact-tooltip": {
+      "focused-series-heading": "Focused series",
+      "focused-series-label": "Focused series: {{series}}"
+    },
     "config": {
       "get-graph-field-config": {
         "aria-label-bar-width-factor": "Bar width factor",
@@ -14271,6 +14279,13 @@
     "timezones-editor": {
       "tooltip-add-timezone": "Add timezone",
       "tooltip-remove-timezone": "Remove timezone"
+    },
+    "tooltip": {
+      "category": "Tooltip",
+      "description-highlight-series-on-hover": "Emphasize the closest series while hovering over the visualization",
+      "focused-series-heading": "Focused series",
+      "focused-series-label": "Focused series: {{series}}",
+      "name-highlight-series-on-hover": "Highlight hovered series"
     }
   },
   "traces": {

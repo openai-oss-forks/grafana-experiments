@@ -23,7 +23,7 @@ jobs:
     outputs:
       changed: ${{ steps.detect-changes.outputs.backend }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -42,11 +42,11 @@ jobs:
     name: Validate Backend Configs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Setup Go
-        uses: actions/setup-go@v6.0.0
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -64,13 +64,13 @@ jobs:
       # Enterprise setup is needed for complete OpenAPI spec generation
       # We only do this for internal PRs
       - name: Setup Grafana Enterprise
-        if: github.event.pull_request.head.repo.fork == false
+        if: (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
         uses: ./.github/actions/setup-enterprise
 
       - name: Generate and Validate OpenAPI Specs
         run: |
           # For PRs from forks, we'll just run the basic swagger-gen without validation
-          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.head.repo.fork }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "pull_request" && ( "${{ github.event.pull_request.head.repo.fork }}" == "true" || "${{ github.repository }}" != "grafana/grafana" ) ]]; then
             echo "PR is from a fork, skipping enterprise-based validation"
             make swagger-gen
             exit 0

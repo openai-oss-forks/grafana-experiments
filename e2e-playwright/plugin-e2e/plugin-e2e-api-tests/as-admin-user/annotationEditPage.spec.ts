@@ -44,7 +44,7 @@ const scenarios: Scenario[] = [
 test.describe('plugin-e2e-api-tests admin', { tag: ['@plugins'] }, () => {
   for (const scenario of scenarios) {
     test(`annotation query data with ${scenario.name}`, async ({ annotationEditPage, page }) => {
-      annotationEditPage.mockQueryDataResponse(scenario.mock, scenario.status);
+      await annotationEditPage.mockQueryDataResponse(scenario.mock, scenario.status);
       await annotationEditPage.datasource.set('gdev-testdata');
       await page.getByLabel('Scenario').last().fill('CSV Content');
       await page.keyboard.press('Tab');

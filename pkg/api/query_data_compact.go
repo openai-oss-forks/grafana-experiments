@@ -305,6 +305,7 @@ func newCompactQueryDataResponseContext(
 	return result, nil
 }
 
+//nolint:gocyclo // Compact metadata validation intentionally keeps all compatibility checks together.
 func populateCompactResultMetadata(response *compactDataResponse, frames data.Frames, strings *compactStringTable) error {
 	var resultType compactResultType
 	var frameType compactFrameType

@@ -34,8 +34,9 @@ function extractTimeRange(timeRangeObj: unknown): QueryGroupOptions['timeRange']
  */
 export function useQueryOptions({ panel, queryRunner, dsSettings }: UseQueryOptionsParams): QueryGroupOptions {
   const panelState = panel.useState();
-  const queryRunnerState = queryRunner?.useState();
-  const stepSize = (queryRunnerState as { stepSize?: string | null } | undefined)?.stepSize;
+  const queryRunnerState: (SceneQueryRunner['state'] & { stepSize?: string | null }) | undefined =
+    queryRunner?.useState();
+  const stepSize = queryRunnerState?.stepSize;
 
   const queryOptions: QueryGroupOptions = useMemo(() => {
     const showCacheTimeout = dsSettings?.meta.queryOptions?.cacheTimeout;

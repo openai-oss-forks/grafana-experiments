@@ -19,7 +19,7 @@ jobs:
       prettier: ${{ steps.detect-changes.outputs.frontend == 'true' || steps.detect-changes.outputs.docs == 'true' }}
       changed-frontend-packages: ${{ steps.detect-changes.outputs.frontend-packages }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -36,11 +36,11 @@ jobs:
       id-token: write
     # Run this workflow only for PRs from forks; if it gets merged into `main` or `release-*`,
     # the `lint-frontend-prettier-enterprise` workflow will run instead
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && needs.detect-changes.outputs.prettier == 'true'
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == true || github.repository != 'grafana/grafana') && needs.detect-changes.outputs.prettier == 'true'
     name: Lint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -54,11 +54,11 @@ jobs:
       contents: read
       id-token: write
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false && needs.detect-changes.outputs.prettier == 'true'
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && needs.detect-changes.outputs.prettier == 'true'
     name: Lint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -77,11 +77,11 @@ jobs:
       id-token: write
     # Run this workflow only for PRs from forks; if it gets merged into `main` or `release-*`,
     # the `lint-frontend-typecheck-enterprise` workflow will run instead
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && needs.detect-changes.outputs.changed == 'true'
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == true || github.repository != 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -96,11 +96,11 @@ jobs:
       contents: read
       id-token: write
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false && needs.detect-changes.outputs.changed == 'true'
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -119,11 +119,11 @@ jobs:
       id-token: write
     # Run this workflow only for PRs from forks; if it gets merged into `main` or `release-*`,
     # the `lint-frontend-api-clients-enterprise` workflow will run instead
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == true || github.repository != 'grafana/grafana')
     name: Verify API clients
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -147,11 +147,11 @@ jobs:
       contents: read
       id-token: write
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
     name: Verify API clients (enterprise)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -184,7 +184,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout build commit
-      uses: actions/checkout@v5
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -204,10 +204,10 @@ jobs:
       id-token: write
     if: github.event_name == 'pull_request' && needs.detect-changes.outputs.changed == 'true'
     name: Check circular dependencies
-    runs-on: ubuntu-x64-small
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout build commit
-      uses: actions/checkout@v5
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
@@ -223,12 +223,16 @@ jobs:
         pr_count=$(sed -n 's/.*Found \([0-9]*\) circular.*/\1/p' /tmp/pr-circular-clean.txt)
         echo "$pr_count"
     - name: Checkout base branch
-      uses: actions/checkout@v5
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
         ref: ${{ github.event.pull_request.base.ref }}
     - name: Setup Node
-      uses: ./.github/actions/setup-node
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version-file: '.nvmrc'
+        cache: yarn
+        cache-dependency-path: yarn.lock
     - name: Install dependencies
       run: yarn install --immutable
     - name: Check circular dependencies on base branch

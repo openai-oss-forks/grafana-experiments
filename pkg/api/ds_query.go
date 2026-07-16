@@ -49,9 +49,7 @@ func (hs *HTTPServer) getDSQueryEndpoint() web.Handler {
 					errhttp.Write(r.Context(), errors.New("missing request context"), w)
 					return
 				}
-				if res := hs.QueryMetricsV2(reqCtx); res != nil {
-					res.WriteTo(reqCtx)
-				}
+				hs.QueryMetricsV2(reqCtx).WriteTo(reqCtx)
 				return
 			}
 			user, err := identity.GetRequester(r.Context())

@@ -13,7 +13,7 @@ jobs:
     outputs:
       changed: ${{ steps.detect-changes.outputs.backend || steps.detect-changes.outputs.frontend || steps.detect-changes.outputs.dockerfile }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -26,12 +26,12 @@ jobs:
   build-dockerfile:
     needs: detect-changes
     if: needs.detect-changes.outputs.changed == 'true'
-    runs-on: ubuntu-x64-large-io
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - uses: docker/setup-docker-action@3fb92d6d9c634363128c8cce4bc3b2826526370a # v4

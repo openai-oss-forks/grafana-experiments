@@ -661,7 +661,7 @@ func TestExecuteStreamOscopeBackendMultiBatchMatrix(t *testing.T) {
 	zstdWithContentSizeEncoder, err := zstd.NewWriter(nil, zstd.WithSingleSegment(true))
 	require.NoError(t, err)
 	zstdWithContentSizePayload := zstdWithContentSizeEncoder.EncodeAll(jsonlPayload, nil)
-	zstdWithContentSizeEncoder.Close()
+	require.NoError(t, zstdWithContentSizeEncoder.Close())
 	var zstdWithContentSizeHeader zstd.Header
 	require.NoError(t, zstdWithContentSizeHeader.Decode(zstdWithContentSizePayload))
 	require.True(t, zstdWithContentSizeHeader.HasFCS)

@@ -526,6 +526,16 @@
             "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
             "type": "string"
           },
+          "proxied_upstream_headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "default": "",
+                "type": "string"
+              }
+            }
+          },
           "results": {
             "description": "Responses is a map of RefIDs (Unique Query ID) to *DataResponse.",
             "type": "object",

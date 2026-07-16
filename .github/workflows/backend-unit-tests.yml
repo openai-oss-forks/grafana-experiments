@@ -24,7 +24,7 @@ jobs:
     outputs:
       changed: ${{ steps.detect-changes.outputs.backend }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: true # required to get more history in the changed-files action
           fetch-depth: 2
@@ -38,7 +38,7 @@ jobs:
     # Run this workflow only for PRs from forks
     # the `pr-backend-unit-tests-enterprise` workflow will run instead
     needs: detect-changes
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && needs.detect-changes.outputs.changed == 'true'
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == true || github.repository != 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
     strategy:
       matrix:
         shard: [
@@ -55,11 +55,11 @@ jobs:
       id-token: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Setup Go
-        uses: actions/setup-go@v6.0.0
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
       - name: Run unit tests
@@ -73,7 +73,7 @@ jobs:
   grafana-enterprise:
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
     needs: detect-changes
-    if: github.event_name != 'pull_request' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false && needs.detect-changes.outputs.changed == 'true')
+    if: github.event_name != 'pull_request' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true')
     strategy:
       matrix:
         shard: [
@@ -83,18 +83,18 @@ jobs:
       fail-fast: false
 
     name: Grafana Enterprise (${{ matrix.shard }})
-    runs-on: ubuntu-x64-large
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
       # Set up repository clone
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
       - name: Setup Go
-        uses: actions/setup-go@v6.0.0
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
       - name: Setup Enterprise

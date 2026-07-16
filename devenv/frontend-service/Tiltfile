@@ -1,3 +1,6 @@
+# GitHub-hosted runners need longer than the default 5m to finish the frontend build.
+ci_settings(readiness_timeout='15m')
+
 # --- Frontend processes
 local_resource(
   'yarn install',

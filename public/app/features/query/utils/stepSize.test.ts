@@ -1,8 +1,7 @@
-import { dateTime } from '@grafana/data';
-
 import {
   ALLOWED_STEP_SIZES,
   AUTO_STEP_SIZE_FALLBACK_MAX_DATA_POINTS,
+  dateTime,
   getDatapointsForStep,
   getStepSizeMs,
   getStepSizeOptions,
@@ -10,7 +9,7 @@ import {
   isValidStepSize,
   MAX_STEP_SIZE_DATA_POINTS,
   resolveQueryIntervalWithStepSize,
-} from './stepSize';
+} from '@grafana/data';
 
 const range = (from: string, to: string) => ({
   from: dateTime(from),

@@ -1826,14 +1826,6 @@
       "count": 1
     }
   },
-  "public/app/features/dashboard-scene/serialization/transformSceneToSaveModel.ts": {
-    "@typescript-eslint/consistent-type-assertions": {
-      "count": 7
-    },
-    "@typescript-eslint/no-explicit-any": {
-      "count": 1
-    }
-  },
   "public/app/features/dashboard-scene/serialization/transformToV1TypesUtils.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 1

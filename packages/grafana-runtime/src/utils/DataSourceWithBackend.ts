@@ -210,13 +210,12 @@ class DataSourceWithBackend<
         dsUIDs.add(datasource.uid);
       }
 
-      const interpolatedQuery =
+      const interpolatedQuery: StepSizedDataQuery =
         (shouldApplyTemplateVariables ? this.applyTemplateVariables(q, request.scopedVars, request.filters) : q) ?? q;
-      const stepSizedQuery = interpolatedQuery as StepSizedDataQuery;
       const isPrometheusQuery = datasource.type === prometheusDatasourceType;
       const queryStepSize =
-        isPrometheusQuery && stepSizedQuery.stepSize !== undefined ? stepSizedQuery.stepSize : stepSize;
-      const queryMinInterval = isPrometheusQuery ? stepSizedQuery.interval || minInterval : minInterval;
+        isPrometheusQuery && interpolatedQuery.stepSize !== undefined ? interpolatedQuery.stepSize : stepSize;
+      const queryMinInterval = isPrometheusQuery ? interpolatedQuery.interval || minInterval : minInterval;
       const queryInterval =
         queryStepSize && range
           ? resolveQueryIntervalWithStepSize({
