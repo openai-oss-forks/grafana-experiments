@@ -13,9 +13,9 @@ require (
 	go.opentelemetry.io/otel v1.39.0 // indirect; @grafana/grafana-backend-group
 	go.opentelemetry.io/otel/sdk v1.39.0 // indirect; @grafana/grafana-backend-group
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect; @grafana/grafana-backend-group
-	golang.org/x/net v0.49.0 // indirect; @grafana/oss-big-tent @grafana/partner-datasources
-	golang.org/x/sync v0.19.0 // @grafana/alerting-backend
-	golang.org/x/text v0.33.0 // indirect; @grafana/grafana-backend-group
+	golang.org/x/net v0.52.0 // indirect; @grafana/oss-big-tent @grafana/partner-datasources
+	golang.org/x/sync v0.20.0 // @grafana/alerting-backend
+	golang.org/x/text v0.35.0 // indirect; @grafana/grafana-backend-group
 	google.golang.org/grpc v1.79.3 // indirect; @grafana/plugins-platform-backend
 	google.golang.org/protobuf v1.36.11 // indirect; @grafana/plugins-platform-backend
 )
@@ -29,9 +29,9 @@ require (
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20251222181119-0a764e51fe1b // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251222181119-0a764e51fe1b // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260319201613-d00831a3d3e7 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260319201613-d00831a3d3e7 // indirect
 )
 
 require (
@@ -47,7 +47,7 @@ require (
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.4 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect
 	github.com/sosodev/duration v1.3.1 // indirect
