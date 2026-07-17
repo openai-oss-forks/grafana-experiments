@@ -13,6 +13,7 @@ import {
   Field,
   FieldSet,
   Label,
+  Stack,
   stylesFactory,
   TimeZonePicker,
   WeekStartPicker,
@@ -42,6 +43,8 @@ export type State = UserPreferencesDTO & {
   isLoading: boolean;
   isSubmitting: boolean;
 };
+const collator = new Intl.Collator();
+
 function getLanguageOptions(): ComboboxOption[] {
   const languageOptions = LANGUAGES.map((v) => ({
     value: v.code,
@@ -55,7 +58,7 @@ function getLanguageOptions(): ComboboxOption[] {
       return -1;
     }
 
-    return a.label.localeCompare(b.label);
+    return collator.compare(a.label, b.label);
   });
 
   if (process.env.NODE_ENV === 'development') {
@@ -81,7 +84,7 @@ function getRegionalFormatOptions(): ComboboxOption[] {
     value: v.code,
     label: v.name,
   })).sort((a, b) => {
-    return a.label.localeCompare(b.label);
+    return collator.compare(a.label, b.label);
   });
 
   const options = [
@@ -258,148 +261,157 @@ export class SharedPreferences extends PureComponent<Props, State> {
     return (
       <form onSubmit={this.onSubmitForm} className={styles.form}>
         <FieldSet label={<Trans i18nKey="shared-preferences.title">Preferences</Trans>} disabled={disabled}>
-          <Field
-            loading={isLoading}
-            disabled={isLoading}
-            label={t('shared-preferences.fields.theme-label', 'Interface theme')}
-            description={
-              config.featureToggles.grafanaconThemes && config.feedbackLinksEnabled ? (
-                <Trans i18nKey="shared-preferences.fields.theme-description">
-                  Enjoying the experimental themes? Tell us what you'd like to see{' '}
-                  <TextLink
-                    variant="bodySmall"
-                    external
-                    href="https://docs.google.com/forms/d/e/1FAIpQLSeRKAY8nUMEVIKSYJ99uOO-dimF6Y69_If1Q1jTLOZRWqK1cw/viewform?usp=dialog"
-                  >
-                    here.
-                  </TextLink>
-                </Trans>
-              ) : undefined
-            }
-          >
-            <Combobox
-              options={this.themeOptions}
-              value={currentThemeOption.value}
-              onChange={this.onThemeChanged}
-              id="shared-preferences-theme-select"
-            />
-          </Field>
-
-          {this.props.preferenceType === 'user' && (
+          <Stack direction="column" gap={2}>
             <Field
-              disabled={disabled || isLoading}
-              label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
-              description={t(
-                'shared-preferences.fields.shared-crosshair-description',
-                'Show a vertical line across all dashboard graphs'
-              )}
+              noMargin
+              loading={isLoading}
+              disabled={isLoading}
+              label={t('shared-preferences.fields.theme-label', 'Interface theme')}
+              description={
+                config.featureToggles.grafanaconThemes && config.feedbackLinksEnabled ? (
+                  <Trans i18nKey="shared-preferences.fields.theme-description">
+                    Enjoying the experimental themes? Tell us what you'd like to see{' '}
+                    <TextLink
+                      variant="bodySmall"
+                      external
+                      href="https://docs.google.com/forms/d/e/1FAIpQLSeRKAY8nUMEVIKSYJ99uOO-dimF6Y69_If1Q1jTLOZRWqK1cw/viewform?usp=dialog"
+                    >
+                      here.
+                    </TextLink>
+                  </Trans>
+                ) : undefined
+              }
             >
-              <Switch
-                id="shared-crosshair-toggle"
-                value={sharedCrosshair ?? false}
-                onChange={(event) => this.setState({ sharedCrosshair: event.currentTarget.checked })}
-                aria-label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
+              <Combobox
+                options={this.themeOptions}
+                value={currentThemeOption.value}
+                onChange={this.onThemeChanged}
+                id="shared-preferences-theme-select"
               />
             </Field>
-          )}
 
-          <Field
-            loading={isLoading}
-            disabled={isLoading}
-            label={
-              <Label htmlFor="home-dashboard-select">
-                <span className={styles.labelText}>
-                  <Trans i18nKey="shared-preferences.fields.home-dashboard-label">Home Dashboard</Trans>
-                </span>
-              </Label>
-            }
-            data-testid="User preferences home dashboard drop down"
-          >
-            <DashboardPicker
-              value={homeDashboardUID}
-              onChange={(v) => this.onHomeDashboardChanged(v?.uid ?? '')}
-              defaultOptions={true}
-              isClearable={true}
-              placeholder={t('shared-preferences.fields.home-dashboard-placeholder', 'Default dashboard')}
-              inputId="home-dashboard-select"
-            />
-          </Field>
+            {this.props.preferenceType === 'user' && (
+              <Field
+                noMargin
+                disabled={disabled || isLoading}
+                label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
+                description={t(
+                  'shared-preferences.fields.shared-crosshair-description',
+                  'Show a vertical line across all dashboard graphs'
+                )}
+              >
+                <Switch
+                  id="shared-crosshair-toggle"
+                  value={sharedCrosshair ?? false}
+                  onChange={(event) => this.setState({ sharedCrosshair: event.currentTarget.checked })}
+                  aria-label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
+                />
+              </Field>
+            )}
 
-          <Field
-            loading={isLoading}
-            disabled={isLoading}
-            label={t('shared-dashboard.fields.timezone-label', 'Timezone')}
-            data-testid={selectors.components.TimeZonePicker.containerV2}
-          >
-            <TimeZonePicker
-              includeInternal={true}
-              value={timezone}
-              onChange={this.onTimeZoneChanged}
-              inputId="shared-preferences-timezone-picker"
-            />
-          </Field>
-
-          <Field
-            loading={isLoading}
-            disabled={isLoading}
-            label={t('shared-preferences.fields.week-start-label', 'Week start')}
-            data-testid={selectors.components.WeekStartPicker.containerV2}
-          >
-            <WeekStartPicker
-              value={weekStart && isWeekStart(weekStart) ? weekStart : undefined}
-              onChange={this.onWeekStartChanged}
-              inputId="shared-preferences-week-start-picker"
-            />
-          </Field>
-
-          <Field
-            loading={isLoading}
-            disabled={isLoading}
-            label={
-              <Label htmlFor="language-preference-select">
-                <span className={styles.labelText}>
-                  <Trans i18nKey="shared-preferences.fields.language-preference-label">Language</Trans>
-                </span>
-                <FeatureBadge featureState={FeatureState.preview} />
-              </Label>
-            }
-            data-testid="User preferences language drop down"
-          >
-            <Combobox
-              value={this.languageOptions.find((lang) => lang.value === language)?.value || ''}
-              onChange={(lang: ComboboxOption | null) => this.onLanguageChanged(lang?.value ?? '')}
-              options={this.languageOptions}
-              placeholder={t('shared-preferences.fields.language-preference-placeholder', 'Choose language')}
-              id="language-preference-select"
-            />
-          </Field>
-          {config.featureToggles.localeFormatPreference && (
             <Field
+              noMargin
               loading={isLoading}
               disabled={isLoading}
               label={
-                <Label htmlFor="locale-preference">
+                <Label htmlFor="home-dashboard-select">
                   <span className={styles.labelText}>
-                    <Trans i18nKey="shared-preferences.fields.locale-preference-label">Region format</Trans>
+                    <Trans i18nKey="shared-preferences.fields.home-dashboard-label">Home Dashboard</Trans>
+                  </span>
+                </Label>
+              }
+              data-testid="User preferences home dashboard drop down"
+            >
+              <DashboardPicker
+                value={homeDashboardUID}
+                onChange={(v) => this.onHomeDashboardChanged(v?.uid ?? '')}
+                defaultOptions={true}
+                isClearable={true}
+                placeholder={t('shared-preferences.fields.home-dashboard-placeholder', 'Default dashboard')}
+                inputId="home-dashboard-select"
+              />
+            </Field>
+
+            <Field
+              noMargin
+              loading={isLoading}
+              disabled={isLoading}
+              label={t('shared-dashboard.fields.timezone-label', 'Timezone')}
+              data-testid={selectors.components.TimeZonePicker.containerV2}
+            >
+              <TimeZonePicker
+                includeInternal={true}
+                value={timezone}
+                onChange={this.onTimeZoneChanged}
+                inputId="shared-preferences-timezone-picker"
+              />
+            </Field>
+
+            <Field
+              noMargin
+              loading={isLoading}
+              disabled={isLoading}
+              label={t('shared-preferences.fields.week-start-label', 'Week start')}
+              data-testid={selectors.components.WeekStartPicker.containerV2}
+            >
+              <WeekStartPicker
+                value={weekStart && isWeekStart(weekStart) ? weekStart : undefined}
+                onChange={this.onWeekStartChanged}
+                inputId="shared-preferences-week-start-picker"
+              />
+            </Field>
+
+            <Field
+              noMargin
+              loading={isLoading}
+              disabled={isLoading}
+              label={
+                <Label htmlFor="language-preference-select">
+                  <span className={styles.labelText}>
+                    <Trans i18nKey="shared-preferences.fields.language-preference-label">Language</Trans>
                   </span>
                   <FeatureBadge featureState={FeatureState.preview} />
                 </Label>
               }
-              description={t(
-                'shared-preferences.fields.locale-preference-description',
-                'Choose your region to see the corresponding date, time, and number format'
-              )}
-              data-testid="User preferences locale drop down"
+              data-testid="User preferences language drop down"
             >
               <Combobox
-                value={this.regionalFormatOptions.find((loc) => loc.value === regionalFormat)?.value || ''}
-                onChange={(locale: ComboboxOption | null) => this.onLocaleChanged(locale?.value ?? '')}
-                options={this.regionalFormatOptions}
-                placeholder={t('shared-preferences.fields.locale-preference-placeholder', 'Choose region')}
-                id="locale-preference-select"
+                value={this.languageOptions.find((lang) => lang.value === language)?.value || ''}
+                onChange={(lang: ComboboxOption | null) => this.onLanguageChanged(lang?.value ?? '')}
+                options={this.languageOptions}
+                placeholder={t('shared-preferences.fields.language-preference-placeholder', 'Choose language')}
+                id="language-preference-select"
               />
             </Field>
-          )}
+            {config.featureToggles.localeFormatPreference && (
+              <Field
+                noMargin
+                loading={isLoading}
+                disabled={isLoading}
+                label={
+                  <Label htmlFor="locale-preference">
+                    <span className={styles.labelText}>
+                      <Trans i18nKey="shared-preferences.fields.locale-preference-label">Region format</Trans>
+                    </span>
+                    <FeatureBadge featureState={FeatureState.preview} />
+                  </Label>
+                }
+                description={t(
+                  'shared-preferences.fields.locale-preference-description',
+                  'Choose your region to see the corresponding date, time, and number format'
+                )}
+                data-testid="User preferences locale drop down"
+              >
+                <Combobox
+                  value={this.regionalFormatOptions.find((loc) => loc.value === regionalFormat)?.value || ''}
+                  onChange={(locale: ComboboxOption | null) => this.onLocaleChanged(locale?.value ?? '')}
+                  options={this.regionalFormatOptions}
+                  placeholder={t('shared-preferences.fields.locale-preference-placeholder', 'Choose region')}
+                  id="locale-preference-select"
+                />
+              </Field>
+            )}
+          </Stack>
         </FieldSet>
         <Button
           disabled={isSubmitting}
