@@ -15,17 +15,8 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Actions
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-        with:
-          repository: "grafana/grafana-github-actions"
-          path: ./actions
-          ref: main
-          persist-credentials: false
-      - name: Install Actions
-        run: npm install --production --prefix ./actions
       - name: Run Commands
-        uses: ./actions/commands
+        uses: grafana/grafana-github-actions/commands@3c62d35c5a66e730186a338e45aeb8fa784e2d56 # main
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           configPath: pr-commands
