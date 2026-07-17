@@ -42,6 +42,7 @@ export type PreferencesSpec = {
   queryHistory?: PreferencesQueryHistoryPreference;
   /** Selected locale (beta) */
   regionalFormat?: string;
+  /** Show a shared crosshair on dashboards without cursor sync */
   sharedCrosshair?: boolean;
   /** light, dark, empty is default */
   theme?: string;

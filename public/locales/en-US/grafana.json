@@ -13633,6 +13633,8 @@
       "locale-preference-description": "Choose your region to see the corresponding date, time, and number format",
       "locale-preference-label": "Region format",
       "locale-preference-placeholder": "Choose region",
+      "shared-crosshair-description": "Show a vertical line across all dashboard graphs",
+      "shared-crosshair-label": "Shared crosshair",
       "theme-description": "Enjoying the experimental themes? Tell us what you'd like to see <2>here.</2>",
       "theme-label": "Interface theme",
       "week-start-label": "Week start"

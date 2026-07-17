@@ -287,7 +287,6 @@ export class SharedPreferences extends PureComponent<Props, State> {
 
           {this.props.preferenceType === 'user' && (
             <Field
-              noMargin
               disabled={disabled || isLoading}
               label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
               description={t(
@@ -296,6 +295,7 @@ export class SharedPreferences extends PureComponent<Props, State> {
               )}
             >
               <Switch
+                id="shared-crosshair-toggle"
                 value={sharedCrosshair ?? false}
                 onChange={(event) => this.setState({ sharedCrosshair: event.currentTarget.checked })}
                 aria-label={t('shared-preferences.fields.shared-crosshair-label', 'Shared crosshair')}
