@@ -863,6 +863,7 @@ function createRenderSource(
     stackGroupCount,
     ...(stackGroupCount > 0 ? { stackDirections } : undefined),
     cursorMode: options.cursorMode ?? 'single',
+    highlightSeriesOnHover: options.highlightSeriesOnHover !== false,
     focusOverlayColor:
       options.highlightSeriesOnHover === false || options.barOptions?.fullHighlight
         ? undefined

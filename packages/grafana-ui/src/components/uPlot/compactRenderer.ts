@@ -121,6 +121,7 @@ export interface CompactRenderSource extends CompactPlotSource {
   readonly stackGroupCount: number;
   readonly stackDirections?: Int8Array;
   readonly cursorMode: 'single' | 'multi' | 'none';
+  readonly highlightSeriesOnHover?: boolean;
   readonly focusOverlayColor?: string;
   seriesIdentityAt?(seriesIndex: number): string;
   seriesIdentityHashAt?(seriesIndex: number): number;
@@ -1929,7 +1930,10 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       this.cursorState.width = barRect.width;
       this.cursorState.height = barRect.height;
       this.cursorState.centered = false;
-      this.cursorState.fill = 'rgba(255, 255, 255, 0.4)';
+      this.cursorState.fill =
+        this.source.barOptions != null || this.source.highlightSeriesOnHover !== false
+          ? 'rgba(255, 255, 255, 0.4)'
+          : 'transparent';
       this.cursorState.stroke = 'transparent';
     }
   }
@@ -2223,14 +2227,19 @@ export class CompactRenderController implements uPlot.CompactRenderController {
       const fullHighlight = grouped && this.source.barOptions?.fullHighlight && (flags & CompactSeriesFlag.Stack) === 0;
       if (!fullHighlight) {
         const strokeExpansion = geometry.strokeWidth / (2 * pixelRatio);
-        if (strokeExpansion > 0) {
-          const right = Math.min(plot.bbox.width / pixelRatio, rect.left + rect.width + strokeExpansion);
-          const bottom = Math.min(plot.bbox.height / pixelRatio, rect.top + rect.height + strokeExpansion);
-          rect.left = Math.max(0, rect.left - strokeExpansion);
-          rect.top = Math.max(0, rect.top - strokeExpansion);
-          rect.width = right - rect.left;
-          rect.height = bottom - rect.top;
+        const plotWidth = plot.bbox.width / pixelRatio;
+        const plotHeight = plot.bbox.height / pixelRatio;
+        const left = rect.left - strokeExpansion;
+        const top = rect.top - strokeExpansion;
+        const right = Math.min(plotWidth, rect.left + rect.width + strokeExpansion);
+        const bottom = Math.min(plotHeight, rect.top + rect.height + strokeExpansion);
+        if (right <= 0 || bottom <= 0 || left >= plotWidth || top >= plotHeight) {
+          return null;
         }
+        rect.left = Math.max(0, left);
+        rect.top = Math.max(0, top);
+        rect.width = Math.max(0, right - rect.left);
+        rect.height = Math.max(0, bottom - rect.top);
         const minimumThickness = Math.max(uPlot.pxRatio, geometry.strokeWidth) / pixelRatio;
         if (rect.width === 0) {
           rect.left -= minimumThickness / 2;
