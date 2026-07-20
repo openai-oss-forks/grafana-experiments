@@ -50,5 +50,40 @@ test.describe(
         dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Panel #50'))
       ).toBeVisible();
     });
+
+    for (const menuItem of ['View', 'Edit'] as const) {
+      test(`should restore scroll position across browser history from panel ${menuItem}`, async ({
+        page,
+        gotoDashboardPage,
+        selectors,
+      }) => {
+        const dashboardPage = await gotoDashboardPage({ uid: PAGE_UNDER_TEST });
+        const lastPanel = dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Panel #50'));
+
+        await page.evaluate(() => {
+          window.scrollTo(0, document.body.scrollHeight);
+        });
+        await expect(lastPanel).toBeVisible();
+
+        await dashboardPage
+          .getByGrafanaSelector(selectors.components.Panels.Panel.menu('Panel #50'))
+          .click({ force: true });
+        await dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.menuItems(menuItem)).click();
+
+        const backToDashboard = dashboardPage.getByGrafanaSelector(
+          selectors.components.NavToolbar.editDashboard.backToDashboardButton
+        );
+        await expect(backToDashboard).toBeVisible();
+
+        await page.goBack();
+        await expect(lastPanel).toBeVisible();
+
+        await page.goForward();
+        await expect(backToDashboard).toBeVisible();
+
+        await page.goBack();
+        await expect(lastPanel).toBeVisible();
+      });
+    }
   }
 );
