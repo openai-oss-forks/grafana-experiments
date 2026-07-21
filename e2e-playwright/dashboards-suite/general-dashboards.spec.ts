@@ -31,7 +31,7 @@ test.describe(
       // The last panel should be visible...
       await expect(
         dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Panel #50'))
-      ).toBeVisible();
+      ).toBeInViewport();
 
       // Then we open and close the panel editor
       // Click on panel menu (it only shows on hover)
@@ -48,7 +48,7 @@ test.describe(
       // The last panel should still be visible!
       await expect(
         dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Panel #50'))
-      ).toBeVisible();
+      ).toBeInViewport();
     });
 
     for (const menuItem of ['View', 'Edit'] as const) {
@@ -76,13 +76,13 @@ test.describe(
         await expect(backToDashboard).toBeVisible();
 
         await page.goBack();
-        await expect(lastPanel).toBeVisible();
+        await expect(lastPanel).toBeInViewport();
 
         await page.goForward();
         await expect(backToDashboard).toBeVisible();
 
         await page.goBack();
-        await expect(lastPanel).toBeVisible();
+        await expect(lastPanel).toBeInViewport();
       });
     }
   }

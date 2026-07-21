@@ -45,13 +45,11 @@ export function DashboardSceneRenderer({ model }: SceneComponentProps<DashboardS
   const isSettingsOpen = editview !== undefined;
   const soloPanelContext = useDefineSoloPanelContext(viewPanel);
 
-  // Browser history restores the target entry's scroll position before Scenes applies the URL state.
-  // Remember the dashboard position synchronously so a forward navigation cannot replace it with 0.
+  // Scenes applies the target URL state before this popstate listener runs. Use the current render state so
+  // browser back from a panel cannot replace the saved dashboard position with the panel editor's 0.
   useEffect(() => {
     const rememberScrollPosBeforeHistoryNavigation = () => {
-      const { editview, editPanel, viewPanel } = model.state;
-
-      if (!viewPanel && !editview && !editPanel) {
+      if (!viewPanel && !isSettingsOpen && !editPanel) {
         model.rememberScrollPos();
       }
     };
@@ -59,7 +57,7 @@ export function DashboardSceneRenderer({ model }: SceneComponentProps<DashboardS
     window.addEventListener('popstate', rememberScrollPosBeforeHistoryNavigation);
 
     return () => window.removeEventListener('popstate', rememberScrollPosBeforeHistoryNavigation);
-  }, [model]);
+  }, [isSettingsOpen, editPanel, viewPanel, model]);
 
   // Remember scroll pos when going into view panel, edit panel or settings
   useMemo(() => {
