@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo } from 'react';
 import { useLocation, useParams } from 'react-router-dom-v5-compat';
 
 import { PageLayoutType } from '@grafana/data';
-import { ScopesContext } from '@grafana/runtime';
+import { locationService, ScopesContext } from '@grafana/runtime';
 import { SceneComponentProps } from '@grafana/scenes';
 import { Page } from 'app/core/components/Page/Page';
 import { getNavModel } from 'app/core/selectors/navModel';
@@ -45,9 +45,23 @@ export function DashboardSceneRenderer({ model }: SceneComponentProps<DashboardS
   const isSettingsOpen = editview !== undefined;
   const soloPanelContext = useDefineSoloPanelContext(viewPanel);
 
+  // Scenes applies the target URL state before this popstate listener runs. Use the current render state so
+  // browser back from a panel cannot replace the saved dashboard position with the panel editor's 0.
+  useEffect(() => {
+    const rememberScrollPosBeforeHistoryNavigation = () => {
+      if (!viewPanel && !isSettingsOpen && !editPanel) {
+        model.rememberScrollPos();
+      }
+    };
+
+    window.addEventListener('popstate', rememberScrollPosBeforeHistoryNavigation);
+
+    return () => window.removeEventListener('popstate', rememberScrollPosBeforeHistoryNavigation);
+  }, [isSettingsOpen, editPanel, viewPanel, model]);
+
   // Remember scroll pos when going into view panel, edit panel or settings
   useMemo(() => {
-    if (viewPanel || isSettingsOpen || editPanel) {
+    if ((viewPanel || isSettingsOpen || editPanel) && locationService.getHistory().action !== 'POP') {
       model.rememberScrollPos();
     }
   }, [isSettingsOpen, editPanel, viewPanel, model]);
