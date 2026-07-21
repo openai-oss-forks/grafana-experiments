@@ -58,12 +58,12 @@ test.describe(
         selectors,
       }) => {
         const dashboardPage = await gotoDashboardPage({ uid: PAGE_UNDER_TEST });
+        const firstPanel = dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Panel #1'));
         const lastPanel = dashboardPage.getByGrafanaSelector(selectors.components.Panels.Panel.title('Panel #50'));
 
-        await page.evaluate(() => {
-          window.scrollTo(0, document.body.scrollHeight);
-        });
-        await expect(lastPanel).toBeVisible();
+        await expect(firstPanel).toBeVisible();
+        await lastPanel.scrollIntoViewIfNeeded();
+        await expect(lastPanel).toBeInViewport();
 
         await dashboardPage
           .getByGrafanaSelector(selectors.components.Panels.Panel.menu('Panel #50'))
