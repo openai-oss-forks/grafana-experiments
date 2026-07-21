@@ -1359,6 +1359,146 @@ describe('CompactRenderController', () => {
       seriesIndex: 1,
       centered: false,
       ...bar,
+      left: 0,
+      width: 30,
+    });
+  });
+
+  test.each([
+    { orientation: 'vertical', xOrientation: 0, expected: { left: 20, top: 60, width: 60, height: 40 } },
+    { orientation: 'horizontal', xOrientation: 1, expected: { left: 60, top: 20, width: 40, height: 60 } },
+  ])(
+    'clips a fill-only $orientation Time series bar cursor and removes its highlight when disabled',
+    ({ xOrientation, expected }) => {
+      const source = createSource([[100]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+        stroke: '#00f',
+        areaFill: '#0000ff40',
+        lineWidth: 0,
+        barWidthFactor: 0.6,
+      });
+      source.xAt = () => 50;
+      const controller = new CompactRenderController(source);
+      const { plot } = createPlot();
+      plot.bbox.left = 17;
+      plot.bbox.top = 23;
+      plot.scales.x.ori = xOrientation as 0 | 1;
+      plot.scales.y.ori = xOrientation === 0 ? 1 : 0;
+      plot.valToPos = (value, scaleKey, canvasPixels) => {
+        const position = scaleKey === 'x' ? value : 160 - value;
+        const offset =
+          scaleKey === 'x'
+            ? xOrientation === 0
+              ? plot.bbox.left
+              : plot.bbox.top
+            : xOrientation === 0
+              ? plot.bbox.top
+              : plot.bbox.left;
+        return canvasPixels ? position + offset : position;
+      };
+      if (xOrientation === 0) {
+        plot.cursor.left = 50;
+      } else {
+        plot.cursor.top = 50;
+      }
+
+      expect(controller.updateCursor(plot, 0, 80, 'local')).toMatchObject({
+        hasPoint: true,
+        seriesIndex: 0,
+        dataIndex: 0,
+        distance: 0,
+        centered: false,
+        ...expected,
+        fill: 'rgba(255, 255, 255, 0.4)',
+      });
+      Reflect.set(source, 'highlightSeriesOnHover', false);
+
+      expect(controller.updateCursor(plot, 0, 80, 'local')).toMatchObject({
+        hasPoint: true,
+        seriesIndex: 0,
+        dataIndex: 0,
+        distance: 0,
+        centered: false,
+        ...expected,
+        fill: 'transparent',
+        stroke: 'transparent',
+      });
+    }
+  );
+
+  test('does not select a wholly offscreen fill-only Time series bar at the plot boundary', () => {
+    const source = createSource([[-100]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 0,
+      barWidthFactor: 0.6,
+    });
+    source.xAt = () => 50;
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : -160 - value);
+    plot.cursor.left = 50;
+    plot.focus.prox = 1;
+
+    expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({
+      hasPoint: false,
+      seriesIndex: -1,
+      dataIndex: -1,
+    });
+  });
+
+  test.each([
+    { orientation: 'vertical', xOrientation: 0 },
+    { orientation: 'horizontal', xOrientation: 1 },
+  ])(
+    'does not create a body target for a fill-only $orientation Time series bar ending at the plot edge',
+    ({ xOrientation }) => {
+      const source = createSource([[-100]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+        stroke: '#00f',
+        areaFill: '#0000ff40',
+        lineWidth: 0,
+        barWidthFactor: 0.6,
+      });
+      source.xAt = () => 50;
+      const controller = new CompactRenderController(source);
+      const { plot } = createPlot();
+      plot.scales.x.ori = xOrientation as 0 | 1;
+      plot.scales.y.ori = xOrientation === 0 ? 1 : 0;
+      plot.valToPos = (value, scaleKey) => (scaleKey === 'x' ? value : -100 - value);
+      if (xOrientation === 0) {
+        plot.cursor.left = 50;
+      } else {
+        plot.cursor.top = 50;
+      }
+      plot.focus.prox = 1;
+
+      expect(controller.updateCursor(plot, 0, 0, 'local')).toMatchObject({
+        hasPoint: true,
+        seriesIndex: 0,
+        dataIndex: 0,
+        centered: true,
+      });
+    }
+  );
+
+  test('keeps a standalone bar cursor visible when full-bar highlighting is disabled', () => {
+    const source = createSource([[100]], [CompactSeriesFlag.Bars], 0, 'series', 'single', {
+      stroke: '#00f',
+      areaFill: '#0000ff40',
+      lineWidth: 0,
+      barWidthFactor: 0.6,
+    });
+    Reflect.set(source, 'barOptions', { mode: 'grouped', groupWidth: 0.8, barWidth: 1, fullHighlight: false });
+    Reflect.set(source, 'highlightSeriesOnHover', false);
+    const controller = new CompactRenderController(source);
+    const { plot } = createPlot();
+    plot.cursor.left = 50;
+
+    expect(controller.updateCursor(plot, 0, 50, 'local')).toMatchObject({
+      hasPoint: true,
+      seriesIndex: 0,
+      centered: false,
+      fill: 'rgba(255, 255, 255, 0.4)',
+      stroke: 'transparent',
     });
   });
 
