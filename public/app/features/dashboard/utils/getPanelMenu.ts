@@ -21,7 +21,7 @@ import {
 } from 'app/features/dashboard/utils/panel';
 import { InspectTab } from 'app/features/inspector/types';
 import { isPanelModelLibraryPanel } from 'app/features/library-panels/guard';
-import { createExtensionSubMenu } from 'app/features/plugins/extensions/utils';
+import { createExtensionSubMenu, PANEL_MENU_TOP_LEVEL_CATEGORY } from 'app/features/plugins/extensions/utils';
 import { SHARED_DASHBOARD_QUERY } from 'app/plugins/datasource/dashboard/constants';
 import { dispatch, store } from 'app/store/store';
 
@@ -267,12 +267,33 @@ export function getPanelMenu(
   }
 
   if (extensions.length > 0 && !panel.isEditing) {
-    menu.push({
-      text: t('dashboard.get-panel-menu.text.extensions', 'Extensions'),
-      iconClassName: 'plug',
-      type: 'submenu',
-      subMenu: createExtensionSubMenu(extensions),
-    });
+    const [nestedExtensions, topLevelExtensions] = extensions.reduce<[PluginExtensionLink[], PluginExtensionLink[]]>(
+      ([nestedExtensions, topLevelExtensions], extension) => {
+        if (extension.category === PANEL_MENU_TOP_LEVEL_CATEGORY) {
+          topLevelExtensions.push(extension);
+        } else {
+          nestedExtensions.push(extension);
+        }
+
+        return [nestedExtensions, topLevelExtensions];
+      },
+      [[], []]
+    );
+
+    if (nestedExtensions.length > 0) {
+      menu.push({
+        text: t('dashboard.get-panel-menu.text.extensions', 'Extensions'),
+        iconClassName: 'plug',
+        type: 'submenu',
+        subMenu: createExtensionSubMenu(nestedExtensions),
+      });
+    }
+
+    if (topLevelExtensions.length > 0) {
+      menu.push(
+        ...createExtensionSubMenu(topLevelExtensions.map((extension) => ({ ...extension, category: undefined })))
+      );
+    }
   }
 
   if (subMenu.length) {

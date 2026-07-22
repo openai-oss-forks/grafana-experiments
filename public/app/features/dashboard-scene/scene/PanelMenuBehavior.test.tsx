@@ -24,6 +24,7 @@ import { contextSrv } from 'app/core/services/context_srv';
 import { GetExploreUrlArguments } from 'app/core/utils/explore';
 import { grantUserPermissions } from 'app/features/alerting/unified/mocks';
 import { scenesPanelToRuleFormValues } from 'app/features/alerting/unified/utils/rule-form';
+import { PANEL_MENU_TOP_LEVEL_CATEGORY } from 'app/features/plugins/extensions/utils';
 import * as storeModule from 'app/store/store';
 import { AccessControlAction } from 'app/types/accessControl';
 
@@ -164,6 +165,185 @@ describe('panelMenuBehavior', () => {
           }),
         ])
       );
+    });
+
+    it('should add an opted-in extension directly to the panel menu without an empty Extensions submenu', async () => {
+      const onClick = jest.fn();
+
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [
+          {
+            id: 'top-level',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: 'AgentWolf Explore',
+            description: 'Open the panel query in AgentWolf Explore',
+            path: '/a/openai-internal-app/explore',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+            icon: 'compass',
+            openInNewTab: true,
+            onClick,
+          },
+        ],
+      });
+
+      const { menu, panel } = await buildTestScene({});
+      panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+      mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+      mocks.getExploreUrl.mockReturnValue(Promise.resolve('/explore'));
+
+      menu.activate();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      const topLevelItem = menu.state.items?.find((item) => item.text === 'AgentWolf Explore');
+
+      expect(topLevelItem).toEqual(
+        expect.objectContaining({
+          text: 'AgentWolf Explore',
+          href: '/a/openai-internal-app/explore',
+          iconClassName: 'compass',
+          target: '_blank',
+          onClick,
+        })
+      );
+      expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
+      expect(menu.state.items?.find((item) => item.text === PANEL_MENU_TOP_LEVEL_CATEGORY)).toBeUndefined();
+
+      topLevelItem?.onClick?.({} as React.MouseEvent);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it('should append opted-in extensions after existing extension menus without changing their grouping', async () => {
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [
+          {
+            id: 'top-level-first',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: 'AgentWolf Explore',
+            description: 'Open the panel query in AgentWolf Explore',
+            path: '/a/openai-internal-app/explore',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+          {
+            id: 'metrics-drilldown',
+            pluginId: 'grafana-metricsdrilldown-app',
+            type: PluginExtensionTypes.link,
+            title: 'Open in Metrics Drilldown',
+            description: 'Open the current query in Metrics Drilldown',
+            path: '/a/grafana-metricsdrilldown-app/trail',
+            category: 'metrics-drilldown',
+          },
+          {
+            id: 'ordinary',
+            pluginId: 'grafana-basic-app',
+            type: PluginExtensionTypes.link,
+            title: 'Declare incident',
+            description: 'Declare an incident',
+            path: '/a/grafana-basic-app/declare-incident',
+          },
+          {
+            id: 'top-level-second',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: 'Second top-level action',
+            description: 'Open another top-level action',
+            path: '/a/openai-internal-app/second',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+        ],
+      });
+
+      const { menu, panel } = await buildTestScene({});
+      panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+      mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+      mocks.getExploreUrl.mockReturnValue(Promise.resolve('/explore'));
+
+      menu.activate();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      const extensionItems = menu.state.items?.filter((item) =>
+        ['Metrics drilldown', 'Extensions', 'AgentWolf Explore', 'Second top-level action'].includes(item.text)
+      );
+
+      expect(extensionItems?.map((item) => item.text)).toEqual([
+        'Metrics drilldown',
+        'Extensions',
+        'AgentWolf Explore',
+        'Second top-level action',
+      ]);
+      expect(extensionItems?.[0].subMenu).toEqual([
+        expect.objectContaining({
+          text: 'metrics-drilldown',
+          type: 'group',
+          subMenu: [
+            expect.objectContaining({
+              text: 'Open in Metrics Drilld...',
+              href: '/a/grafana-metricsdrilldown-app/trail',
+            }),
+          ],
+        }),
+      ]);
+      expect(extensionItems?.[1].subMenu).toEqual([
+        expect.objectContaining({
+          text: 'Declare incident',
+          href: '/a/grafana-basic-app/declare-incident',
+        }),
+      ]);
+    });
+
+    it('should not show opted-in top-level extensions while the dashboard is being edited', async () => {
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [
+          {
+            id: 'top-level',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: 'AgentWolf Explore',
+            description: 'Open the panel query in AgentWolf Explore',
+            path: '/a/openai-internal-app/explore',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+        ],
+      });
+
+      const { menu, panel, scene } = await buildTestScene({});
+      scene.setState({ isEditing: true });
+      panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+      mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+      mocks.getExploreUrl.mockReturnValue(Promise.resolve('/explore'));
+
+      menu.activate();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      expect(menu.state.items?.find((item) => item.text === 'AgentWolf Explore')).toBeUndefined();
+      expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
+    });
+
+    it('should not show opted-in top-level extensions on embedded dashboards', async () => {
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [
+          {
+            id: 'top-level',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: 'AgentWolf Explore',
+            description: 'Open the panel query in AgentWolf Explore',
+            path: '/a/openai-internal-app/explore',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+        ],
+      });
+
+      const { menu, panel } = await buildTestScene({ isEmbedded: true });
+      panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+      mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+      mocks.getExploreUrl.mockReturnValue(Promise.resolve('/explore'));
+
+      menu.activate();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      expect(menu.state.items?.map((item) => item.text)).toEqual(['Explore']);
     });
 
     it('should truncate menu item title to 25 chars', async () => {
