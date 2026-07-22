@@ -82,6 +82,49 @@ export function getDashboardGridStyles(theme: GrafanaTheme2) {
       borderRadius: theme.shape.radius.default,
     },
 
+    // Keep the shortcut discoverable without introducing dashboard selection state.
+    'div[data-viz-panel-key]:hover section': {
+      position: 'relative',
+
+      '&::before': {
+        content: "'⌘C'",
+        position: 'absolute',
+        right: theme.spacing(1),
+        bottom: theme.spacing(1),
+        height: '18px',
+        padding: `0 ${theme.spacing(0.5)}`,
+        lineHeight: '18px',
+        pointerEvents: 'none',
+        border: `1px solid ${theme.colors.border.weak}`,
+        borderRadius: theme.shape.radius.default,
+        backgroundColor: theme.colors.background.secondary,
+        color: theme.colors.text.secondary,
+        fontSize: '11px',
+        fontWeight: theme.typography.fontWeightMedium,
+        zIndex: 2,
+      },
+    },
+
+    // Brief, static confirmation for a successful panel copy. Only the top-right corner changes;
+    // there is no animation or layout change.
+    '.dashboard-copied-element': {
+      position: 'relative',
+
+      '&::after': {
+        content: "''",
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        width: theme.spacing(3),
+        height: theme.spacing(3),
+        pointerEvents: 'none',
+        borderTop: `3px solid ${theme.colors.success.main}`,
+        borderRight: `3px solid ${theme.colors.success.main}`,
+        borderTopRightRadius: theme.shape.radius.default,
+        zIndex: 2,
+      },
+    },
+
     '.dashboard-selectable-element': {
       '&:hover': {
         outline: `1px dashed ${theme.colors.border.strong}`,
