@@ -412,6 +412,9 @@ export function truncateTitle(title: string, length: number): string {
   return `${part.trimEnd()}...`;
 }
 
+/** Reserved category for panel-menu links that explicitly opt into top-level placement. */
+export const PANEL_MENU_TOP_LEVEL_CATEGORY = 'openai:top-level';
+
 export function createExtensionSubMenu(extensions: PluginExtensionLink[]): PanelMenuItem[] {
   const categorized: Record<string, PanelMenuItem[]> = {};
   const uncategorized: PanelMenuItem[] = [];

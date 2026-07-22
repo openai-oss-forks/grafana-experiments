@@ -5,6 +5,7 @@ import { usePluginLinks } from '@grafana/runtime';
 import config from 'app/core/config';
 import { grantUserPermissions } from 'app/features/alerting/unified/mocks';
 import * as actions from 'app/features/explore/state/main';
+import { PANEL_MENU_TOP_LEVEL_CATEGORY } from 'app/features/plugins/extensions/utils';
 import { setStore } from 'app/store/store';
 import { AccessControlAction } from 'app/types/accessControl';
 
@@ -141,6 +142,136 @@ describe('getPanelMenu()', () => {
           }),
         ])
       );
+    });
+
+    it('should add an opted-in extension directly to the panel menu without an empty Extensions submenu', () => {
+      const onClick = jest.fn();
+      const extensions: PluginExtensionLink[] = [
+        {
+          id: 'top-level',
+          pluginId: 'openai-internal-app',
+          type: PluginExtensionTypes.link,
+          title: 'AgentWolf Explore',
+          description: 'Open the panel query in AgentWolf Explore',
+          path: '/a/openai-internal-app/explore',
+          category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          icon: 'compass',
+          openInNewTab: true,
+          onClick,
+        },
+      ];
+      const panel = new PanelModel({});
+      const dashboard = createDashboardModelFixture({});
+
+      const menuItems = getPanelMenu(dashboard, panel, extensions);
+      const topLevelItem = menuItems.find((item) => item.text === 'AgentWolf Explore');
+
+      expect(topLevelItem).toEqual(
+        expect.objectContaining({
+          text: 'AgentWolf Explore',
+          href: '/a/openai-internal-app/explore',
+          iconClassName: 'compass',
+          target: '_blank',
+          onClick,
+        })
+      );
+      expect(menuItems.find((item) => item.text === 'Extensions')).toBeUndefined();
+      expect(menuItems.find((item) => item.text === PANEL_MENU_TOP_LEVEL_CATEGORY)).toBeUndefined();
+
+      topLevelItem?.onClick?.({} as React.MouseEvent);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it('should preserve existing extension groups and append opted-in links in registration order', () => {
+      const extensions: PluginExtensionLink[] = [
+        {
+          id: 'top-level-first',
+          pluginId: 'openai-internal-app',
+          type: PluginExtensionTypes.link,
+          title: 'AgentWolf Explore',
+          description: 'Open the panel query in AgentWolf Explore',
+          path: '/a/openai-internal-app/explore',
+          category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+        },
+        {
+          id: 'categorized',
+          pluginId: 'grafana-basic-app',
+          type: PluginExtensionTypes.link,
+          title: 'Declare incident',
+          description: 'Declare an incident',
+          path: '/a/grafana-basic-app/declare-incident',
+          category: 'Incident',
+        },
+        {
+          id: 'ordinary',
+          pluginId: 'grafana-basic-app',
+          type: PluginExtensionTypes.link,
+          title: 'View details',
+          description: 'View additional details',
+          path: '/a/grafana-basic-app/details',
+        },
+        {
+          id: 'top-level-second',
+          pluginId: 'openai-internal-app',
+          type: PluginExtensionTypes.link,
+          title: 'Second top-level action',
+          description: 'Open another top-level action',
+          path: '/a/openai-internal-app/second',
+          category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+        },
+      ];
+      const panel = new PanelModel({});
+      const dashboard = createDashboardModelFixture({});
+
+      const menuItems = getPanelMenu(dashboard, panel, extensions);
+      const extensionItems = menuItems.filter((item) =>
+        ['Extensions', 'AgentWolf Explore', 'Second top-level action'].includes(item.text)
+      );
+
+      expect(extensionItems.map((item) => item.text)).toEqual([
+        'Extensions',
+        'AgentWolf Explore',
+        'Second top-level action',
+      ]);
+      expect(extensionItems[0].subMenu).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: 'Incident',
+            subMenu: [
+              expect.objectContaining({
+                text: 'Declare incident',
+                href: '/a/grafana-basic-app/declare-incident',
+              }),
+            ],
+          }),
+          expect.objectContaining({
+            text: 'View details',
+            href: '/a/grafana-basic-app/details',
+          }),
+        ])
+      );
+    });
+
+    it('should not show opted-in top-level extensions while the panel is being edited', () => {
+      const extensions: PluginExtensionLink[] = [
+        {
+          id: 'top-level',
+          pluginId: 'openai-internal-app',
+          type: PluginExtensionTypes.link,
+          title: 'AgentWolf Explore',
+          description: 'Open the panel query in AgentWolf Explore',
+          path: '/a/openai-internal-app/explore',
+          category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+        },
+      ];
+      const panel = new PanelModel({});
+      panel.isEditing = true;
+      const dashboard = createDashboardModelFixture({});
+
+      const menuItems = getPanelMenu(dashboard, panel, extensions);
+
+      expect(menuItems.find((item) => item.text === 'AgentWolf Explore')).toBeUndefined();
+      expect(menuItems.find((item) => item.text === 'Extensions')).toBeUndefined();
     });
 
     it('should truncate menu item title to 25 chars', () => {

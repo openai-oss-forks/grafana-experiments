@@ -29,7 +29,7 @@ import { createPluginExtensionsGetter } from 'app/features/plugins/extensions/ge
 import { getPluginExtensionRegistries } from 'app/features/plugins/extensions/registry/setup';
 import { PluginExtensionRegistries } from 'app/features/plugins/extensions/registry/types';
 import { GetPluginExtensions } from 'app/features/plugins/extensions/types';
-import { createExtensionSubMenu } from 'app/features/plugins/extensions/utils';
+import { createExtensionSubMenu, PANEL_MENU_TOP_LEVEL_CATEGORY } from 'app/features/plugins/extensions/utils';
 import { dispatch } from 'app/store/store';
 import { AccessControlAction } from 'app/types/accessControl';
 import { ShowConfirmModalEvent } from 'app/types/events';
@@ -313,17 +313,21 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
     if (extensions.length > 0 && !dashboard.state.isEditing) {
       const linkExtensions = extensions.filter((extension) => extension.type === PluginExtensionTypes.link);
 
-      // Separate metrics drilldown links from other links
-      const [metricsDrilldownLinks, otherLinks] = linkExtensions.reduce<[PluginExtensionLink[], PluginExtensionLink[]]>(
-        ([metricsDrilldownLinks, otherLinks], link) => {
+      const [metricsDrilldownLinks, otherLinks, topLevelLinks] = linkExtensions.reduce<
+        [PluginExtensionLink[], PluginExtensionLink[], PluginExtensionLink[]]
+      >(
+        ([metricsDrilldownLinks, otherLinks, topLevelLinks], link) => {
           if (link.category === METRICS_DRILLDOWN_CATEGORY) {
             metricsDrilldownLinks.push(link);
+          } else if (link.category === PANEL_MENU_TOP_LEVEL_CATEGORY) {
+            topLevelLinks.push(link);
           } else {
             otherLinks.push(link);
           }
-          return [metricsDrilldownLinks, otherLinks];
+
+          return [metricsDrilldownLinks, otherLinks, topLevelLinks];
         },
-        [[], []]
+        [[], [], []]
       );
 
       // Add specific "Metrics drilldown" menu
@@ -344,6 +348,10 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
           type: 'submenu',
           subMenu: createExtensionSubMenu(otherLinks),
         });
+      }
+
+      if (topLevelLinks.length > 0) {
+        items.push(...createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined }))));
       }
     }
 
