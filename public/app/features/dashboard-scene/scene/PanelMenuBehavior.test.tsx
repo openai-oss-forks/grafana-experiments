@@ -179,7 +179,7 @@ describe('panelMenuBehavior', () => {
             title: 'AgentWolf Explore',
             description: 'Open the panel query in AgentWolf Explore',
             path: '/a/openai-internal-app/explore',
-            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+            category: 'top-level',
             icon: 'compass',
             openInNewTab: true,
             onClick,
