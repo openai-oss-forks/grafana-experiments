@@ -3,6 +3,7 @@ import { tap } from 'rxjs';
 import {
   QueryVariable,
   type CustomVariableValue,
+  type MultiValueVariableState,
   type VariableCustomFormatterFn,
   type VariableValue,
 } from '@grafana/scenes';
@@ -38,6 +39,27 @@ export class DashboardQueryVariable extends QueryVariable {
     }
 
     return super.getValue(fieldPath);
+  }
+
+  protected override interceptStateUpdateAfterValidation(stateUpdate: Partial<MultiValueVariableState>): void {
+    super.interceptStateUpdateAfterValidation(stateUpdate);
+
+    if (!this.state.allowCustomValue || this.hasAllValue()) {
+      return;
+    }
+
+    const currentValue = this.state.value;
+    const selectedValues = Array.isArray(currentValue) ? currentValue : [currentValue];
+    if (
+      selectedValues.length === 0 ||
+      selectedValues.some((value) => value === '' || value === this.state.allValue) ||
+      selectedValues.every((value) => stateUpdate.options?.some((option) => option.value === value))
+    ) {
+      return;
+    }
+
+    stateUpdate.value = currentValue;
+    stateUpdate.text = this.state.text;
   }
 
   private canUseInitialPrometheusAllValue(): boolean {
