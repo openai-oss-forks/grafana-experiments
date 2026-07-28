@@ -104,6 +104,7 @@ describe('VariableControls', () => {
     await user.click(await screen.findByText('dbhost-prod-1'));
 
     expect(screen.getByRole('combobox')).toHaveValue('dbhost-prod-1');
+    expect(screen.queryByRole('button', { name: 'dbhost-prod-1' })).not.toBeInTheDocument();
     expect(variable.state.value).toEqual(['dbhost-prod-1']);
   });
 
@@ -125,7 +126,53 @@ describe('VariableControls', () => {
 
     expect(screen.getByRole('combobox')).toHaveValue('dbhost-prod-1');
     expect(screen.getByRole('combobox')).toHaveFocus();
+    expect(screen.queryByRole('button', { name: 'dbhost-prod-1' })).not.toBeInTheDocument();
     expect(variable.state.value).toEqual(['dbhost-prod-1']);
+  });
+
+  it('visually replaces only the selected value while preserving the other value', async () => {
+    const user = userEvent.setup();
+    const variable = buildHostVariable({
+      value: ['dbhost-prod-1', 'dbhost-prod-2'],
+      text: ['dbhost-prod-1', 'dbhost-prod-2'],
+    });
+    const dashboard = buildScene([variable]);
+    dashboard.activate();
+
+    render(<VariableControls dashboard={dashboard} />);
+
+    await user.click(await screen.findByRole('button', { name: 'dbhost-prod-1' }));
+
+    expect(screen.getByRole('combobox')).toHaveValue('dbhost-prod-1');
+    expect(screen.queryByRole('button', { name: 'dbhost-prod-1' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'dbhost-prod-2' })).toBeInTheDocument();
+    expect(variable.state.value).toEqual(['dbhost-prod-1', 'dbhost-prod-2']);
+
+    await user.clear(screen.getByRole('combobox'));
+    await user.type(screen.getByRole('combobox'), 'dbhost-prod-9');
+
+    expect(await screen.findByText('Hit enter to replace')).toBeInTheDocument();
+  });
+
+  it('keeps the existing selection and add prompt when adding a new value', async () => {
+    const user = userEvent.setup();
+    const variable = buildHostVariable();
+    const dashboard = buildScene([variable]);
+    dashboard.activate();
+
+    render(<VariableControls dashboard={dashboard} />);
+
+    await user.click(screen.getByRole('combobox'));
+    await user.type(screen.getByRole('combobox'), 'dbhost-prod-9');
+
+    expect(screen.getByRole('button', { name: 'dbhost-prod-1' })).toBeInTheDocument();
+    expect(await screen.findByText('Hit enter to add')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('option', { name: /dbhost-prod-9/ }));
+    await user.click(screen.getByRole('combobox'));
+    await user.click(document.body);
+
+    expect(variable.state.value).toEqual(['dbhost-prod-1', 'dbhost-prod-9']);
   });
 
   it('replaces the clicked multi-value query variable instead of adding another value', async () => {
@@ -217,6 +264,9 @@ describe('VariableControls', () => {
 
     await user.click(await screen.findByText('dbhost-prod-1'));
     await user.keyboard('{Escape}');
+
+    expect(await screen.findByRole('button', { name: 'dbhost-prod-1' })).toBeInTheDocument();
+
     await user.click(screen.getByRole('combobox'));
     await user.click(await screen.findByRole('option', { name: 'dbhost-prod-2' }));
 
