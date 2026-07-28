@@ -160,6 +160,7 @@ const getStyles = (theme: GrafanaTheme2) => {
       label: 'Wrapper',
       display: 'flex',
       alignItems: 'center',
+      flexShrink: 0,
       marginLeft: theme.spacing(0.5),
       overflow: 'hidden',
     }),
