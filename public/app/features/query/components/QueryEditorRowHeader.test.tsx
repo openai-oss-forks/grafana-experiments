@@ -28,6 +28,16 @@ jest.mock('@grafana/runtime', () => ({
 }));
 
 describe('QueryEditorRowHeader', () => {
+  it('keeps the query title visible beside a collapsed query preview', () => {
+    const collapsedText = 'sum(rate(requests_total[5m]))';
+
+    renderScenario({ collapsedText });
+
+    expect(screen.getByTestId('query-name-div').parentElement).toHaveStyle({ flexShrink: 0 });
+    expect(screen.getByText('A')).toBeInTheDocument();
+    expect(screen.getByText(collapsedText)).toBeInTheDocument();
+  });
+
   it('Can edit title', async () => {
     const scenario = renderScenario({});
     await userEvent.click(screen.getByTestId('query-name-div'));
