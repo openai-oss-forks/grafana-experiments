@@ -6,6 +6,7 @@ import { VariableHide } from '@grafana/data';
 import { SceneGridLayout, SceneVariable, SceneVariableSet, ScopesVariable, TextBoxVariable } from '@grafana/scenes';
 
 import { DashboardQueryVariable } from '../variables/DashboardQueryVariable';
+
 import { DashboardScene } from './DashboardScene';
 import { VariableControls } from './VariableControls';
 import { DefaultGridLayoutManager } from './layout-default/DefaultGridLayoutManager';
@@ -144,14 +145,77 @@ describe('VariableControls', () => {
     await user.click(await screen.findByRole('button', { name: 'dbhost-prod-1' }));
 
     expect(screen.getByRole('combobox')).toHaveValue('dbhost-prod-1');
+    expect(screen.getByRole('combobox')).toHaveFocus();
     expect(screen.queryByRole('button', { name: 'dbhost-prod-1' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'dbhost-prod-2' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('combobox').compareDocumentPosition(screen.getByRole('button', { name: 'dbhost-prod-2' })) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(variable.state.value).toEqual(['dbhost-prod-1', 'dbhost-prod-2']);
 
     await user.clear(screen.getByRole('combobox'));
     await user.type(screen.getByRole('combobox'), 'dbhost-prod-9');
 
     expect(await screen.findByText('Hit enter to replace')).toBeInTheDocument();
+  });
+
+  it('edits the middle selected value in place without reordering the surrounding values', async () => {
+    const user = userEvent.setup();
+    const variable = buildHostVariable({
+      value: ['dbhost-prod-1', 'dbhost-prod-2', 'dbhost-prod-3'],
+      text: ['dbhost-prod-1', 'dbhost-prod-2', 'dbhost-prod-3'],
+    });
+    const dashboard = buildScene([variable]);
+    dashboard.activate();
+
+    render(<VariableControls dashboard={dashboard} />);
+
+    await user.click(await screen.findByRole('button', { name: 'dbhost-prod-2' }));
+
+    const input = screen.getByRole('combobox');
+
+    expect(input).toHaveValue('dbhost-prod-2');
+    expect(input).toHaveFocus();
+    expect(
+      screen.getByRole('button', { name: 'dbhost-prod-1' }).compareDocumentPosition(input) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      input.compareDocumentPosition(screen.getByRole('button', { name: 'dbhost-prod-3' })) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    await user.clear(input);
+    await user.type(input, 'dbhost-prod-9{Enter}');
+    await user.click(document.body);
+
+    expect(variable.state.value).toEqual(['dbhost-prod-1', 'dbhost-prod-9', 'dbhost-prod-3']);
+  });
+
+  it('preserves hidden selected values and their count while editing a visible value', async () => {
+    const user = userEvent.setup();
+    const variable = buildHostVariable({
+      value: ['dbhost-prod-1', 'dbhost-prod-2', 'dbhost-prod-3'],
+      text: ['dbhost-prod-1', 'dbhost-prod-2', 'dbhost-prod-3'],
+      maxVisibleValues: 2,
+    });
+    const dashboard = buildScene([variable]);
+    dashboard.activate();
+
+    render(<VariableControls dashboard={dashboard} />);
+
+    expect(await screen.findByText('(+1)')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'dbhost-prod-3' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'dbhost-prod-1' }));
+
+    expect(screen.getByRole('combobox')).toHaveFocus();
+    expect(screen.getByRole('combobox')).toHaveValue('dbhost-prod-1');
+    expect(screen.getByRole('button', { name: 'dbhost-prod-2' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'dbhost-prod-3' })).not.toBeInTheDocument();
+    expect(screen.getByText('(+1)')).toBeInTheDocument();
+    expect(variable.state.value).toEqual(['dbhost-prod-1', 'dbhost-prod-2', 'dbhost-prod-3']);
   });
 
   it('keeps the existing selection and add prompt when adding a new value', async () => {
@@ -298,6 +362,7 @@ function buildHostVariable(state: Partial<DashboardQueryVariable['state']> = {})
   const options = [
     { value: 'dbhost-prod-1', label: 'dbhost-prod-1' },
     { value: 'dbhost-prod-2', label: 'dbhost-prod-2' },
+    { value: 'dbhost-prod-3', label: 'dbhost-prod-3' },
   ];
   const variable = new DashboardQueryVariable({
     name: 'dbhost',

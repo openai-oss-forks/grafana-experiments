@@ -275,7 +275,7 @@ diff --git a/dist/esm/packages/scenes/src/variables/components/VariableValueSele
 index 5ea07ca..47ba840 100644
 --- a/dist/esm/packages/scenes/src/variables/components/VariableValueSelect.js
 +++ b/dist/esm/packages/scenes/src/variables/components/VariableValueSelect.js
-@@ -95,8 +95,38 @@ function VariableValueSelectMulti({
+@@ -95,8 +95,58 @@ function VariableValueSelectMulti({
      allowCustomValue = true
    } = state;
    const arrayValue = useMemo(() => isArray(value) ? value : [value], [value]);
@@ -284,6 +284,26 @@ index 5ea07ca..47ba840 100644
 +  const [editedValue, setEditedValue] = useState(void 0);
 +  const editableComponents = useMemo(() => ({
 +    Option: OptionWithCheckbox,
++    ValueContainer: ({ children, isMulti, selectProps }) => {
++      const styles = getSelectStyles(useTheme2());
++      const noWrap = selectProps.noMultiValueWrap && !selectProps.menuIsOpen;
++      const [valueChildren, ...otherChildren] = children;
++      const keyedChildren = otherChildren.map((child, index) => React.isValidElement(child) ? React.cloneElement(child, { key: `variable-value-select-input-${index}` }) : child);
++      const visibleValues = Array.isArray(valueChildren) ? valueChildren : [];
++      const selectedValues = selectProps.showAllSelectedWhenOpen && selectProps.menuIsOpen ? visibleValues : visibleValues.slice(0, selectProps.maxVisibleValues);
++      const index = Math.min(selectProps.editedValueIndex, selectedValues.length);
++      const positionedChildren = !Array.isArray(valueChildren) || selectProps.editedValueIndex < 0
++        ? [Array.isArray(valueChildren) ? selectedValues : valueChildren, ...keyedChildren]
++        : [...selectedValues.slice(0, index), ...keyedChildren, ...selectedValues.slice(index + 1)];
++      return /* @__PURE__ */ React.createElement("div", {
++        "data-testid": selectProps["data-testid"],
++        style: selectProps.editedValueIndex < 0 ? void 0 : { display: "flex" },
++        className: cx(styles.valueContainer, {
++          [styles.valueContainerMulti]: isMulti && !noWrap,
++          [styles.valueContainerMultiNoWrap]: isMulti && noWrap
++        })
++      }, positionedChildren);
++    },
 +    MultiValueLabel: ({ children, data, innerProps }) => /* @__PURE__ */ React.createElement(
 +      "div",
 +      {
@@ -314,12 +334,12 @@ index 5ea07ca..47ba840 100644
    const optionSearcher = useMemo(() => getOptionSearcher(options, includeAll), [options, includeAll]);
    useEffect(() => {
      setUncommittedValue(arrayValue);
-@@ -125,7 +155,18 @@ function VariableValueSelectMulti({
+@@ -125,7 +175,19 @@ function VariableValueSelectMulti({
        width: "auto",
        inputValue,
        disabled: isReadOnly,
--      value: uncommittedValue,
-+      value: editedValue === void 0 ? uncommittedValue : uncommittedValue.filter((currentValue) => currentValue !== editedValue),
++      editedValueIndex: uncommittedValue.indexOf(editedValue),
+       value: uncommittedValue,
 +      formatCreateLabel: editedValue === void 0 ? void 0 : (nextValue) => /* @__PURE__ */ React.createElement(
 +        "div",
 +        { style: { display: "flex", gap: "8px", alignItems: "center" } },
@@ -334,7 +354,7 @@ index 5ea07ca..47ba840 100644
        noMultiValueWrap: true,
        maxVisibleValues: maxVisibleValues != null ? maxVisibleValues : 5,
        tabSelectsValue: false,
-@@ -137,10 +178,33 @@ function VariableValueSelectMulti({
+@@ -137,10 +199,33 @@ function VariableValueSelectMulti({
          determineToggleAllState
        },
        options: filteredOptions,
@@ -370,7 +390,7 @@ index 5ea07ca..47ba840 100644
 +        setEditedValue(void 0);
 -        model.changeValueTo(uncommittedValue, void 0, true);
 +        model.changeValueTo(nextValues, void 0, true);
-@@ -148,9 +212,16 @@ function VariableValueSelectMulti({
+@@ -148,9 +233,16 @@ function VariableValueSelectMulti({
        filterOption: filterNoOp,
        "data-testid": selectors.pages.Dashboard.SubMenu.submenuItemValueDropDownValueLinkTexts(`${uncommittedValue}`),
        onChange: (newValue, action) => {
@@ -498,7 +518,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
        setState(model.state);
      }
      return () => {
-@@ -3212,8 +3225,38 @@ function VariableValueSelectMulti({
+@@ -3212,8 +3225,58 @@ function VariableValueSelectMulti({
      allowCustomValue = true
    } = state;
    const arrayValue = React.useMemo(() => lodash.isArray(value) ? value : [value], [value]);
@@ -507,6 +527,26 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
 +  const [editedValue, setEditedValue] = React.useState(void 0);
 +  const editableComponents = React.useMemo(() => ({
 +    Option: OptionWithCheckbox,
++    ValueContainer: ({ children, isMulti, selectProps }) => {
++      const styles = ui.getSelectStyles(ui.useTheme2());
++      const noWrap = selectProps.noMultiValueWrap && !selectProps.menuIsOpen;
++      const [valueChildren, ...otherChildren] = children;
++      const keyedChildren = otherChildren.map((child, index) => React.isValidElement(child) ? React.cloneElement(child, { key: `variable-value-select-input-${index}` }) : child);
++      const visibleValues = Array.isArray(valueChildren) ? valueChildren : [];
++      const selectedValues = selectProps.showAllSelectedWhenOpen && selectProps.menuIsOpen ? visibleValues : visibleValues.slice(0, selectProps.maxVisibleValues);
++      const index = Math.min(selectProps.editedValueIndex, selectedValues.length);
++      const positionedChildren = !Array.isArray(valueChildren) || selectProps.editedValueIndex < 0
++        ? [Array.isArray(valueChildren) ? selectedValues : valueChildren, ...keyedChildren]
++        : [...selectedValues.slice(0, index), ...keyedChildren, ...selectedValues.slice(index + 1)];
++      return /* @__PURE__ */ React__default.default.createElement("div", {
++        "data-testid": selectProps["data-testid"],
++        style: selectProps.editedValueIndex < 0 ? void 0 : { display: "flex" },
++        className: css.cx(styles.valueContainer, {
++          [styles.valueContainerMulti]: isMulti && !noWrap,
++          [styles.valueContainerMultiNoWrap]: isMulti && noWrap
++        })
++      }, positionedChildren);
++    },
 +    MultiValueLabel: ({ children, data, innerProps }) => /* @__PURE__ */ React__default.default.createElement(
 +      "div",
 +      {
@@ -537,12 +577,12 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
    const optionSearcher = React.useMemo(() => getOptionSearcher(options, includeAll), [options, includeAll]);
    React.useEffect(() => {
      setUncommittedValue(arrayValue);
-@@ -3242,7 +3285,18 @@ function VariableValueSelectMulti({
+@@ -3242,7 +3305,19 @@ function VariableValueSelectMulti({
        width: "auto",
        inputValue,
        disabled: isReadOnly,
--      value: uncommittedValue,
-+      value: editedValue === void 0 ? uncommittedValue : uncommittedValue.filter((currentValue) => currentValue !== editedValue),
++      editedValueIndex: uncommittedValue.indexOf(editedValue),
+       value: uncommittedValue,
 +      formatCreateLabel: editedValue === void 0 ? void 0 : (nextValue) => /* @__PURE__ */ React__default.default.createElement(
 +        "div",
 +        { style: { display: "flex", gap: "8px", alignItems: "center" } },
@@ -557,7 +597,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
        noMultiValueWrap: true,
        maxVisibleValues: maxVisibleValues != null ? maxVisibleValues : 5,
        tabSelectsValue: false,
-@@ -3254,10 +3308,33 @@ function VariableValueSelectMulti({
+@@ -3254,10 +3329,33 @@ function VariableValueSelectMulti({
          determineToggleAllState
        },
        options: filteredOptions,
@@ -593,7 +633,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
 +        setEditedValue(void 0);
 -        model.changeValueTo(uncommittedValue, void 0, true);
 +        model.changeValueTo(nextValues, void 0, true);
-@@ -3265,9 +3342,16 @@ function VariableValueSelectMulti({
+@@ -3265,9 +3363,16 @@ function VariableValueSelectMulti({
        filterOption: filterNoOp$2,
        "data-testid": e2eSelectors.selectors.pages.Dashboard.SubMenu.submenuItemValueDropDownValueLinkTexts(`${uncommittedValue}`),
        onChange: (newValue, action) => {
@@ -611,7 +651,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
 +        setUncommittedValue(nextValues);
        }
      }
-@@ -7554,11 +7638,12 @@ function useUniqueId() {
+@@ -7554,11 +7659,12 @@ function useUniqueId() {
    return idRefLazy.current;
  }
  const LazyLoader = React__default.default.forwardRef(
@@ -625,7 +665,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
      const innerRef = React.useRef(null);
      React.useImperativeHandle(ref, () => innerRef.current);
      reactUse.useEffectOnce(() => {
-@@ -7582,7 +7667,14 @@ const LazyLoader = React__default.default.forwardRef(
+@@ -7582,7 +7688,14 @@ const LazyLoader = React__default.default.forwardRef(
          }
        };
      });
@@ -641,7 +681,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
    }
  );
  function getStyles$8() {
-@@ -7645,7 +7737,7 @@ function VizPanelRenderer({ model }) {
+@@ -7645,7 +7758,7 @@ function VizPanelRenderer({ model }) {
      () => lodash.debounce(setPanelAttention, 100, { leading: true, trailing: false }),
      [setPanelAttention]
    );
@@ -650,7 +690,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
    const currentRenderStart = performance.now();
    const endRenderCallbackRef = React__default.default.useRef(null);
    React.useLayoutEffect(() => {
-@@ -7662,24 +7754,55 @@ function VizPanelRenderer({ model }) {
+@@ -7662,24 +7775,55 @@ function VizPanelRenderer({ model }) {
        endRenderCallbackRef.current = null;
      }
    });
@@ -715,7 +755,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
    if (!plugin) {
      return /* @__PURE__ */ React__default.default.createElement("div", null, /* @__PURE__ */ React__default.default.createElement(i18n.Trans, { i18nKey: "grafana-scenes.components.viz-panel-renderer.loading-plugin-panel" }, "Loading plugin panel..."));
    }
-@@ -7834,6 +7957,17 @@ function VizPanelRenderer({ model }) {
+@@ -7834,6 +7978,17 @@ function VizPanelRenderer({ model }) {
      )))))
    )));
  }
@@ -733,7 +773,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
  function useDataWithSeriesLimit(data, seriesLimit, showAllSeries) {
    return React.useMemo(() => {
      if (!(data == null ? void 0 : data.series) || !seriesLimit || showAllSeries) {
-@@ -7846,7 +7980,7 @@ function useDataWithSeriesLimit(data, seriesLimit, showAllSeries) {
+@@ -7846,7 +8001,7 @@ function useDataWithSeriesLimit(data, seriesLimit, showAllSeries) {
    }, [data, seriesLimit, showAllSeries]);
  }
  function getDragClasses(panel) {
@@ -742,7 +782,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
    const parentLayout = sceneGraph.getLayout(panel);
    const isDraggable = parentLayout == null ? void 0 : parentLayout.isDraggable();
    if (!parentLayout || !isDraggable || itemDraggingDisabled(panel, parentLayout)) {
-@@ -8730,8 +8864,8 @@ class SceneDataTransformer extends SceneObjectBase {
+@@ -8730,8 +8885,8 @@ class SceneDataTransformer extends SceneObjectBase {
      if (data === this._prevDataFromSource) {
        return true;
      }
@@ -753,7 +793,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
        if (this.state.data && data.state !== this.state.data.state) {
          this.setState({ data: { ...this.state.data, state: data.state } });
        }
-@@ -10099,11 +10233,11 @@ class VariableDependencyConfig {
+@@ -10099,11 +10254,11 @@ class VariableDependencyConfig {
    }
    getNames() {
      const prevState = this._state;
@@ -770,7 +810,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
        this.scanStateForDependencies(newState);
      }
      return this._dependencies;
-@@ -10117,6 +10251,7 @@ class VariableDependencyConfig {
+@@ -10117,6 +10272,7 @@ class VariableDependencyConfig {
    }
    setPaths(paths) {
      this._statePaths = paths;
@@ -778,7 +818,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
    }
    scanStateForDependencies(state) {
      this._dependencies.clear();
-@@ -13744,10 +13879,11 @@ const gridWrapperClass = css.css({
+@@ -13744,10 +13900,11 @@ const gridWrapperClass = css.css({
    width: "100%"
  });
  const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
@@ -791,7 +831,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
    const innerContent = /* @__PURE__ */ React__default.default.createElement(sceneChild.Component, { model: sceneChild, key: sceneChild.state.key });
    if (isLazy) {
      return /* @__PURE__ */ React__default.default.createElement(
-@@ -13758,7 +13894,8 @@ const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
+@@ -13758,7 +13915,8 @@ const GridItemWrapper = React__default.default.forwardRef((props, ref) => {
          "data-griditem-key": sceneChild.state.key,
          className: css.cx(className, props.className),
          style,
@@ -801,7 +841,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
        },
        innerContent,
        children
-@@ -14162,6 +14299,7 @@ class SceneGridRow extends SceneObjectBase {
+@@ -14162,6 +14320,7 @@ class SceneGridRow extends SceneObjectBase {
        height: 1,
        width: GRID_COLUMN_COUNT
      });
@@ -809,7 +849,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
      this._variableDependency = new VariableDependencyConfig(this, {
        statePaths: ["title"],
        handleTimeMacros: true
-@@ -14219,7 +14357,7 @@ function SceneGridRowRenderer({ model }) {
+@@ -14219,7 +14378,7 @@ function SceneGridRowRenderer({ model }) {
      },
      isCollapsible && /* @__PURE__ */ React__default.default.createElement(ui.Icon, { name: isCollapsed ? "angle-right" : "angle-down" }),
      /* @__PURE__ */ React__default.default.createElement("span", { className: styles.rowTitle, role: "heading" }, sceneGraph.interpolate(model, title, void 0, "text"))
