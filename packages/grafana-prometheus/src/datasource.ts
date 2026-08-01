@@ -678,7 +678,11 @@ export class PrometheusDatasource
   }
 
   private getPrometheusMultiBatchTargets(request: DataQueryRequest<PromQuery>): PromQuery[] {
-    if (!config.featureToggles.prometheusMultiBatchStreaming || config.publicDashboardAccessToken) {
+    if (
+      !config.featureToggles.prometheusMultiBatchStreaming ||
+      config.publicDashboardAccessToken ||
+      request.app === CoreApp.Explore
+    ) {
       return [];
     }
 

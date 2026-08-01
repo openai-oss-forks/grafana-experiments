@@ -299,6 +299,7 @@ describe('PrometheusDatasource', () => {
       ['group-by requests', [{ expr: 'up', refId: 'A' }], { groupByKeys: ['job'] }],
       ['cache-enabled requests', [{ expr: 'up', refId: 'A' }], { queryCachingTTL: 60 }],
       ['request-level step sizes', [{ expr: 'up', refId: 'A' }], { stepSize: '30m' }],
+      ['Explore requests', [{ expr: 'up', refId: 'A' }], { app: CoreApp.Explore }],
       ['templated target intervals', [{ expr: 'up', interval: '$min_step', refId: 'A' }], {}],
       ['templated target step sizes', [{ expr: 'up', refId: 'A', stepSize: '$step_size' }], {}],
     ])('does not use multi-batch streaming for %s', async (_name, targets, requestOverrides) => {
