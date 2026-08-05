@@ -395,6 +395,8 @@ export class Explore extends PureComponent<Props, ExploreState> {
       <ContentOutlineItem panelId="Graph" title={t('explore.explore.title-graph', 'Graph')} icon="graph-bar">
         <GraphContainer
           data={graphResult!}
+          compactSeries={queryResponse.compactSeries}
+          request={queryResponse.request}
           height={showFlameGraph ? 180 : 400}
           width={width}
           timeRange={queryResponse.timeRange}

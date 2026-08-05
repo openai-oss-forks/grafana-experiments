@@ -225,6 +225,17 @@ func TestAPIEndpoint_Metrics_QueryMetricsV2_CompactResponse(t *testing.T) {
 	decoded := decodeCompactTestResponse(t, body)
 	require.Equal(t, []compactRegularTimeAxis{{Start: 1_000, Step: 1_000, Count: 3}}, decoded.Axes)
 
+	exploreReq := server.NewPostRequest("/api/ds/query?requestId=explore_abc", strings.NewReader(compactRequest))
+	exploreReq.Header.Set(compactQueryDataHeader, compactQueryDataVersion)
+	exploreReq.Header.Set(query.HeaderPanelPluginId, "timeseries")
+	exploreReq.Header.Set("X-Plugin-Id", "prometheus")
+	webtest.RequestWithSignedInUser(exploreReq, &user.SignedInUser{UserID: 1, OrgID: 1, Permissions: map[int64]map[string][]string{1: {datasources.ActionQuery: []string{datasources.ScopeAll}}}})
+	exploreResp, err := server.SendJSON(exploreReq)
+	require.NoError(t, err)
+	require.NoError(t, exploreResp.Body.Close())
+	require.Equal(t, http.StatusOK, exploreResp.StatusCode)
+	require.Equal(t, compactQueryDataMediaType, exploreResp.Header.Get("Content-Type"))
+
 	fallbackRequest := strings.Replace(compactRequest, `"A"`, `"B"`, 1)
 	fallbackReq := server.NewPostRequest("/api/ds/query", strings.NewReader(fallbackRequest))
 	fallbackReq.Header.Set(compactQueryDataHeader, compactQueryDataVersion)
@@ -249,7 +260,7 @@ func TestAPIEndpoint_Metrics_QueryMetricsV2_CompactResponse(t *testing.T) {
 	require.Contains(t, fallbackJSON.Results, "B")
 }
 
-func TestIsCompactDashboardQuery(t *testing.T) {
+func TestIsCompactVisualizationQuery(t *testing.T) {
 	baseRequest := func() *http.Request {
 		req, err := http.NewRequest(http.MethodPost, "/api/ds/query", nil)
 		require.NoError(t, err)
@@ -278,6 +289,19 @@ func TestIsCompactDashboardQuery(t *testing.T) {
 		{name: "eligible bar chart", mutate: func(req *http.Request, _ *simplejson.Json) {
 			req.Header.Set(query.HeaderPanelPluginId, "barchart")
 		}, valid: true},
+		{name: "eligible Explore graph", mutate: func(req *http.Request, _ *simplejson.Json) {
+			req.Header.Del(query.HeaderDashboardUID)
+			req.URL.RawQuery = "requestId=explore_abc"
+		}, valid: true},
+		{name: "Explore does not support bar charts", mutate: func(req *http.Request, _ *simplejson.Json) {
+			req.Header.Del(query.HeaderDashboardUID)
+			req.Header.Set(query.HeaderPanelPluginId, "barchart")
+			req.URL.RawQuery = "requestId=explore_abc"
+		}},
+		{name: "non-Explore request without dashboard", mutate: func(req *http.Request, _ *simplejson.Json) {
+			req.Header.Del(query.HeaderDashboardUID)
+			req.URL.RawQuery = "requestId=other_abc"
+		}},
 		{name: "missing dashboard", mutate: func(req *http.Request, _ *simplejson.Json) {
 			req.Header.Del(query.HeaderDashboardUID)
 		}},
@@ -309,7 +333,7 @@ func TestIsCompactDashboardQuery(t *testing.T) {
 				test.mutate(req, target)
 			}
 			request := dtos.MetricRequest{Queries: []*simplejson.Json{target}}
-			require.Equal(t, test.valid, isCompactDashboardQuery(req, request))
+			require.Equal(t, test.valid, isCompactVisualizationQuery(req, request))
 		})
 	}
 }

@@ -25,11 +25,11 @@ import {
 
 import { getPreferredDashboardQueryFormat } from './compactQueryPolicy';
 
-describe('compact dashboard query policy', () => {
-  test('opts in only a dashboard timeseries view without transformations', () => {
+describe('compact dashboard and Explore query policy', () => {
+  test.each([CoreApp.Dashboard, CoreApp.Explore])('opts in a supported %s timeseries view', (app) => {
     expect(
       getPreferredDashboardQueryFormat({
-        app: CoreApp.Dashboard,
+        app,
         panelPluginId: 'timeseries',
         transformations: [],
       })
@@ -52,7 +52,7 @@ describe('compact dashboard query policy', () => {
   );
 
   test.each([
-    { app: CoreApp.Explore, panelPluginId: 'timeseries' },
+    { app: 'other', panelPluginId: 'timeseries' },
     { app: CoreApp.Dashboard, panelPluginId: 'table' },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isInspecting: true },
     { app: CoreApp.Dashboard, panelPluginId: 'timeseries', isPublicDashboard: true },

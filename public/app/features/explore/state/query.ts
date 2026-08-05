@@ -6,6 +6,7 @@ import { mergeMap, throttleTime } from 'rxjs/operators';
 
 import {
   AbsoluteTimeRange,
+  CoreApp,
   DataFrame,
   DataQueryErrorType,
   DataQueryResponse,
@@ -50,6 +51,7 @@ import {
 import { createAsyncThunk, StoreState, ThunkDispatch, ThunkResult } from 'app/types/store';
 
 import { createErrorNotification } from '../../../core/copy/appNotification';
+import { getPreferredDashboardQueryFormat } from '../../query/state/compactQueryPolicy';
 import { runRequest } from '../../query/state/runRequest';
 import { decorateData, decorateWithLogsResult } from '../utils/decorators';
 import {
@@ -626,6 +628,33 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
         timeZone,
         scopedVars
       );
+
+      if (
+        datasourceInstance.type === 'prometheus' &&
+        queries.every((query) => {
+          const target = query as DataQuery & {
+            exemplar?: boolean;
+            format?: string;
+            instant?: boolean;
+            range?: boolean;
+          };
+
+          return (
+            target.datasource?.type === datasourceInstance.type &&
+            target.instant !== true &&
+            target.range !== false &&
+            target.exemplar !== true &&
+            (!target.format || target.format === 'time_series')
+          );
+        })
+      ) {
+        transaction.request.panelPluginId = 'timeseries';
+        transaction.request.preferredQueryResultFormat = getPreferredDashboardQueryFormat({
+          app: CoreApp.Explore,
+          panelPluginId: 'timeseries',
+          isPublicDashboard: Boolean(config.publicDashboardAccessToken),
+        });
+      }
 
       dispatch(changeLoadingStateAction({ exploreId, loadingState: LoadingState.Loading }));
 

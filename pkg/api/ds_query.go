@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 
@@ -86,8 +87,8 @@ func (hs *HTTPServer) QueryMetricsV2(c *contextmodel.ReqContext) response.Respon
 	if err := web.Bind(c.Req, &reqDTO); err != nil {
 		return response.Error(http.StatusBadRequest, "bad request data", err)
 	}
-	if c.Req.Header.Get(promcompact.Header) == promcompact.Version && !isCompactDashboardQuery(c.Req, reqDTO) {
-		err := errors.New("compact-v1 is restricted to supported Prometheus dashboard visualization panels")
+	if c.Req.Header.Get(promcompact.Header) == promcompact.Version && !isCompactVisualizationQuery(c.Req, reqDTO) {
+		err := errors.New("compact-v1 is restricted to supported Prometheus dashboard and Explore visualization panels")
 		return response.Error(http.StatusNotAcceptable, err.Error(), err)
 	}
 
@@ -171,9 +172,11 @@ func toPromCompactQueryRequests(requests map[string]compactQueryRequest) map[str
 	return converted
 }
 
-func isCompactDashboardQuery(req *http.Request, request dtos.MetricRequest) bool {
+func isCompactVisualizationQuery(req *http.Request, request dtos.MetricRequest) bool {
 	panelPluginID := req.Header.Get(query.HeaderPanelPluginId)
-	if req.Header.Get(query.HeaderDashboardUID) == "" ||
+	isDashboard := req.Header.Get(query.HeaderDashboardUID) != ""
+	isExplore := strings.HasPrefix(req.URL.Query().Get("requestId"), "explore_")
+	if (!isDashboard && (!isExplore || panelPluginID != "timeseries")) ||
 		(panelPluginID != "timeseries" && panelPluginID != "barchart") ||
 		req.Header.Get("X-Plugin-Id") != "prometheus" ||
 		len(request.Queries) == 0 {

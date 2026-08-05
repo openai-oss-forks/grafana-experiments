@@ -3,6 +3,8 @@ import { useToggle } from 'react-use';
 
 import {
   DataFrame,
+  DataQueryRequest,
+  CompactTimeSeriesData,
   EventBus,
   AbsoluteTimeRange,
   TimeZone,
@@ -10,6 +12,7 @@ import {
   LoadingState,
   ThresholdsConfig,
   TimeRange,
+  isCompactTimeSeriesSeriesCollection,
 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
@@ -29,6 +32,8 @@ interface Props extends Pick<PanelChromeProps, 'statusMessage'> {
   width: number;
   height: number;
   data: DataFrame[];
+  compactSeries?: CompactTimeSeriesData;
+  request?: DataQueryRequest;
   annotations?: DataFrame[];
   eventBus: EventBus;
   timeRange: TimeRange;
@@ -43,6 +48,8 @@ interface Props extends Pick<PanelChromeProps, 'statusMessage'> {
 
 export const GraphContainer = ({
   data,
+  compactSeries,
+  request,
   eventBus,
   height,
   width,
@@ -68,6 +75,23 @@ export const GraphContainer = ({
   const slicedData = useMemo(() => {
     return showAllSeries || !MAX_NUMBER_OF_TIME_SERIES ? data : data.slice(0, MAX_NUMBER_OF_TIME_SERIES);
   }, [data, showAllSeries]);
+
+  const slicedCompactSeries = useMemo(() => {
+    if (
+      !compactSeries ||
+      showAllSeries ||
+      !MAX_NUMBER_OF_TIME_SERIES ||
+      compactSeries.series.length <= MAX_NUMBER_OF_TIME_SERIES
+    ) {
+      return compactSeries;
+    }
+
+    const series = isCompactTimeSeriesSeriesCollection(compactSeries.series)
+      ? compactSeries.series.filter((_series, index) => index < MAX_NUMBER_OF_TIME_SERIES)
+      : compactSeries.series.slice(0, MAX_NUMBER_OF_TIME_SERIES);
+
+    return { ...compactSeries, series };
+  }, [compactSeries, showAllSeries]);
 
   return (
     <PanelChrome
@@ -100,6 +124,8 @@ export const GraphContainer = ({
         <ExploreGraph
           graphStyle={graphStyle}
           data={slicedData}
+          compactSeries={slicedCompactSeries}
+          request={request}
           height={innerHeight}
           width={innerWidth}
           timeRange={timeRange}

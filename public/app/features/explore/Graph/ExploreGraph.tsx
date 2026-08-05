@@ -7,7 +7,9 @@ import {
   applyFieldOverrides,
   createFieldConfigRegistry,
   DashboardCursorSync,
+  CompactTimeSeriesData,
   DataFrame,
+  DataQueryRequest,
   DataLinksContext,
   EventBus,
   FieldColorModeId,
@@ -45,6 +47,8 @@ import { useStructureRev } from './useStructureRev';
 
 interface Props {
   data: DataFrame[];
+  compactSeries?: CompactTimeSeriesData;
+  request?: DataQueryRequest;
   height: number;
   width: number;
   timeRange: TimeRange;
@@ -68,6 +72,8 @@ interface Props {
 
 export function ExploreGraph({
   data,
+  compactSeries,
+  request,
   height,
   width,
   timeZone,
@@ -220,6 +226,8 @@ export function ExploreGraph({
         <PanelRenderer
           data={{
             series: dataWithConfig,
+            compactSeries,
+            request,
             timeRange,
             state: loadingState,
             annotations: annotationsWithConfig,
@@ -232,6 +240,7 @@ export function ExploreGraph({
           onChangeTimeRange={onChangeTime}
           timeZone={timeZone}
           options={panelOptions}
+          fieldConfig={compactSeries ? styledFieldConfig : undefined}
         />
       </PanelContextProvider>
     </DataLinksContext.Provider>

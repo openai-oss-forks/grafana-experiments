@@ -492,7 +492,13 @@ export class PrometheusDatasource
     return super.query({ ...fullOrPartialRequest, targets: targets.flat() }).pipe(
       map((response) => {
         if (response.compactSeries) {
-          return response;
+          if (request.app !== CoreApp.Explore) {
+            return response;
+          }
+
+          return transformV2({ ...response, data: materializeCompactTimeSeries(response.compactSeries) }, request, {
+            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
+          });
         }
 
         const amendedResponse = {
@@ -769,7 +775,7 @@ export class PrometheusDatasource
 
   protected shouldRequestCompactQueryResponse(request: DataQueryRequest<PromQuery>, queries: PromQuery[]): boolean {
     return (
-      request.app === CoreApp.Dashboard &&
+      (request.app === CoreApp.Dashboard || request.app === CoreApp.Explore) &&
       (request.panelPluginId === 'timeseries' || request.panelPluginId === 'barchart') &&
       !config.publicDashboardAccessToken &&
       queries.every((query) => query.datasource?.type === this.type && isCompactTimeSeriesRangeQuery(query))
