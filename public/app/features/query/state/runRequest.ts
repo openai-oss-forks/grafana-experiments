@@ -19,6 +19,7 @@ import {
   TimeRange,
   isCompactTimeSeriesSeriesCollection,
 } from '@grafana/data';
+import { materializeCompactTimeSeries } from '@grafana/prometheus';
 import { config, isMigrationHandler, migrateRequest, toDataQueryError, isExpressionReference } from '@grafana/runtime';
 import { backendSrv } from 'app/core/services/backend_srv';
 import { queryIsEmpty } from 'app/core/utils/query';
@@ -81,6 +82,11 @@ export function processResponsePacket(packet: DataQueryResponse, state: RunningQ
     if (packet.compactSeries) {
       compactSeries = packet.compactSeries;
     }
+  }
+
+  if (compactSeries && series.length > 0) {
+    series.push(...materializeCompactTimeSeries(compactSeries));
+    compactSeries = undefined;
   }
 
   const timeRange = getRequestTimeRange(request, loadingState);

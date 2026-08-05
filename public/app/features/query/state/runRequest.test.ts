@@ -225,6 +225,29 @@ describe('runRequest', () => {
     });
   });
 
+  runRequestScenario('When ordinary and compact query responses arrive together', (ctx) => {
+    const compactSeries = compactData(new ArrayBuffer(8));
+
+    ctx.setup(() => {
+      ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
+      ctx.start();
+      ctx.emitPacket({ data: [], compactSeries, key: 'A' });
+      ctx.emitPacket({ data: [{ name: 'ordinary-series', refId: 'B' } as DataFrame], key: 'B' });
+    });
+
+    it('keeps compact-only responses on the lazy compact path', () => {
+      expect(ctx.results[0].compactSeries).toBe(compactSeries);
+      expect(ctx.results[0].series).toEqual([]);
+    });
+
+    it('normalizes mixed formats into ordinary frames so the renderer retains both results', () => {
+      expect(ctx.results[1].compactSeries).toBeUndefined();
+      expect(ctx.results[1].series).toHaveLength(2);
+      expect(ctx.results[1].series[0]).toMatchObject({ name: 'ordinary-series', refId: 'B' });
+      expect(ctx.results[1].series[1]).toMatchObject({ refId: 'A', length: 1 });
+    });
+  });
+
   runRequestScenario('When the key is defined in refId', (ctx) => {
     ctx.setup(() => {
       ctx.start();

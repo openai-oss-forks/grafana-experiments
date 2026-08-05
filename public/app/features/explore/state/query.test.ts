@@ -7,6 +7,7 @@ import {
   DataQueryRequest,
   DataQueryResponse,
   DataSourceApi,
+  CompactTimeSeriesData,
   DataSourceJsonData,
   DataSourcePluginMeta,
   DataSourceWithSupplementaryQueriesSupport,
@@ -212,6 +213,61 @@ describe('runQueries', () => {
     expect(getState().explore.panes.left!.graphResult).not.toBeDefined();
     await dispatch(saveCorrelationsAction({ exploreId: 'left', correlations: [] }));
     expect(getState().explore.panes.left!.graphResult).toBeDefined();
+  });
+
+  it('stops scanning when a compact-only response already contains results', async () => {
+    const { dispatch, getState } = setupTests();
+    const datasource = assertIsDefined(getState().explore.panes.left!.datasourceInstance);
+    const compactSeries = { series: [{ refId: 'A' }] } as unknown as CompactTimeSeriesData;
+    jest
+      .mocked(datasource.query)
+      .mockReturnValueOnce(of({ state: LoadingState.Done, data: [], compactSeries } as DataQueryResponse));
+
+    await dispatch(saveCorrelationsAction({ exploreId: 'left', correlations: [] }));
+    dispatch(scanStartAction({ exploreId: 'left' }));
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(datasource.query).toHaveBeenCalledTimes(1);
+    expect(getState().explore.panes.left!.scanning).toBe(false);
+    expect(getState().explore.panes.left!.queryResponse.compactSeries).toBe(compactSeries);
+  });
+
+  it('keeps full frames when existing correlations need data-link decoration', async () => {
+    const query = jest.fn((_request: DataQueryRequest) => of({ state: LoadingState.Done, data: [] }));
+    const datasource = {
+      ...defaultInitialState.explore.panes.left.datasourceInstance,
+      type: 'prometheus',
+      uid: 'prometheus',
+      getRef: () => ({ type: 'prometheus', uid: 'prometheus' }),
+      query,
+    };
+    const correlations = [
+      {
+        uid: 'existing-correlation',
+        source: { uid: 'prometheus' },
+        target: { uid: 'other-datasource' },
+        type: 'query',
+        config: { field: 'value' },
+      },
+    ];
+    const { dispatch } = configureStore({
+      ...defaultInitialState,
+      explore: {
+        panes: {
+          left: {
+            ...defaultInitialState.explore.panes.left,
+            datasourceInstance: datasource,
+            queries: [{ refId: 'A', expr: 'up', datasource: datasource.getRef() }],
+            correlations,
+          },
+        },
+      },
+    } as unknown as Partial<StoreState>);
+
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].preferredQueryResultFormat).toBeUndefined();
   });
 
   it('should add history items to both local and remote storage with the flag enabled', async () => {

@@ -82,7 +82,10 @@ function getPanelType(queries: DataQuery[], queryResponse: ExplorePanelData, pan
     if (queryResponse.flameGraphFrames.some(hasQueryRefId)) {
       return 'flamegraph';
     }
-    if (queryResponse.graphFrames.some(hasQueryRefId)) {
+    if (
+      queryResponse.graphFrames.some(hasQueryRefId) ||
+      queryResponse.compactSeries?.series.some((series) => series.refId === refId)
+    ) {
       return 'timeseries';
     }
     if (queryResponse.logsFrames.some(hasQueryRefId)) {

@@ -12,6 +12,7 @@ import {
   DataQueryResponse,
   DataSourceApi,
   dateTimeForTimeZone,
+  getPanelDataSeriesCount,
   hasQueryExportSupport,
   hasQueryImportSupport,
   LoadingState,
@@ -631,6 +632,8 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
 
       if (
         datasourceInstance.type === 'prometheus' &&
+        !showCorrelationEditorLinks &&
+        !exploreItemState.correlations?.length &&
         queries.every(
           (
             target: DataQuery & {
@@ -685,12 +688,15 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
 
           // Keep scanning for results if this was the last scanning transaction
           if (exploreState!.scanning) {
-            console.log(data.series);
-            if (data.state === LoadingState.Done && data.series.length === 0) {
+            if (data.state === LoadingState.Done && getPanelDataSeriesCount(data) === 0) {
               const range = getShiftedTimeRange(-1, exploreState!.range);
               dispatch(updateTime({ exploreId, absoluteRange: range }));
               dispatch(runQueries({ exploreId }));
-            } else if (data.series[0]?.length > 0 || data.state === LoadingState.Done) {
+            } else if (
+              data.series[0]?.length > 0 ||
+              Boolean(data.compactSeries?.series.length) ||
+              data.state === LoadingState.Done
+            ) {
               // We can stop scanning if we have a result
               dispatch(scanStopAction({ exploreId }));
             }

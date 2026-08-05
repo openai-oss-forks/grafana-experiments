@@ -77,7 +77,7 @@ export interface PanelData {
 
 /** Returns the number of renderable series without expanding compact data. @internal */
 export function getPanelDataSeriesCount(data?: Pick<PanelData, 'series' | 'compactSeries'>): number {
-  return data?.compactSeries?.series.length ?? data?.series.length ?? 0;
+  return (data?.series.length ?? 0) + (data?.compactSeries?.series.length ?? 0);
 }
 
 /** Applies the same series cap to ordinary frames and compact-native visualizations. @internal */
@@ -90,19 +90,21 @@ export function limitPanelDataSeries<T extends Pick<PanelData, 'series' | 'compa
     return data;
   }
 
+  const series = data.series.slice(0, seriesLimit);
   const compactSeries = data.compactSeries;
+  const remainingSeries = Math.max(0, seriesLimit - series.length);
   const limitedCompactSeries = compactSeries
     ? {
         ...compactSeries,
         series: isCompactTimeSeriesSeriesCollection(compactSeries.series)
-          ? compactSeries.series.take(seriesLimit)
-          : compactSeries.series.slice(0, seriesLimit),
+          ? compactSeries.series.take(remainingSeries)
+          : compactSeries.series.slice(0, remainingSeries),
       }
     : undefined;
 
   return {
     ...data,
-    series: data.series.slice(0, seriesLimit),
+    series,
     ...(limitedCompactSeries ? { compactSeries: limitedCompactSeries } : {}),
   };
 }

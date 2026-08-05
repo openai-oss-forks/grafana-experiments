@@ -1,4 +1,4 @@
-import { getDefaultTimeRange, MutableDataFrame } from '@grafana/data';
+import { CompactTimeSeriesData, getDefaultTimeRange, MutableDataFrame } from '@grafana/data';
 import { DataQuery, LoadingState } from '@grafana/schema';
 import { ExplorePanelData } from 'app/types/explore';
 
@@ -85,6 +85,43 @@ describe('buildDashboardPanelFromExploreState', () => {
 
         const result = buildDashboardPanelFromExploreState({ queries, queryResponse });
         expect(result.type).toBe('someCustomPluginId');
+      });
+
+      it('creates a time-series panel when the visible query has only compact results', () => {
+        const compactSeries = { series: [{ refId: 'A' }] } as unknown as CompactTimeSeriesData;
+        const queryResponse = { ...createEmptyQueryResponse(), compactSeries };
+
+        const result = buildDashboardPanelFromExploreState({ queries: [{ refId: 'A' }], queryResponse });
+
+        expect(result.type).toBe('timeseries');
+      });
+
+      it('does not select compact time-series results belonging to hidden queries', () => {
+        const compactSeries = { series: [{ refId: 'A' }] } as unknown as CompactTimeSeriesData;
+        const queryResponse = { ...createEmptyQueryResponse(), compactSeries };
+
+        const result = buildDashboardPanelFromExploreState({
+          queries: [{ refId: 'A', hide: true }, { refId: 'B' }],
+          queryResponse,
+        });
+
+        expect(result.type).toBe('table');
+      });
+
+      it('selects compact time series for the matching visible query among mixed query types', () => {
+        const compactSeries = { series: [{ refId: 'B' }] } as unknown as CompactTimeSeriesData;
+        const queryResponse = {
+          ...createEmptyQueryResponse(),
+          compactSeries,
+          logsFrames: [new MutableDataFrame({ refId: 'A', fields: [] })],
+        };
+
+        const result = buildDashboardPanelFromExploreState({
+          queries: [{ refId: 'B' }, { refId: 'A' }],
+          queryResponse,
+        });
+
+        expect(result.type).toBe('timeseries');
       });
     });
   });

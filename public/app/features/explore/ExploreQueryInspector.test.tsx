@@ -3,7 +3,14 @@ import { ComponentProps } from 'react';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import { Observable } from 'rxjs';
 
-import { COMPACT_TIME_SERIES_FORMAT, LoadingState, InternalTimeZones, getDefaultTimeRange } from '@grafana/data';
+import {
+  COMPACT_TIME_SERIES_FORMAT,
+  CompactTimeSeriesData,
+  LoadingState,
+  InternalTimeZones,
+  getDefaultTimeRange,
+} from '@grafana/data';
+import { config } from '@grafana/runtime';
 import { InspectorStream } from 'app/core/services/backend_srv';
 
 import { ExploreQueryInspector } from './ExploreQueryInspector';
@@ -75,6 +82,40 @@ const setup = (propOverrides = {}) => {
   return render(<ExploreQueryInspector {...props} />);
 };
 
+const createCompactSeries = (count = 1) => {
+  const buffer = new ArrayBuffer(16);
+  new DataView(buffer).setFloat64(8, 71.2, true);
+  const materializeLabels = jest.fn(() => ({ job: 'api' }));
+  const compactSeries: CompactTimeSeriesData = {
+    kind: 'compact-response-view',
+    format: COMPACT_TIME_SERIES_FORMAT,
+    buffer,
+    axes: [{ start: 1704285124682, step: 1000, count: 1 }],
+    series: Array.from({ length: count }, (_, index) => ({
+      refId: 'A',
+      valueName: `series-${index}`,
+      axisId: 0,
+      labelRecordsOffset: 0,
+      labelCount: 1,
+      presenceByteOffset: 0,
+      presenceByteLength: 0,
+      presentCount: 1,
+      valuesByteOffset: 8,
+    })),
+    metadata: { getLabel: jest.fn(), forEachLabel: jest.fn(), materializeLabels },
+    decodeStats: {
+      responseBytes: 16,
+      axisCount: 1,
+      resultCount: 1,
+      stringCount: 1,
+      stringBytes: 1,
+      seriesCount: count,
+    },
+  };
+
+  return { compactSeries, materializeLabels };
+};
+
 describe('ExploreQueryInspector', () => {
   it('should render closable drawer component', () => {
     setup();
@@ -144,47 +185,14 @@ describe('ExploreQueryInspector', () => {
   });
 
   it('materializes compact frames only when the Data tab is opened', () => {
-    const buffer = new ArrayBuffer(16);
-    new DataView(buffer).setFloat64(8, 71.2, true);
-    const materializeLabels = jest.fn(() => ({ job: 'api' }));
+    const { compactSeries, materializeLabels } = createCompactSeries();
 
     setup({
       queryResponse: {
         state: LoadingState.Done,
         series: [],
         timeRange: getDefaultTimeRange(),
-        compactSeries: {
-          kind: 'compact-response-view',
-          format: COMPACT_TIME_SERIES_FORMAT,
-          buffer,
-          axes: [{ start: 1704285124682, step: 1000, count: 1 }],
-          series: [
-            {
-              refId: 'A',
-              valueName: 'A-series',
-              axisId: 0,
-              labelRecordsOffset: 0,
-              labelCount: 1,
-              presenceByteOffset: 0,
-              presenceByteLength: 0,
-              presentCount: 1,
-              valuesByteOffset: 8,
-            },
-          ],
-          metadata: {
-            getLabel: jest.fn(),
-            forEachLabel: jest.fn(),
-            materializeLabels,
-          },
-          decodeStats: {
-            responseBytes: 16,
-            axisCount: 1,
-            resultCount: 1,
-            stringCount: 1,
-            stringBytes: 1,
-            seriesCount: 1,
-          },
-        },
+        compactSeries,
       },
     });
 
@@ -194,6 +202,58 @@ describe('ExploreQueryInspector', () => {
 
     expect(materializeLabels).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/71.2/i)).toBeInTheDocument();
+  });
+
+  it('includes compact frames when ordinary frames are also present', () => {
+    const { compactSeries, materializeLabels } = createCompactSeries();
+
+    setup({
+      queryResponse: {
+        state: LoadingState.Done,
+        timeRange: getDefaultTimeRange(),
+        series: [
+          {
+            name: 'ordinary-series',
+            refId: 'B',
+            length: 1,
+            fields: [
+              { name: 'time', type: 'time', config: {}, values: [1704285124682] },
+              { name: 'ordinary-value', type: 'number', config: {}, values: [42] },
+            ],
+          },
+        ],
+        compactSeries,
+      },
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /data/i }));
+
+    expect(materializeLabels).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/ordinary-series/i)).toBeInTheDocument();
+  });
+
+  it('bounds compact inspection to the configured shared series limit', () => {
+    const previousLimit = config.panelSeriesLimit;
+    config.panelSeriesLimit = 1;
+    const { compactSeries, materializeLabels } = createCompactSeries(3);
+
+    try {
+      setup({
+        queryResponse: {
+          state: LoadingState.Done,
+          series: [],
+          timeRange: getDefaultTimeRange(),
+          compactSeries,
+        },
+      });
+
+      fireEvent.click(screen.getByRole('tab', { name: /data/i }));
+
+      expect(materializeLabels).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/71.2/i)).toBeInTheDocument();
+    } finally {
+      config.panelSeriesLimit = previousLimit;
+    }
   });
 });
 

@@ -2,10 +2,10 @@ import { css } from '@emotion/css';
 import { useEffect, useMemo, useState } from 'react';
 import { connect, ConnectedProps } from 'react-redux';
 
-import { CoreApp, GrafanaTheme2, LoadingState } from '@grafana/data';
+import { CoreApp, GrafanaTheme2, limitPanelDataSeries, LoadingState } from '@grafana/data';
 import { t } from '@grafana/i18n';
 import { materializeCompactTimeSeries } from '@grafana/prometheus';
-import { reportInteraction } from '@grafana/runtime';
+import { config, reportInteraction } from '@grafana/runtime';
 import { defaultTimeZone, TimeZone } from '@grafana/schema';
 import { TabbedContainer, TabConfig, useStyles2 } from '@grafana/ui';
 import { requestIdGenerator } from 'app/core/utils/explore';
@@ -115,13 +115,17 @@ interface ExploreInspectDataTabProps {
 }
 
 function ExploreInspectDataTab({ queryResponse, timeZone, dataOptions, onOptionsChange }: ExploreInspectDataTabProps) {
+  const { compactSeries, series } = queryResponse;
   const dataFrames = useMemo(() => {
-    if (queryResponse.series.length > 0 || !queryResponse.compactSeries) {
-      return queryResponse.series;
+    if (!compactSeries) {
+      return series;
     }
 
-    return materializeCompactTimeSeries(queryResponse.compactSeries);
-  }, [queryResponse.compactSeries, queryResponse.series]);
+    const inspectableData = limitPanelDataSeries({ series, compactSeries }, config.panelSeriesLimit);
+    return inspectableData.compactSeries
+      ? [...inspectableData.series, ...materializeCompactTimeSeries(inspectableData.compactSeries)]
+      : inspectableData.series;
+  }, [compactSeries, series]);
 
   return (
     <InspectDataTab

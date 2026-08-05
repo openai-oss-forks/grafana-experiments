@@ -190,6 +190,24 @@ describe('decorateWithGraphLogsTraceTableAndFlameGraph', () => {
     });
   });
 
+  it('preserves ordinary table frames and compact graph data in a mixed response', () => {
+    const { table } = getTestContext();
+    const compactSeries = { series: [{ refId: 'B' }] } as unknown as CompactTimeSeriesData;
+    const panelData: PanelData = {
+      series: [table],
+      compactSeries,
+      state: LoadingState.Done,
+      timeRange: getDefaultTimeRange(),
+    };
+
+    const result = decorateWithFrameTypeMetadata(panelData);
+
+    expect(result.tableFrames).toEqual([table]);
+    expect(result.graphFrames).toEqual([]);
+    expect(result.compactSeries).toBe(compactSeries);
+    expect(decorateWithGraphResult(result).graphResult).toEqual([]);
+  });
+
   it('should return frames even if there is an error', () => {
     const { timeSeries, logs, table } = getTestContext();
     const series: DataFrame[] = [timeSeries, logs, table];
