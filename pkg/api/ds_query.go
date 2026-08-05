@@ -176,8 +176,9 @@ func isCompactVisualizationQuery(req *http.Request, request dtos.MetricRequest) 
 	panelPluginID := req.Header.Get(query.HeaderPanelPluginId)
 	isDashboard := req.Header.Get(query.HeaderDashboardUID) != ""
 	isExplore := strings.HasPrefix(req.URL.Query().Get("requestId"), "explore_")
-	if (!isDashboard && (!isExplore || panelPluginID != "timeseries")) ||
-		(panelPluginID != "timeseries" && panelPluginID != "barchart") ||
+	validContext := isDashboard || isExplore
+	validPanel := panelPluginID == "timeseries" || (isDashboard && panelPluginID == "barchart")
+	if !validContext || !validPanel ||
 		req.Header.Get("X-Plugin-Id") != "prometheus" ||
 		len(request.Queries) == 0 {
 		return false

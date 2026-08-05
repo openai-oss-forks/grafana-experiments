@@ -183,7 +183,7 @@ describe('PrometheusDatasource', () => {
       expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBeUndefined();
     });
 
-    it('preserves compact Explore results and materializes frames for tables and inspection', async () => {
+    it('preserves compact Explore results without eagerly materializing frames', async () => {
       const compactSeries = compactResponseFixture('A', 16);
       const backendQuery = jest
         .spyOn(DataSourceWithBackend.prototype, 'query')
@@ -201,9 +201,7 @@ describe('PrometheusDatasource', () => {
         );
 
         expect(response.compactSeries).toBe(compactSeries);
-        expect(response.data).toHaveLength(1);
-        expect(response.data[0].meta?.preferredVisualisationType).toBe('graph');
-        expect(response.data[0].fields[1].labels).toEqual({ job: 'A-job' });
+        expect(response.data).toEqual([]);
       } finally {
         backendQuery.mockRestore();
       }

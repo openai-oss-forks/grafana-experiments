@@ -142,7 +142,7 @@ export const decorateWithCorrelations = ({
 };
 
 export const decorateWithGraphResult = (data: ExplorePanelData): ExplorePanelData => {
-  if (!data.graphFrames.length) {
+  if (!data.graphFrames.length && !data.compactSeries?.series.length) {
     return { ...data, graphResult: null };
   }
 

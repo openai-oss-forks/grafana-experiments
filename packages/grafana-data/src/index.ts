@@ -674,6 +674,8 @@ export {
   type PanelMenuItem,
   type AngularPanelMenuItem,
   type PanelPluginDataSupport,
+  getPanelDataSeriesCount,
+  limitPanelDataSeries,
   VizOrientation,
 } from './types/panel';
 export {

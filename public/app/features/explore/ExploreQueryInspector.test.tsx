@@ -3,7 +3,7 @@ import { ComponentProps } from 'react';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import { Observable } from 'rxjs';
 
-import { LoadingState, InternalTimeZones, getDefaultTimeRange } from '@grafana/data';
+import { COMPACT_TIME_SERIES_FORMAT, LoadingState, InternalTimeZones, getDefaultTimeRange } from '@grafana/data';
 import { InspectorStream } from 'app/core/services/backend_srv';
 
 import { ExploreQueryInspector } from './ExploreQueryInspector';
@@ -141,6 +141,59 @@ describe('ExploreQueryInspector', () => {
     // assert timestamps are formatted
     expect(screen.getByText(/2024-01-03 12:32:04.682/i)).toBeInTheDocument();
     expect(screen.getByText(/2024-01-03 12:32:34.682/i)).toBeInTheDocument();
+  });
+
+  it('materializes compact frames only when the Data tab is opened', () => {
+    const buffer = new ArrayBuffer(16);
+    new DataView(buffer).setFloat64(8, 71.2, true);
+    const materializeLabels = jest.fn(() => ({ job: 'api' }));
+
+    setup({
+      queryResponse: {
+        state: LoadingState.Done,
+        series: [],
+        timeRange: getDefaultTimeRange(),
+        compactSeries: {
+          kind: 'compact-response-view',
+          format: COMPACT_TIME_SERIES_FORMAT,
+          buffer,
+          axes: [{ start: 1704285124682, step: 1000, count: 1 }],
+          series: [
+            {
+              refId: 'A',
+              valueName: 'A-series',
+              axisId: 0,
+              labelRecordsOffset: 0,
+              labelCount: 1,
+              presenceByteOffset: 0,
+              presenceByteLength: 0,
+              presentCount: 1,
+              valuesByteOffset: 8,
+            },
+          ],
+          metadata: {
+            getLabel: jest.fn(),
+            forEachLabel: jest.fn(),
+            materializeLabels,
+          },
+          decodeStats: {
+            responseBytes: 16,
+            axisCount: 1,
+            resultCount: 1,
+            stringCount: 1,
+            stringBytes: 1,
+            seriesCount: 1,
+          },
+        },
+      },
+    });
+
+    expect(materializeLabels).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('tab', { name: /data/i }));
+
+    expect(materializeLabels).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/71.2/i)).toBeInTheDocument();
   });
 });
 

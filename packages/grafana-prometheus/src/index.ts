@@ -54,7 +54,7 @@ export { MetricsModal } from './querybuilder/components/metrics-modal/MetricsMod
 
 // SRC/
 // Main export
-export { PrometheusDatasource } from './datasource';
+export { PrometheusDatasource, materializeCompactTimeSeries } from './datasource';
 // The parts
 export { addLabelToQuery } from './add_label_to_query';
 export { type QueryEditorMode, type PromQueryFormat, type Prometheus } from './dataquery';

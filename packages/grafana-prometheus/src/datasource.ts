@@ -492,13 +492,7 @@ export class PrometheusDatasource
     return super.query({ ...fullOrPartialRequest, targets: targets.flat() }).pipe(
       map((response) => {
         if (response.compactSeries) {
-          if (request.app !== CoreApp.Explore) {
-            return response;
-          }
-
-          return transformV2({ ...response, data: materializeCompactTimeSeries(response.compactSeries) }, request, {
-            exemplarTraceIdDestinations: this.exemplarTraceIdDestinations,
-          });
+          return response;
         }
 
         const amendedResponse = {

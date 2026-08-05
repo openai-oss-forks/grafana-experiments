@@ -605,6 +605,7 @@ export class Explore extends PureComponent<Props, ExploreState> {
     const richHistoryRowButtonHidden = !supportedFeatures().queryHistoryAvailable;
     const showNoData =
       queryResponse.state === LoadingState.Done &&
+      !queryResponse.compactSeries?.series.length &&
       [
         queryResponse.logsFrames,
         queryResponse.graphFrames,

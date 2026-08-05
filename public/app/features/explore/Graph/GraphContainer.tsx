@@ -12,7 +12,8 @@ import {
   LoadingState,
   ThresholdsConfig,
   TimeRange,
-  isCompactTimeSeriesSeriesCollection,
+  getPanelDataSeriesCount,
+  limitPanelDataSeries,
 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
@@ -25,8 +26,6 @@ import { storeGraphStyle } from '../state/utils';
 import { ExploreGraph } from './ExploreGraph';
 import { ExploreGraphLabel } from './ExploreGraphLabel';
 import { loadGraphStyle } from './utils';
-
-const MAX_NUMBER_OF_TIME_SERIES = config.panelSeriesLimit;
 
 interface Props extends Pick<PanelChromeProps, 'statusMessage'> {
   width: number;
@@ -72,41 +71,26 @@ export const GraphContainer = ({
     setGraphStyle(graphStyle);
   }, []);
 
-  const slicedData = useMemo(() => {
-    return showAllSeries || !MAX_NUMBER_OF_TIME_SERIES ? data : data.slice(0, MAX_NUMBER_OF_TIME_SERIES);
-  }, [data, showAllSeries]);
-
-  const slicedCompactSeries = useMemo(() => {
-    if (
-      !compactSeries ||
-      showAllSeries ||
-      !MAX_NUMBER_OF_TIME_SERIES ||
-      compactSeries.series.length <= MAX_NUMBER_OF_TIME_SERIES
-    ) {
-      return compactSeries;
-    }
-
-    const series = isCompactTimeSeriesSeriesCollection(compactSeries.series)
-      ? compactSeries.series.filter((_series, index) => index < MAX_NUMBER_OF_TIME_SERIES)
-      : compactSeries.series.slice(0, MAX_NUMBER_OF_TIME_SERIES);
-
-    return { ...compactSeries, series };
-  }, [compactSeries, showAllSeries]);
+  const graphData = useMemo(
+    () => limitPanelDataSeries({ series: data, compactSeries }, config.panelSeriesLimit, showAllSeries),
+    [compactSeries, data, showAllSeries]
+  );
+  const seriesCount = getPanelDataSeriesCount({ series: data, compactSeries });
 
   return (
     <PanelChrome
       title={t('graph.container.title', 'Graph')}
       titleItems={[
-        !showAllSeries && MAX_NUMBER_OF_TIME_SERIES > 0 && MAX_NUMBER_OF_TIME_SERIES < data.length && (
+        !showAllSeries && config.panelSeriesLimit > 0 && config.panelSeriesLimit < seriesCount && (
           <LimitedDataDisclaimer
             key="disclaimer"
             toggleShowAllSeries={toggleShowAllSeries}
             info={
               <Trans i18nKey={'graph.container.show-only-series'}>
-                Showing only {{ MAX_NUMBER_OF_TIME_SERIES }} series
+                Showing only {{ seriesLimit: config.panelSeriesLimit }} series
               </Trans>
             }
-            buttonLabel={<Trans i18nKey={'graph.container.show-all-series'}>Show all {{ length: data.length }}</Trans>}
+            buttonLabel={<Trans i18nKey={'graph.container.show-all-series'}>Show all {{ length: seriesCount }}</Trans>}
             tooltip={t(
               'graph.container.content',
               'Rendering too many series in a single panel may impact performance and make data harder to read. Consider refining your queries.'
@@ -123,8 +107,8 @@ export const GraphContainer = ({
       {(innerWidth, innerHeight) => (
         <ExploreGraph
           graphStyle={graphStyle}
-          data={slicedData}
-          compactSeries={slicedCompactSeries}
+          data={graphData.series}
+          compactSeries={graphData.compactSeries}
           request={request}
           height={innerHeight}
           width={innerWidth}

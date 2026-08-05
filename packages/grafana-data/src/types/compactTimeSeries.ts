@@ -64,6 +64,7 @@ export interface CompactTimeSeriesSeriesCollection extends Iterable<CompactTimeS
   resolveColumnIndex(index: number): number;
   map<T>(callback: (series: CompactTimeSeriesSeries, index: number) => T): T[];
   some(callback: (series: CompactTimeSeriesSeries, index: number) => boolean): boolean;
+  take(count: number): CompactTimeSeriesSeriesCollection;
   filter(callback: (series: CompactTimeSeriesSeries, index: number) => boolean): CompactTimeSeriesSeriesCollection;
   excludeRefId(refId: string): CompactTimeSeriesSeriesCollection;
   excludeRefIds(refIds: ReadonlySet<string>): CompactTimeSeriesSeriesCollection;
