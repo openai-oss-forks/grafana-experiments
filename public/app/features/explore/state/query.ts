@@ -631,22 +631,21 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
 
       if (
         datasourceInstance.type === 'prometheus' &&
-        queries.every((query) => {
-          const target = query as DataQuery & {
-            exemplar?: boolean;
-            format?: string;
-            instant?: boolean;
-            range?: boolean;
-          };
-
-          return (
+        queries.every(
+          (
+            target: DataQuery & {
+              exemplar?: boolean;
+              format?: string;
+              instant?: boolean;
+              range?: boolean;
+            }
+          ) =>
             target.datasource?.type === datasourceInstance.type &&
             target.instant !== true &&
             target.range !== false &&
             target.exemplar !== true &&
             (!target.format || target.format === 'time_series')
-          );
-        })
+        )
       ) {
         transaction.request.panelPluginId = 'timeseries';
         transaction.request.preferredQueryResultFormat = getPreferredDashboardQueryFormat({
