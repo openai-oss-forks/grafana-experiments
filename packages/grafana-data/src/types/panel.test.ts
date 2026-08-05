@@ -21,18 +21,6 @@ describe('shared panel series limits', () => {
     expect(limitPanelDataSeries(data, 2).compactSeries?.series).toEqual(series.slice(0, 2));
   });
 
-  it('limits column-backed series through their lazy prefix view', () => {
-    const prefix = { length: 2 } as CompactTimeSeriesSeriesCollection;
-    const take = jest.fn(() => prefix);
-    const compactSeries = { series: { length: 3, take } } as unknown as CompactTimeSeriesData;
-    const data = { series: [], compactSeries };
-
-    const limited = limitPanelDataSeries(data, 2);
-
-    expect(take).toHaveBeenCalledWith(2);
-    expect(limited.compactSeries?.series).toBe(prefix);
-  });
-
   it('counts ordinary and compact series together', () => {
     const compactSeries = { series: [{ refId: 'C' }, { refId: 'D' }] } as unknown as CompactTimeSeriesData;
 
@@ -51,16 +39,22 @@ describe('shared panel series limits', () => {
     expect(getPanelDataSeriesCount(limited)).toBe(3);
   });
 
-  it('gives column-backed compact series only the remaining shared capacity', () => {
-    const prefix = { length: 1 } as CompactTimeSeriesSeriesCollection;
-    const take = jest.fn(() => prefix);
-    const compactSeries = { series: { length: 3, take } } as unknown as CompactTimeSeriesData;
+  it.each([
+    { ordinaryFrames: [], seriesLimit: 2, compactLimit: 2 },
+    { ordinaryFrames: frames.slice(0, 2), seriesLimit: 3, compactLimit: 1 },
+  ])(
+    'limits column-backed compact series to the remaining capacity',
+    ({ ordinaryFrames, seriesLimit, compactLimit }) => {
+      const prefix = { length: compactLimit } as CompactTimeSeriesSeriesCollection;
+      const take = jest.fn(() => prefix);
+      const compactSeries = { series: { length: 3, take } } as unknown as CompactTimeSeriesData;
 
-    const limited = limitPanelDataSeries({ series: frames.slice(0, 2), compactSeries }, 3);
+      const limited = limitPanelDataSeries({ series: ordinaryFrames, compactSeries }, seriesLimit);
 
-    expect(take).toHaveBeenCalledWith(1);
-    expect(limited.compactSeries?.series).toBe(prefix);
-  });
+      expect(take).toHaveBeenCalledWith(compactLimit);
+      expect(limited.compactSeries?.series).toBe(prefix);
+    }
+  );
 
   it('does not exceed the limit when ordinary frames fill all available capacity', () => {
     const compactSeries = { series: [{ refId: 'D' }] } as unknown as CompactTimeSeriesData;

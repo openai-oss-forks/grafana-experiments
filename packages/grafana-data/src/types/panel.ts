@@ -91,21 +91,21 @@ export function limitPanelDataSeries<T extends Pick<PanelData, 'series' | 'compa
   }
 
   const series = data.series.slice(0, seriesLimit);
-  const compactSeries = data.compactSeries;
-  const remainingSeries = Math.max(0, seriesLimit - series.length);
-  const limitedCompactSeries = compactSeries
-    ? {
-        ...compactSeries,
-        series: isCompactTimeSeriesSeriesCollection(compactSeries.series)
-          ? compactSeries.series.take(remainingSeries)
-          : compactSeries.series.slice(0, remainingSeries),
-      }
-    : undefined;
+  if (!data.compactSeries) {
+    return { ...data, series };
+  }
 
+  const compactSeries = data.compactSeries;
+  const remainingSeries = seriesLimit - series.length;
   return {
     ...data,
     series,
-    ...(limitedCompactSeries ? { compactSeries: limitedCompactSeries } : {}),
+    compactSeries: {
+      ...compactSeries,
+      series: isCompactTimeSeriesSeriesCollection(compactSeries.series)
+        ? compactSeries.series.take(remainingSeries)
+        : compactSeries.series.slice(0, remainingSeries),
+    },
   };
 }
 

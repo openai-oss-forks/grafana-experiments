@@ -155,6 +155,20 @@ async function setupStore(queries: DataQuery[], datasourceInstance: Partial<Data
 }
 
 describe('runQueries', () => {
+  type PrometheusQueryOptions = {
+    exemplar?: boolean;
+    format?: string;
+    instant?: boolean;
+    range?: boolean;
+  };
+
+  const unsupportedQueries: Array<[string, PrometheusQueryOptions]> = [
+    ['instant', { instant: true }],
+    ['table', { format: 'table' }],
+    ['exemplar', { exemplar: true }],
+    ['range-disabled', { range: false }],
+  ];
+
   const setupTests = () => {
     setTimeSrv({ init() {} } as unknown as TimeSrv);
     return configureStore({
@@ -169,9 +183,7 @@ describe('runQueries', () => {
   }: {
     correlations?: unknown;
     editorMode?: boolean;
-    queries?: Array<
-      DataQuery & { expr: string; exemplar?: boolean; format?: string; instant?: boolean; range?: boolean }
-    >;
+    queries?: Array<DataQuery & { expr: string } & PrometheusQueryOptions>;
   }) => {
     const query = jest.fn((_request: DataQueryRequest) => of({ state: LoadingState.Done, data: [] }));
     const datasource = {
@@ -197,7 +209,7 @@ describe('runQueries', () => {
       },
     } as unknown as Partial<StoreState>);
 
-    return { ...store, datasource, query };
+    return { ...store, query };
   };
 
   beforeEach(() => {
@@ -288,17 +300,12 @@ describe('runQueries', () => {
     expect(query.mock.calls[0][0].preferredQueryResultFormat).toBeUndefined();
   });
 
-  it.each([
-    ['instant', { instant: true }],
-    ['table', { format: 'table' }],
-    ['exemplar', { exemplar: true }],
-    ['range-disabled', { range: false }],
-  ])('keeps compact format when an incompatible %s query is hidden', async (_, hiddenQueryOptions) => {
+  it.each(unsupportedQueries)('keeps compact format when an incompatible %s query is hidden', async (_, options) => {
     const { dispatch, query } = setupPrometheusTests({
       correlations: [],
       queries: [
         { refId: 'A', expr: 'up' },
-        { refId: 'B', expr: 'hidden', hide: true, ...hiddenQueryOptions },
+        { refId: 'B', expr: 'hidden', hide: true, ...options },
       ],
     });
 
@@ -308,17 +315,12 @@ describe('runQueries', () => {
     expect(query.mock.calls[0][0].preferredQueryResultFormat).toBe('compact-v1');
   });
 
-  it.each([
-    ['instant', { instant: true }],
-    ['table', { format: 'table' }],
-    ['exemplar', { exemplar: true }],
-    ['range-disabled', { range: false }],
-  ])('keeps compact format when an incompatible %s query has an empty expression', async (_, emptyQueryOptions) => {
+  it.each(unsupportedQueries)('keeps compact format when an incompatible %s query is empty', async (_, options) => {
     const { dispatch, query } = setupPrometheusTests({
       correlations: [],
       queries: [
         { refId: 'A', expr: 'up' },
-        { refId: 'B', expr: '', ...emptyQueryOptions },
+        { refId: 'B', expr: '', ...options },
       ],
     });
 
@@ -328,15 +330,10 @@ describe('runQueries', () => {
     expect(query.mock.calls[0][0].preferredQueryResultFormat).toBe('compact-v1');
   });
 
-  it.each([
-    ['instant', { instant: true }],
-    ['table', { format: 'table' }],
-    ['exemplar', { exemplar: true }],
-    ['range-disabled', { range: false }],
-  ])('keeps full frames when an incompatible %s query is visible', async (_, visibleQueryOptions) => {
+  it.each(unsupportedQueries)('keeps full frames when an incompatible %s query is visible', async (_, options) => {
     const { dispatch, query } = setupPrometheusTests({
       correlations: [],
-      queries: [{ refId: 'A', expr: 'up', ...visibleQueryOptions }],
+      queries: [{ refId: 'A', expr: 'up', ...options }],
     });
 
     await dispatch(runQueries({ exploreId: 'left' }));

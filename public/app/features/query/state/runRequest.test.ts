@@ -211,7 +211,7 @@ describe('runRequest', () => {
   });
 
   runRequestScenario('When JSON replaces a compact response for the same query', (ctx) => {
-    const compactSeries = compactData(new ArrayBuffer(8));
+    const compactSeries = compactData();
 
     ctx.setup(() => {
       ctx.start();
@@ -227,7 +227,7 @@ describe('runRequest', () => {
   });
 
   runRequestScenario('When ordinary and compact query responses arrive together', (ctx) => {
-    const compactSeries = compactData(new ArrayBuffer(8));
+    const compactSeries = compactData();
 
     ctx.setup(() => {
       ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
@@ -249,42 +249,26 @@ describe('runRequest', () => {
     });
   });
 
-  runRequestScenario('When compact query responses arrive in separate packets', (ctx) => {
-    const firstCompactSeries = compactData(new ArrayBuffer(8), 'A');
-    const secondCompactSeries = compactData(new ArrayBuffer(8), 'B');
+  for (const keyed of [true, false]) {
+    runRequestScenario(`When compact responses arrive in separate ${keyed ? 'keyed' : 'unkeyed'} packets`, (ctx) => {
+      ctx.setup(() => {
+        ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
+        ctx.start();
+        for (const refId of ['A', 'B']) {
+          ctx.emitPacket({ data: [], compactSeries: compactData(refId), ...(keyed ? { key: refId } : {}) });
+        }
+      });
 
-    ctx.setup(() => {
-      ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
-      ctx.start();
-      ctx.emitPacket({ data: [], compactSeries: firstCompactSeries, key: 'A' });
-      ctx.emitPacket({ data: [], compactSeries: secondCompactSeries, key: 'B' });
+      it('retains both query results without expanding them into ordinary frames', () => {
+        expect(ctx.results[1].series).toEqual([]);
+        expect(ctx.results[1].compactSeries?.series.map((series) => series.refId)).toEqual(['A', 'B']);
+      });
     });
-
-    it('retains both query results without expanding them into ordinary frames', () => {
-      expect(ctx.results[1].series).toEqual([]);
-      expect(ctx.results[1].compactSeries?.series.map((series) => series.refId)).toEqual(['A', 'B']);
-    });
-  });
-
-  runRequestScenario('When compact query responses do not contain explicit packet keys', (ctx) => {
-    const firstCompactSeries = compactData(new ArrayBuffer(8), 'A');
-    const secondCompactSeries = compactData(new ArrayBuffer(8), 'B');
-
-    ctx.setup(() => {
-      ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
-      ctx.start();
-      ctx.emitPacket({ data: [], compactSeries: firstCompactSeries });
-      ctx.emitPacket({ data: [], compactSeries: secondCompactSeries });
-    });
-
-    it('uses compact query refIds to retain both packet results', () => {
-      expect(ctx.results[1].compactSeries?.series.map((series) => series.refId)).toEqual(['A', 'B']);
-    });
-  });
+  }
 
   runRequestScenario('When an unkeyed compact response uses lazy series columns', (ctx) => {
-    const firstCompactSeries = compactData(new ArrayBuffer(8), 'A');
-    const secondCompactSeries = compactData(new ArrayBuffer(8), 'B');
+    const firstCompactSeries = compactData('A');
+    const secondCompactSeries = compactData('B');
     const records = Array.from(secondCompactSeries.series);
     const getRefId = jest.fn((index: number) => records[index].refId);
     secondCompactSeries.series = {
@@ -307,9 +291,9 @@ describe('runRequest', () => {
   });
 
   runRequestScenario('When a compact query response replaces an earlier compact packet', (ctx) => {
-    const firstCompactSeries = compactData(new ArrayBuffer(8), 'A');
-    const secondCompactSeries = compactData(new ArrayBuffer(8), 'B');
-    const replacementCompactSeries = compactData(new ArrayBuffer(8), 'A');
+    const firstCompactSeries = compactData('A');
+    const secondCompactSeries = compactData('B');
+    const replacementCompactSeries = compactData('A');
     replacementCompactSeries.series = [
       { ...Array.from(replacementCompactSeries.series)[0], valueName: 'updated-value' },
     ];
@@ -331,8 +315,8 @@ describe('runRequest', () => {
   });
 
   runRequestScenario('When full query data arrives between separate compact responses', (ctx) => {
-    const firstCompactSeries = compactData(new ArrayBuffer(8), 'A');
-    const secondCompactSeries = compactData(new ArrayBuffer(8), 'C');
+    const firstCompactSeries = compactData('A');
+    const secondCompactSeries = compactData('C');
 
     ctx.setup(() => {
       ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }, { refId: 'C' }];
@@ -554,7 +538,8 @@ describe('runRequest', () => {
   });
 });
 
-function compactData(buffer: ArrayBuffer, refId = 'A'): CompactTimeSeriesData {
+function compactData(refId = 'A'): CompactTimeSeriesData {
+  const buffer = new ArrayBuffer(Float64Array.BYTES_PER_ELEMENT);
   return {
     kind: 'compact-response-view',
     format: COMPACT_TIME_SERIES_FORMAT,

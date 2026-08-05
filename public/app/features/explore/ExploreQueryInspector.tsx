@@ -121,10 +121,11 @@ function ExploreInspectDataTab({ queryResponse, timeZone, dataOptions, onOptions
       return series;
     }
 
-    const inspectableData = limitPanelDataSeries({ series, compactSeries }, config.panelSeriesLimit);
-    return inspectableData.compactSeries
-      ? [...inspectableData.series, ...materializeCompactTimeSeries(inspectableData.compactSeries)]
-      : inspectableData.series;
+    const { series: inspectableSeries, compactSeries: inspectableCompactSeries } = limitPanelDataSeries(
+      { series, compactSeries },
+      config.panelSeriesLimit
+    );
+    return [...inspectableSeries, ...materializeCompactTimeSeries(inspectableCompactSeries)];
   }, [compactSeries, series]);
 
   return (
