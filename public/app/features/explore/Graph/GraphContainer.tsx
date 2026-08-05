@@ -87,7 +87,7 @@ export const GraphContainer = ({
             toggleShowAllSeries={toggleShowAllSeries}
             info={
               <Trans i18nKey={'graph.container.show-only-series'}>
-                Showing only {{ seriesLimit: config.panelSeriesLimit }} series
+                Showing only {{ MAX_NUMBER_OF_TIME_SERIES: config.panelSeriesLimit }} series
               </Trans>
             }
             buttonLabel={<Trans i18nKey={'graph.container.show-all-series'}>Show all {{ length: seriesCount }}</Trans>}
