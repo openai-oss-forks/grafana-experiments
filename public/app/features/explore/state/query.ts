@@ -635,7 +635,7 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
         !showCorrelationEditorLinks &&
         exploreItemState.correlations?.length === 0 &&
         queries
-          .filter((target) => !target.hide)
+          .filter((target) => !target.hide && Boolean(filterQuery(datasourceInstance, target)))
           .every(
             (
               target: DataQuery & {

@@ -179,6 +179,7 @@ describe('runQueries', () => {
       type: 'prometheus',
       uid: 'prometheus',
       getRef: () => ({ type: 'prometheus', uid: 'prometheus' }),
+      filterQuery: (target: DataQuery & { expr?: string }) => Boolean(target.expr) && !target.hide,
       query,
     };
     const store = configureStore({
@@ -298,6 +299,26 @@ describe('runQueries', () => {
       queries: [
         { refId: 'A', expr: 'up' },
         { refId: 'B', expr: 'hidden', hide: true, ...hiddenQueryOptions },
+      ],
+    });
+
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].preferredQueryResultFormat).toBe('compact-v1');
+  });
+
+  it.each([
+    ['instant', { instant: true }],
+    ['table', { format: 'table' }],
+    ['exemplar', { exemplar: true }],
+    ['range-disabled', { range: false }],
+  ])('keeps compact format when an incompatible %s query has an empty expression', async (_, emptyQueryOptions) => {
+    const { dispatch, query } = setupPrometheusTests({
+      correlations: [],
+      queries: [
+        { refId: 'A', expr: 'up' },
+        { refId: 'B', expr: '', ...emptyQueryOptions },
       ],
     });
 
