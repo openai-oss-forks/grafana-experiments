@@ -19,7 +19,7 @@ import {
   TimeRange,
   isCompactTimeSeriesSeriesCollection,
 } from '@grafana/data';
-import { materializeCompactTimeSeries } from '@grafana/prometheus';
+import { combineCompactTimeSeries, materializeCompactTimeSeries } from '@grafana/prometheus';
 import { config, isMigrationHandler, migrateRequest, toDataQueryError, isExpressionReference } from '@grafana/runtime';
 import { backendSrv } from 'app/core/services/backend_srv';
 import { queryIsEmpty } from 'app/core/utils/query';
@@ -48,7 +48,13 @@ export function processResponsePacket(packet: DataQueryResponse, state: RunningQ
   };
 
   // updates to the same key will replace previous values
-  const key = packet.key ?? packet.data?.[0]?.refId ?? 'A';
+  const packetCompactSeries = packet.compactSeries?.series;
+  const compactRefId = packetCompactSeries?.length
+    ? isCompactTimeSeriesSeriesCollection(packetCompactSeries)
+      ? packetCompactSeries.getRefId(0)
+      : packetCompactSeries[0].refId
+    : undefined;
+  const key = packet.key ?? packet.data?.[0]?.refId ?? compactRefId ?? 'A';
   packets[key] = packet;
 
   let loadingState = packet.state || LoadingState.Done;
@@ -57,7 +63,7 @@ export function processResponsePacket(packet: DataQueryResponse, state: RunningQ
 
   const series: DataQueryResponseData[] = [];
   const annotations: DataQueryResponseData[] = [];
-  let compactSeries: PanelData['compactSeries'];
+  const compactResponses: Array<NonNullable<PanelData['compactSeries']>> = [];
 
   for (const key in packets) {
     const packet = packets[key];
@@ -80,10 +86,11 @@ export function processResponsePacket(packet: DataQueryResponse, state: RunningQ
     }
 
     if (packet.compactSeries) {
-      compactSeries = packet.compactSeries;
+      compactResponses.push(packet.compactSeries);
     }
   }
 
+  let compactSeries = compactResponses.length > 1 ? combineCompactTimeSeries(compactResponses) : compactResponses[0];
   if (compactSeries && series.length > 0) {
     series.push(...materializeCompactTimeSeries(compactSeries));
     compactSeries = undefined;

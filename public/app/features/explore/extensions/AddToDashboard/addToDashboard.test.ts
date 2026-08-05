@@ -96,6 +96,23 @@ describe('buildDashboardPanelFromExploreState', () => {
         expect(result.type).toBe('timeseries');
       });
 
+      it('checks column-backed compact query identifiers without expanding series records', () => {
+        const getRefId = jest.fn((index: number) => (index === 2 ? 'A' : 'B'));
+        const expandSeries = jest.fn(() => false);
+        const compactSeries = {
+          series: { length: 3, getRefId, some: expandSeries },
+        } as unknown as CompactTimeSeriesData;
+
+        const result = buildDashboardPanelFromExploreState({
+          queries: [{ refId: 'A' }],
+          queryResponse: { ...createEmptyQueryResponse(), compactSeries },
+        });
+
+        expect(result.type).toBe('timeseries');
+        expect(getRefId).toHaveBeenCalledTimes(3);
+        expect(expandSeries).not.toHaveBeenCalled();
+      });
+
       it('does not select compact time-series results belonging to hidden queries', () => {
         const compactSeries = { series: [{ refId: 'A' }] } as unknown as CompactTimeSeriesData;
         const queryResponse = { ...createEmptyQueryResponse(), compactSeries };

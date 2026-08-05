@@ -72,11 +72,15 @@ describe('shared panel series limits', () => {
     expect(getPanelDataSeriesCount(limited)).toBe(2);
   });
 
-  it.each([undefined, 0])('keeps data unchanged when the configured limit is %s', (seriesLimit) => {
-    const data = { series: frames };
+  it.each([undefined, 0, -1, -5, Number.NaN])(
+    'keeps ordinary and compact series unchanged when the configured limit is %s',
+    (seriesLimit) => {
+      const compactSeries = { series: [{ refId: 'D' }] } as unknown as CompactTimeSeriesData;
+      const data = { series: frames, compactSeries };
 
-    expect(limitPanelDataSeries(data, seriesLimit)).toBe(data);
-  });
+      expect(limitPanelDataSeries(data, seriesLimit)).toBe(data);
+    }
+  );
 
   it('keeps all ordinary and compact series when the user requests Show all', () => {
     const compactSeries = { series: [{}, {}, {}] } as unknown as CompactTimeSeriesData;

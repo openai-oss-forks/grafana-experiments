@@ -162,6 +162,43 @@ describe('runQueries', () => {
     } as unknown as Partial<StoreState>);
   };
 
+  const setupPrometheusTests = ({
+    correlations,
+    editorMode = false,
+    queries = [{ refId: 'A', expr: 'up' }],
+  }: {
+    correlations?: unknown;
+    editorMode?: boolean;
+    queries?: Array<
+      DataQuery & { expr: string; exemplar?: boolean; format?: string; instant?: boolean; range?: boolean }
+    >;
+  }) => {
+    const query = jest.fn((_request: DataQueryRequest) => of({ state: LoadingState.Done, data: [] }));
+    const datasource = {
+      ...defaultInitialState.explore.panes.left.datasourceInstance,
+      type: 'prometheus',
+      uid: 'prometheus',
+      getRef: () => ({ type: 'prometheus', uid: 'prometheus' }),
+      query,
+    };
+    const store = configureStore({
+      ...defaultInitialState,
+      explore: {
+        ...(editorMode ? { correlationEditorDetails: { editorMode: true } } : {}),
+        panes: {
+          left: {
+            ...defaultInitialState.explore.panes.left,
+            datasourceInstance: datasource,
+            queries: queries.map((target) => ({ datasource: datasource.getRef(), ...target })),
+            correlations,
+          },
+        },
+      },
+    } as unknown as Partial<StoreState>);
+
+    return { ...store, datasource, query };
+  };
+
   beforeEach(() => {
     config.queryHistoryEnabled = false;
     jest.clearAllMocks();
@@ -233,14 +270,6 @@ describe('runQueries', () => {
   });
 
   it('keeps full frames when existing correlations need data-link decoration', async () => {
-    const query = jest.fn((_request: DataQueryRequest) => of({ state: LoadingState.Done, data: [] }));
-    const datasource = {
-      ...defaultInitialState.explore.panes.left.datasourceInstance,
-      type: 'prometheus',
-      uid: 'prometheus',
-      getRef: () => ({ type: 'prometheus', uid: 'prometheus' }),
-      query,
-    };
     const correlations = [
       {
         uid: 'existing-correlation',
@@ -250,19 +279,74 @@ describe('runQueries', () => {
         config: { field: 'value' },
       },
     ];
-    const { dispatch } = configureStore({
-      ...defaultInitialState,
-      explore: {
-        panes: {
-          left: {
-            ...defaultInitialState.explore.panes.left,
-            datasourceInstance: datasource,
-            queries: [{ refId: 'A', expr: 'up', datasource: datasource.getRef() }],
-            correlations,
-          },
-        },
-      },
-    } as unknown as Partial<StoreState>);
+    const { dispatch, query } = setupPrometheusTests({ correlations });
+
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].preferredQueryResultFormat).toBeUndefined();
+  });
+
+  it.each([
+    ['instant', { instant: true }],
+    ['table', { format: 'table' }],
+    ['exemplar', { exemplar: true }],
+    ['range-disabled', { range: false }],
+  ])('keeps compact format when an incompatible %s query is hidden', async (_, hiddenQueryOptions) => {
+    const { dispatch, query } = setupPrometheusTests({
+      correlations: [],
+      queries: [
+        { refId: 'A', expr: 'up' },
+        { refId: 'B', expr: 'hidden', hide: true, ...hiddenQueryOptions },
+      ],
+    });
+
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].preferredQueryResultFormat).toBe('compact-v1');
+  });
+
+  it.each([
+    ['instant', { instant: true }],
+    ['table', { format: 'table' }],
+    ['exemplar', { exemplar: true }],
+    ['range-disabled', { range: false }],
+  ])('keeps full frames when an incompatible %s query is visible', async (_, visibleQueryOptions) => {
+    const { dispatch, query } = setupPrometheusTests({
+      correlations: [],
+      queries: [{ refId: 'A', expr: 'up', ...visibleQueryOptions }],
+    });
+
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].preferredQueryResultFormat).toBeUndefined();
+  });
+
+  it('uses compact format for a matching datasource reference that contains only its UID', async () => {
+    const { dispatch, query } = setupPrometheusTests({
+      correlations: [],
+      queries: [{ refId: 'A', expr: 'up', datasource: { uid: 'prometheus' } }],
+    });
+
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].preferredQueryResultFormat).toBe('compact-v1');
+  });
+
+  it('keeps full frames until correlation loading has completed', async () => {
+    const { dispatch, query } = setupPrometheusTests({ correlations: undefined });
+
+    await dispatch(runQueries({ exploreId: 'left' }));
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0].preferredQueryResultFormat).toBeUndefined();
+  });
+
+  it('keeps full frames when the correlation editor needs data-link decoration', async () => {
+    const { dispatch, query } = setupPrometheusTests({ correlations: [], editorMode: true });
 
     await dispatch(runQueries({ exploreId: 'left' }));
 

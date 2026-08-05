@@ -633,22 +633,25 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
       if (
         datasourceInstance.type === 'prometheus' &&
         !showCorrelationEditorLinks &&
-        !exploreItemState.correlations?.length &&
-        queries.every(
-          (
-            target: DataQuery & {
-              exemplar?: boolean;
-              format?: string;
-              instant?: boolean;
-              range?: boolean;
-            }
-          ) =>
-            target.datasource?.type === datasourceInstance.type &&
-            target.instant !== true &&
-            target.range !== false &&
-            target.exemplar !== true &&
-            (!target.format || target.format === 'time_series')
-        )
+        exploreItemState.correlations?.length === 0 &&
+        queries
+          .filter((target) => !target.hide)
+          .every(
+            (
+              target: DataQuery & {
+                exemplar?: boolean;
+                format?: string;
+                instant?: boolean;
+                range?: boolean;
+              }
+            ) =>
+              (target.datasource?.type === datasourceInstance.type ||
+                (!target.datasource?.type && target.datasource?.uid === datasourceInstance.uid)) &&
+              target.instant !== true &&
+              target.range !== false &&
+              target.exemplar !== true &&
+              (!target.format || target.format === 'time_series')
+          )
       ) {
         transaction.request.panelPluginId = 'timeseries';
         transaction.request.preferredQueryResultFormat = getPreferredDashboardQueryFormat({

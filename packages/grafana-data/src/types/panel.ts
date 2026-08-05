@@ -86,7 +86,7 @@ export function limitPanelDataSeries<T extends Pick<PanelData, 'series' | 'compa
   seriesLimit?: number,
   showAllSeries = false
 ): T {
-  if (!seriesLimit || showAllSeries || getPanelDataSeriesCount(data) <= seriesLimit) {
+  if (!seriesLimit || seriesLimit < 0 || showAllSeries || getPanelDataSeriesCount(data) <= seriesLimit) {
     return data;
   }
 
