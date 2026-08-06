@@ -109,6 +109,32 @@ describe('VariableControls', () => {
     expect(variable.state.value).toEqual(['dbhost-prod-1']);
   });
 
+  it('preserves a selected query variable on Alt-click before allowing a regular click to edit it', async () => {
+    const user = userEvent.setup();
+    const variable = buildHostVariable();
+    const dashboard = buildScene([variable]);
+    dashboard.activate();
+
+    render(<VariableControls dashboard={dashboard} />);
+
+    const selectedValue = await screen.findByRole('button', { name: 'dbhost-prod-1' });
+    const onAltClick = jest.fn();
+    document.addEventListener('click', onAltClick, { once: true });
+
+    await user.keyboard('{Alt>}');
+    await user.click(selectedValue);
+    await user.keyboard('{/Alt}');
+
+    expect(onAltClick).toHaveBeenCalledWith(expect.objectContaining({ altKey: true, target: selectedValue }));
+    expect(selectedValue).toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toHaveValue('');
+    expect(variable.state.value).toEqual(['dbhost-prod-1']);
+
+    await user.click(selectedValue);
+
+    expect(screen.getByRole('combobox')).toHaveValue('dbhost-prod-1');
+  });
+
   it('prefills a selected multi-value query variable when its value is activated by keyboard', async () => {
     const user = userEvent.setup();
     const variable = buildHostVariable();
