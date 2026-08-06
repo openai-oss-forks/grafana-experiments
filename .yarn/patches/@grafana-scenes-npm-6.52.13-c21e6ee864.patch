@@ -310,7 +310,7 @@ index 5ea07ca..47ba840 100644
 +        ...innerProps,
 +        onPointerDown: (event) => {
 +          innerProps.onPointerDown?.(event);
-+          if (allowCustomValue && !isReadOnly && data.value !== "$__all") {
++          if (!event.altKey && allowCustomValue && !isReadOnly && data.value !== "$__all") {
 +            event.preventDefault();
 +            event.currentTarget.closest("[data-testid]")?.querySelector("input")?.focus();
 +            setEditedValue(data.value);
@@ -553,7 +553,7 @@ index c261ca847a48e14a5cc1b8240ade8c469a59f792..b6c1d7b07fa0107fed234b3e41f5e6db
 +        ...innerProps,
 +        onPointerDown: (event) => {
 +          innerProps.onPointerDown?.(event);
-+          if (allowCustomValue && !isReadOnly && data.value !== "$__all") {
++          if (!event.altKey && allowCustomValue && !isReadOnly && data.value !== "$__all") {
 +            event.preventDefault();
 +            event.currentTarget.closest("[data-testid]")?.querySelector("input")?.focus();
 +            setEditedValue(data.value);
