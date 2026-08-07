@@ -668,11 +668,22 @@ func (a *compactMultiBatchJSONLAccumulator) decode(payload []byte, query compact
 				if err != nil {
 					return response, err
 				}
-				values, err := compactMultiBatchJSONLRowValues(a.schemas[frameKey], row)
-				if err != nil {
-					return response, err
+				schema := a.schemas[frameKey]
+				if schema.Columns[1].Type == "string" {
+					histogramRows, err := compactMultiBatchJSONLHistogramRows(schema, row)
+					if err != nil {
+						return response, err
+					}
+					for _, histogramRow := range histogramRows {
+						frame.AppendRow(histogramRow...)
+					}
+				} else {
+					values, err := compactMultiBatchJSONLRowValues(schema, row)
+					if err != nil {
+						return response, err
+					}
+					frame.AppendRow(values...)
 				}
-				frame.AppendRow(values...)
 			}
 		case "status":
 			continue
@@ -771,8 +782,9 @@ func compactMultiBatchJSONLFrame(schema compactMultiBatchJSONLSchema, query comp
 	if len(schema.Columns) != 2 {
 		return nil, fmt.Errorf("prometheus multi-batch compact-v1 requires two-column time series frames, got %d columns", len(schema.Columns))
 	}
-	if schema.Columns[0].Type != "time" || schema.Columns[1].Type != "number" {
-		return nil, fmt.Errorf("prometheus multi-batch compact-v1 only supports time/number frames, got %s/%s", schema.Columns[0].Type, schema.Columns[1].Type)
+	if schema.Columns[0].Type != "time" ||
+		(schema.Columns[1].Type != "number" && schema.Columns[1].Type != "string") {
+		return nil, fmt.Errorf("prometheus multi-batch compact-v1 only supports time/number or time/string frames, got %s/%s", schema.Columns[0].Type, schema.Columns[1].Type)
 	}
 	name := schema.Name
 	if name == "" {
@@ -786,20 +798,33 @@ func compactMultiBatchJSONLFrame(schema compactMultiBatchJSONLSchema, query comp
 	if valueName == "" {
 		valueName = data.TimeSeriesValueFieldName
 	}
-	frame := data.NewFrame(name,
-		data.NewField(data.TimeSeriesTimeFieldName, nil, []time.Time{}),
-		data.NewField(valueName, data.Labels(schema.Columns[1].Labels), []float64{}),
-	)
-	frame.RefID = refID
-	frame.Meta = &data.FrameMeta{
-		Type:        data.FrameTypeTimeSeriesMulti,
-		TypeVersion: data.FrameTypeVersion{0, 1},
-		Custom:      map[string]any{"resultType": models.ResultTypeMatrix.String()},
+	labels := data.Labels(schema.Columns[1].Labels)
+	var frame *data.Frame
+	if schema.Columns[1].Type == "string" {
+		frame = data.NewFrame(name,
+			data.NewField("xMax", cloneLabels(labels), []time.Time{}),
+			data.NewField("yMin", cloneLabels(labels), []float64{}),
+			data.NewField("yMax", cloneLabels(labels), []float64{}),
+			data.NewField("count", cloneLabels(labels), []float64{}),
+			data.NewField("yLayout", cloneLabels(labels), []int8{}),
+		)
+		frame.Meta = &data.FrameMeta{Type: data.FrameType("heatmap-cells")}
+	} else {
+		frame = data.NewFrame(name,
+			data.NewField(data.TimeSeriesTimeFieldName, nil, []time.Time{}),
+			data.NewField(valueName, labels, []float64{}),
+		)
+		frame.Meta = &data.FrameMeta{
+			Type:        data.FrameTypeTimeSeriesMulti,
+			TypeVersion: data.FrameTypeVersion{0, 1},
+			Custom:      map[string]any{"resultType": models.ResultTypeMatrix.String()},
+		}
 	}
+	frame.RefID = refID
 	return frame, nil
 }
 
-func compactMultiBatchJSONLRowValues(schema compactMultiBatchJSONLSchema, row compactMultiBatchJSONLRow) ([]any, error) {
+func compactMultiBatchJSONLRawRowValues(schema compactMultiBatchJSONLSchema, row compactMultiBatchJSONLRow) ([]any, error) {
 	values := row.values
 	if len(row.named) > 0 {
 		values = make([]any, 0, len(schema.Columns))
@@ -810,6 +835,14 @@ func compactMultiBatchJSONLRowValues(schema compactMultiBatchJSONLSchema, row co
 	if len(values) != len(schema.Columns) {
 		return nil, fmt.Errorf("prometheus multi-batch data row has %d values for %d columns", len(values), len(schema.Columns))
 	}
+	return values, nil
+}
+
+func compactMultiBatchJSONLRowValues(schema compactMultiBatchJSONLSchema, row compactMultiBatchJSONLRow) ([]any, error) {
+	values, err := compactMultiBatchJSONLRawRowValues(schema, row)
+	if err != nil {
+		return nil, err
+	}
 	timestamp, err := compactMultiBatchTimeValue(values[0])
 	if err != nil {
 		return nil, err
@@ -819,6 +852,51 @@ func compactMultiBatchJSONLRowValues(schema compactMultiBatchJSONLSchema, row co
 		return nil, err
 	}
 	return []any{timestamp, value}, nil
+}
+
+func compactMultiBatchJSONLHistogramRows(schema compactMultiBatchJSONLSchema, row compactMultiBatchJSONLRow) ([][]any, error) {
+	values, err := compactMultiBatchJSONLRawRowValues(schema, row)
+	if err != nil {
+		return nil, err
+	}
+	timestamp, err := compactMultiBatchTimeValue(values[0])
+	if err != nil {
+		return nil, err
+	}
+	rawHistogram, ok := values[1].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid Prometheus multi-batch histogram value %T", values[1])
+	}
+	var histogram struct {
+		Buckets [][]any `json:"buckets"`
+	}
+	if err := json.Unmarshal([]byte(rawHistogram), &histogram); err != nil {
+		return nil, fmt.Errorf("invalid Prometheus multi-batch histogram JSON value: %w", err)
+	}
+	rows := make([][]any, 0, len(histogram.Buckets))
+	for _, bucket := range histogram.Buckets {
+		if len(bucket) != 4 {
+			return nil, fmt.Errorf("invalid Prometheus multi-batch histogram bucket with %d values", len(bucket))
+		}
+		layout, err := compactMultiBatchFloatValue(bucket[0])
+		if err != nil || math.Trunc(layout) != layout || layout < math.MinInt8 || layout > math.MaxInt8 {
+			return nil, fmt.Errorf("invalid Prometheus multi-batch histogram bucket layout %v", bucket[0])
+		}
+		minimum, err := compactMultiBatchFloatValue(bucket[1])
+		if err != nil {
+			return nil, err
+		}
+		maximum, err := compactMultiBatchFloatValue(bucket[2])
+		if err != nil {
+			return nil, err
+		}
+		count, err := compactMultiBatchFloatValue(bucket[3])
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, []any{timestamp, minimum, maximum, count, int8(layout)})
+	}
+	return rows, nil
 }
 
 func compactMultiBatchTimeValue(value any) (time.Time, error) {
@@ -1060,6 +1138,12 @@ func mergeFrameKey(frame *data.Frame) (string, bool) {
 }
 
 func mergeTimeSeriesFrame(base *data.Frame, delta *data.Frame) *data.Frame {
+	if len(base.Fields) == 5 && len(delta.Fields) == 5 &&
+		base.Meta != nil && delta.Meta != nil &&
+		base.Meta.Type == "heatmap-cells" && delta.Meta.Type == "heatmap-cells" {
+		return mergeHeatmapFrameRows(base, delta)
+	}
+
 	points := make(map[int64]float64)
 	for i := 0; i < base.Fields[0].Len(); i++ {
 		timestamp := base.Fields[0].At(i).(time.Time).UnixMilli()
@@ -1091,6 +1175,42 @@ func mergeTimeSeriesFrame(base *data.Frame, delta *data.Frame) *data.Frame {
 	return merged
 }
 
+func mergeHeatmapFrameRows(base *data.Frame, delta *data.Frame) *data.Frame {
+	rows := make(map[string][]any, base.Rows()+delta.Rows())
+	for _, frame := range []*data.Frame{base, delta} {
+		for row := 0; row < frame.Rows(); row++ {
+			values := frame.RowCopy(row)
+			key := fmt.Sprintf("%d/%v/%v/%v", values[0].(time.Time).UnixMilli(), values[1], values[2], values[4])
+			rows[key] = values
+		}
+	}
+	ordered := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		ordered = append(ordered, row)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if !left[0].(time.Time).Equal(right[0].(time.Time)) {
+			return left[0].(time.Time).Before(right[0].(time.Time))
+		}
+		if left[1].(float64) != right[1].(float64) {
+			return left[1].(float64) < right[1].(float64)
+		}
+		if left[2].(float64) != right[2].(float64) {
+			return left[2].(float64) < right[2].(float64)
+		}
+		return left[4].(int8) < right[4].(int8)
+	})
+	merged := delta.EmptyCopy()
+	merged.Name = base.Name
+	merged.RefID = base.RefID
+	merged.Meta = cloneFrameMeta(delta.Meta)
+	for _, row := range ordered {
+		merged.AppendRow(row...)
+	}
+	return merged
+}
+
 func cloneFrames(frames data.Frames) data.Frames {
 	cloned := make(data.Frames, 0, len(frames))
 	for _, frame := range frames {
@@ -1109,7 +1229,7 @@ func cloneFrame(frame *data.Frame) *data.Frame {
 		copyFrame.Meta = cloneFrameMeta(frame.Meta)
 		return copyFrame
 	}
-	if len(frame.Fields) >= 2 && frame.Fields[0].Type() == data.FieldTypeTime && frame.Fields[1].Type() == data.FieldTypeFloat64 {
+	if len(frame.Fields) == 2 && frame.Fields[0].Type() == data.FieldTypeTime && frame.Fields[1].Type() == data.FieldTypeFloat64 {
 		return mergeTimeSeriesFrame(frame.EmptyCopy(), frame)
 	}
 	copyFrame := frame.EmptyCopy()

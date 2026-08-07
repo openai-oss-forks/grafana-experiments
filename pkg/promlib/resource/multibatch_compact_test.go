@@ -944,6 +944,107 @@ func TestCompactMultiBatchJSONLDecoderKeepsSchemaAcrossBatches(t *testing.T) {
 	require.Equal(t, byte(multiBatchFinalFlag), body[6]&multiBatchFinalFlag)
 }
 
+func TestCompactMultiBatchJSONLDecoderPreservesNativeHistogramsAcrossBatches(t *testing.T) {
+	start := time.Date(2026, 6, 7, 19, 20, 0, 0, time.UTC)
+	query := compactMultiBatchQuery{
+		RefID: "A",
+		Expr:  "native_histogram",
+		Start: start,
+		End:   start.Add(time.Minute),
+		Step:  time.Minute,
+	}
+	decoder := newCompactMultiBatchPayloadDecoder(query, backend.StatusOK)
+	histogramData := func(timestamp time.Time, count string) string {
+		histogram, err := json.Marshal(map[string]any{
+			"count": count,
+			"sum":   "1",
+			"buckets": [][]any{
+				{0, "0", "1", count},
+			},
+		})
+		require.NoError(t, err)
+		event, err := json.Marshal(map[string]any{
+			"type":  "data",
+			"frame": "histogram:1",
+			"data":  []any{timestamp.Format(time.RFC3339), string(histogram)},
+		})
+		require.NoError(t, err)
+		return string(event)
+	}
+
+	first, err := decoder.decode([]byte(
+		`{"type":"schema","frame":"histogram:1","columns":[{"name":"time","type":"time"},{"name":"value","type":"string","labels":{"__name__":"native_histogram","job":"api"}}]}` + "\n" +
+			histogramData(start, "2") + "\n",
+	))
+	require.NoError(t, err)
+	require.Len(t, first.Frames, 1)
+	require.Equal(t, data.FrameType("heatmap-cells"), first.Frames[0].Meta.Type)
+	require.Len(t, first.Frames[0].Fields, 5)
+	require.Equal(t, []float64{2}, fieldValues[float64](first.Frames[0].Fields[3]))
+
+	final, err := decoder.decode([]byte(
+		histogramData(start, "4") + "\n" + histogramData(start.Add(time.Minute), "3") + "\n",
+	))
+	require.NoError(t, err)
+	merged := mergeDataResponses(backend.DataResponse{}, first)
+	merged = mergeDataResponses(merged, final)
+	require.Len(t, merged.Frames, 1)
+	require.Len(t, merged.Frames[0].Fields, 5)
+	require.Equal(t, []time.Time{start, start.Add(time.Minute)}, fieldValues[time.Time](merged.Frames[0].Fields[0]))
+	require.Equal(t, []float64{4, 3}, fieldValues[float64](merged.Frames[0].Fields[3]))
+
+	responseFrame, err := buildCompactDataResponseFrame(context.Background(), log.NewNullLogger(), query, merged, true)
+	require.NoError(t, err)
+	body := multiBatchFrameBytes(responseFrame)
+	require.Equal(t, byte(multiBatchPayloadTypeJSONL), body[5])
+	require.Contains(t, string(body[multiBatchFrameHeaderSize:]), "heatmap-cells")
+}
+
+func TestCompactMultiBatchJSONLDecoderPreservesMixedNumericAndNativeHistogramFrames(t *testing.T) {
+	start := time.Date(2026, 6, 7, 19, 20, 0, 0, time.UTC)
+	query := compactMultiBatchQuery{RefID: "A", Expr: "mixed_metric", Start: start, End: start.Add(time.Minute), Step: time.Minute}
+	decoder := newCompactMultiBatchPayloadDecoder(query, backend.StatusOK)
+	histogram, err := json.Marshal(map[string]any{"buckets": [][]any{{0, "0", "1", "2"}}})
+	require.NoError(t, err)
+	histogramEvent, err := json.Marshal(map[string]any{
+		"type":  "data",
+		"frame": "histogram:1",
+		"data":  []any{start.Format(time.RFC3339), string(histogram)},
+	})
+	require.NoError(t, err)
+
+	response, err := decoder.decode([]byte(
+		`{"type":"schema","frame":"numeric:1","columns":[{"name":"time","type":"time"},{"name":"value","type":"number","labels":{"__name__":"mixed_metric","job":"api"}}]}` + "\n" +
+			`{"type":"data","frame":"numeric:1","data":["2026-06-07T19:20:00Z","5"]}` + "\n" +
+			`{"type":"schema","frame":"histogram:1","columns":[{"name":"time","type":"time"},{"name":"value","type":"string","labels":{"__name__":"mixed_metric","job":"api"}}]}` + "\n" +
+			string(histogramEvent) + "\n",
+	))
+	require.NoError(t, err)
+	require.Len(t, response.Frames, 2)
+	require.Equal(t, []float64{5}, fieldValues[float64](response.Frames[0].Fields[1]))
+	require.Equal(t, data.FrameType("heatmap-cells"), response.Frames[1].Meta.Type)
+	require.Equal(t, []float64{2}, fieldValues[float64](response.Frames[1].Fields[3]))
+
+	merged := mergeDataResponses(backend.DataResponse{}, response)
+	require.Len(t, merged.Frames, 2)
+	require.Len(t, merged.Frames[1].Fields, 5)
+}
+
+func TestCompactMultiBatchPrometheusJSONPreservesNativeHistogramFrames(t *testing.T) {
+	start := time.Date(2026, 6, 7, 19, 20, 0, 0, time.UTC)
+	query := compactMultiBatchQuery{RefID: "A", Expr: "native_histogram", Start: start, End: start.Add(time.Minute), Step: time.Minute}
+	decoder := newCompactMultiBatchPayloadDecoder(query, backend.StatusOK)
+	payload := []byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"__name__":"native_histogram","job":"api"},"histograms":[[1780860000,{"count":"2","sum":"1","buckets":[[0,"0","1","2"]]}]]}]}}`)
+
+	response, err := decoder.decode(payload)
+	require.NoError(t, err)
+	merged := mergeDataResponses(backend.DataResponse{}, response)
+	require.Len(t, merged.Frames, 1)
+	require.Len(t, merged.Frames[0].Fields, 5)
+	require.Equal(t, data.FrameType("heatmap-cells"), merged.Frames[0].Meta.Type)
+	require.Equal(t, []float64{2}, fieldValues[float64](merged.Frames[0].Fields[3]))
+}
+
 func TestDecodeMultiBatchPayloadUsesZstdFrameContentSize(t *testing.T) {
 	encoder, err := zstd.NewWriter(nil, zstd.WithSingleSegment(true))
 	require.NoError(t, err)
