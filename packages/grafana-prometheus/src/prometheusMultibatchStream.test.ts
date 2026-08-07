@@ -863,6 +863,102 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[0].data[0].fields[3].values).toEqual([2, 3]);
   });
 
+  it('decodes native histogram JSONL frames into progressive heatmap-cell frames', async () => {
+    const target: PromQuery = { expr: 'native_histogram', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const histogramSchema = JSON.stringify({
+      type: 'schema',
+      frame: 'histogram:1',
+      columns: [
+        { name: 'time', type: 'time' },
+        { name: 'value', type: 'string', labels: { __name__: 'native_histogram', job: 'api' } },
+      ],
+    });
+    const partialJsonl = [
+      histogramSchema,
+      jsonlData('histogram:1', '60', JSON.stringify({ buckets: [[0, '0', '1', '2']] })),
+      jsonlStatus('histogram:1', true),
+    ].join('\n');
+    const finalJsonl = [
+      jsonlData('histogram:1', '60', JSON.stringify({ buckets: [[0, '0', '1', '4']] })),
+      jsonlData('histogram:1', '120', JSON.stringify({ buckets: [[0, '1', '2', '3']] })),
+      jsonlStatus('histogram:1', false),
+    ].join('\n');
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(partialJsonl, 0, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL),
+          frame(finalJsonl, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses.map((response) => response.state)).toEqual([LoadingState.Streaming, LoadingState.Done]);
+    expect(responses[0].data[0].meta?.type).toBe(DataFrameType.HeatmapCells);
+    expect(responses[0].data[0].fields[3].values).toEqual([2]);
+    expect(responses[1].data[0].fields[0].values).toEqual([60000, 120000]);
+    expect(responses[1].data[0].fields[3].values).toEqual([4, 3]);
+  });
+
+  it('preserves numeric and native histogram series in the same JSONL response', async () => {
+    const target: PromQuery = { expr: 'mixed_metric', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const histogramSchema = JSON.stringify({
+      type: 'schema',
+      frame: 'histogram:1',
+      columns: [
+        { name: 'time', type: 'time' },
+        { name: 'value', type: 'string', labels: { __name__: 'mixed_metric', job: 'api' } },
+      ],
+    });
+    const jsonl = [
+      jsonlSchema('numeric:1'),
+      jsonlData('numeric:1', '60', '5'),
+      histogramSchema,
+      jsonlData('histogram:1', '60', JSON.stringify({ buckets: [[0, '0', '1', '2']] })),
+    ].join('\n');
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(jsonl, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses[0].data).toHaveLength(2);
+    expect(responses[0].data[0].fields[1].values).toEqual([5]);
+    expect(responses[0].data[1].meta?.type).toBe(DataFrameType.HeatmapCells);
+    expect(responses[0].data[1].fields[3].values).toEqual([2]);
+  });
+
   it('decodes non-OK multibatch compact responses instead of reading binary as text', async () => {
     const target: PromQuery = { expr: 'bad promql', refId: 'A' };
     const request = requestForTarget(target);
