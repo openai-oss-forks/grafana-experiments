@@ -6,11 +6,13 @@ import { mergeMap, throttleTime } from 'rxjs/operators';
 
 import {
   AbsoluteTimeRange,
+  CoreApp,
   DataFrame,
   DataQueryErrorType,
   DataQueryResponse,
   DataSourceApi,
   dateTimeForTimeZone,
+  getPanelDataSeriesCount,
   hasQueryExportSupport,
   hasQueryImportSupport,
   LoadingState,
@@ -50,6 +52,7 @@ import {
 import { createAsyncThunk, StoreState, ThunkDispatch, ThunkResult } from 'app/types/store';
 
 import { createErrorNotification } from '../../../core/copy/appNotification';
+import { getPreferredDashboardQueryFormat } from '../../query/state/compactQueryPolicy';
 import { runRequest } from '../../query/state/runRequest';
 import { decorateData, decorateWithLogsResult } from '../utils/decorators';
 import {
@@ -627,6 +630,37 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
         scopedVars
       );
 
+      if (
+        datasourceInstance.type === 'prometheus' &&
+        !showCorrelationEditorLinks &&
+        exploreItemState.correlations?.length === 0 &&
+        queries
+          .filter((target) => !target.hide && Boolean(filterQuery(datasourceInstance, target)))
+          .every(
+            (
+              target: DataQuery & {
+                exemplar?: boolean;
+                format?: string;
+                instant?: boolean;
+                range?: boolean;
+              }
+            ) =>
+              (target.datasource?.type === datasourceInstance.type ||
+                (!target.datasource?.type && target.datasource?.uid === datasourceInstance.uid)) &&
+              target.instant !== true &&
+              target.range !== false &&
+              target.exemplar !== true &&
+              (!target.format || target.format === 'time_series')
+          )
+      ) {
+        transaction.request.panelPluginId = 'timeseries';
+        transaction.request.preferredQueryResultFormat = getPreferredDashboardQueryFormat({
+          app: CoreApp.Explore,
+          panelPluginId: 'timeseries',
+          isPublicDashboard: Boolean(config.publicDashboardAccessToken),
+        });
+      }
+
       dispatch(changeLoadingStateAction({ exploreId, loadingState: LoadingState.Loading }));
 
       newQuerySource = combineLatest([
@@ -657,12 +691,15 @@ export const runQueries = createAsyncThunk<void, RunQueriesOptions>(
 
           // Keep scanning for results if this was the last scanning transaction
           if (exploreState!.scanning) {
-            console.log(data.series);
-            if (data.state === LoadingState.Done && data.series.length === 0) {
+            if (data.state === LoadingState.Done && getPanelDataSeriesCount(data) === 0) {
               const range = getShiftedTimeRange(-1, exploreState!.range);
               dispatch(updateTime({ exploreId, absoluteRange: range }));
               dispatch(runQueries({ exploreId }));
-            } else if (data.series[0]?.length > 0 || data.state === LoadingState.Done) {
+            } else if (
+              data.series[0]?.length > 0 ||
+              Boolean(data.compactSeries?.series.length) ||
+              data.state === LoadingState.Done
+            ) {
               // We can stop scanning if we have a result
               dispatch(scanStopAction({ exploreId }));
             }

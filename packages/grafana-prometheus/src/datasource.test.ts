@@ -19,7 +19,7 @@ import {
   TimeRange,
   VariableHide,
 } from '@grafana/data';
-import { config, getBackendSrv, setBackendSrv, TemplateSrv } from '@grafana/runtime';
+import { config, DataSourceWithBackend, getBackendSrv, setBackendSrv, TemplateSrv } from '@grafana/runtime';
 
 import {
   combineCompactTimeSeries,
@@ -126,9 +126,10 @@ describe('PrometheusDatasource', () => {
   });
 
   describe('Query', () => {
-    it('requests compact responses only for supported dashboard range queries', async () => {
-      const compactRequest = (targets: PromQuery[], panelPluginId = 'timeseries') =>
+    it('requests compact responses only for supported dashboard and Explore range queries', async () => {
+      const compactRequest = (targets: PromQuery[], panelPluginId = 'timeseries', app = CoreApp.Dashboard) =>
         createDataRequest(targets, {
+          app,
           panelPluginId,
           preferredQueryResultFormat: 'compact-v1',
         });
@@ -138,6 +139,12 @@ describe('PrometheusDatasource', () => {
 
       fetchMock.mockClear();
       await lastValueFrom(ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true }], 'barchart')));
+      expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
+
+      fetchMock.mockClear();
+      await lastValueFrom(
+        ds.query(compactRequest([{ expr: 'up', refId: 'A', range: true }], 'timeseries', CoreApp.Explore))
+      );
       expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBe('compact-v1');
 
       fetchMock.mockClear();
@@ -174,6 +181,30 @@ describe('PrometheusDatasource', () => {
         )
       );
       expect(fetchMock.mock.calls[0][0].headers['X-Grafana-Query-Format']).toBeUndefined();
+    });
+
+    it('preserves compact Explore results without eagerly materializing frames', async () => {
+      const compactSeries = compactResponseFixture('A', 16);
+      const backendQuery = jest
+        .spyOn(DataSourceWithBackend.prototype, 'query')
+        .mockReturnValue(of({ compactSeries, data: [] }));
+
+      try {
+        const response = await lastValueFrom(
+          ds.query(
+            createDataRequest([{ expr: 'up', refId: 'A', range: true }], {
+              app: CoreApp.Explore,
+              panelPluginId: 'timeseries',
+              preferredQueryResultFormat: 'compact-v1',
+            })
+          )
+        );
+
+        expect(response.compactSeries).toBe(compactSeries);
+        expect(response.data).toEqual([]);
+      } finally {
+        backendQuery.mockRestore();
+      }
     });
 
     it('aligns Prometheus range queries to UTC regardless of dashboard timezone', () => {

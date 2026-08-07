@@ -9,6 +9,7 @@ import {
   toDataFrame,
   DataSourceApi,
   DataSourceInstanceSettings,
+  CompactTimeSeriesData,
 } from '@grafana/data';
 import { CorrelationData } from '@grafana/runtime';
 import { DataSourceJsonData, DataQuery } from '@grafana/schema';
@@ -189,6 +190,24 @@ describe('decorateWithGraphLogsTraceTableAndFlameGraph', () => {
     });
   });
 
+  it('preserves ordinary table frames and compact graph data in a mixed response', () => {
+    const { table } = getTestContext();
+    const compactSeries = { series: [{ refId: 'B' }] } as unknown as CompactTimeSeriesData;
+    const panelData: PanelData = {
+      series: [table],
+      compactSeries,
+      state: LoadingState.Done,
+      timeRange: getDefaultTimeRange(),
+    };
+
+    const result = decorateWithFrameTypeMetadata(panelData);
+
+    expect(result.tableFrames).toEqual([table]);
+    expect(result.graphFrames).toEqual([]);
+    expect(result.compactSeries).toBe(compactSeries);
+    expect(decorateWithGraphResult(result).graphResult).toEqual([]);
+  });
+
   it('should return frames even if there is an error', () => {
     const { timeSeries, logs, table } = getTestContext();
     const series: DataFrame[] = [timeSeries, logs, table];
@@ -231,6 +250,17 @@ describe('decorateWithGraphResult', () => {
   it('returns null if it gets empty array', () => {
     const panelData = createExplorePanelData({ graphFrames: [] });
     expect(decorateWithGraphResult(panelData).graphResult).toBeNull();
+  });
+
+  it('recognizes compact time series without expanding them into data frames', () => {
+    const compactSeries = { series: [{}] } as unknown as CompactTimeSeriesData;
+    const panelData = createExplorePanelData({ compactSeries, graphFrames: [], series: [] });
+
+    const result = decorateWithGraphResult(panelData);
+
+    expect(result.graphResult).toEqual([]);
+    expect(result.series).toEqual([]);
+    expect(result.compactSeries).toBe(compactSeries);
   });
 
   it('returns data if panelData has error', () => {

@@ -3,6 +3,7 @@ import { Observable, Subscriber, Subscription } from 'rxjs';
 import {
   COMPACT_TIME_SERIES_FORMAT,
   CompactTimeSeriesData,
+  CompactTimeSeriesSeriesCollection,
   CoreApp,
   DataFrame,
   DataQueryRequest,
@@ -210,7 +211,7 @@ describe('runRequest', () => {
   });
 
   runRequestScenario('When JSON replaces a compact response for the same query', (ctx) => {
-    const compactSeries = compactData(new ArrayBuffer(8));
+    const compactSeries = compactData();
 
     ctx.setup(() => {
       ctx.start();
@@ -222,6 +223,112 @@ describe('runRequest', () => {
       expect(ctx.results[0].compactSeries).toBe(compactSeries);
       expect(ctx.results[1].compactSeries).toBeUndefined();
       expect(ctx.results[1].series).toEqual([{ name: 'JSON' }]);
+    });
+  });
+
+  runRequestScenario('When ordinary and compact query responses arrive together', (ctx) => {
+    const compactSeries = compactData();
+
+    ctx.setup(() => {
+      ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
+      ctx.start();
+      ctx.emitPacket({ data: [], compactSeries, key: 'A' });
+      ctx.emitPacket({ data: [{ name: 'ordinary-series', refId: 'B' } as DataFrame], key: 'B' });
+    });
+
+    it('keeps compact-only responses on the lazy compact path', () => {
+      expect(ctx.results[0].compactSeries).toBe(compactSeries);
+      expect(ctx.results[0].series).toEqual([]);
+    });
+
+    it('normalizes mixed formats into ordinary frames so the renderer retains both results', () => {
+      expect(ctx.results[1].compactSeries).toBeUndefined();
+      expect(ctx.results[1].series).toHaveLength(2);
+      expect(ctx.results[1].series[0]).toMatchObject({ name: 'ordinary-series', refId: 'B' });
+      expect(ctx.results[1].series[1]).toMatchObject({ refId: 'A', length: 1 });
+    });
+  });
+
+  for (const keyed of [true, false]) {
+    runRequestScenario(`When compact responses arrive in separate ${keyed ? 'keyed' : 'unkeyed'} packets`, (ctx) => {
+      ctx.setup(() => {
+        ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
+        ctx.start();
+        for (const refId of ['A', 'B']) {
+          ctx.emitPacket({ data: [], compactSeries: compactData(refId), ...(keyed ? { key: refId } : {}) });
+        }
+      });
+
+      it('retains both query results without expanding them into ordinary frames', () => {
+        expect(ctx.results[1].series).toEqual([]);
+        expect(ctx.results[1].compactSeries?.series.map((series) => series.refId)).toEqual(['A', 'B']);
+      });
+    });
+  }
+
+  runRequestScenario('When an unkeyed compact response uses lazy series columns', (ctx) => {
+    const firstCompactSeries = compactData('A');
+    const secondCompactSeries = compactData('B');
+    const records = Array.from(secondCompactSeries.series);
+    const getRefId = jest.fn((index: number) => records[index].refId);
+    secondCompactSeries.series = {
+      length: records.length,
+      getRefId,
+      [Symbol.iterator]: () => records[Symbol.iterator](),
+    } as unknown as CompactTimeSeriesSeriesCollection;
+
+    ctx.setup(() => {
+      ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
+      ctx.start();
+      ctx.emitPacket({ data: [], compactSeries: firstCompactSeries });
+      ctx.emitPacket({ data: [], compactSeries: secondCompactSeries });
+    });
+
+    it('uses the column-backed refId without expanding the lazy series record', () => {
+      expect(getRefId).toHaveBeenCalledWith(0);
+      expect(ctx.results[1].compactSeries?.series.map((series) => series.refId)).toEqual(['A', 'B']);
+    });
+  });
+
+  runRequestScenario('When a compact query response replaces an earlier compact packet', (ctx) => {
+    const firstCompactSeries = compactData('A');
+    const secondCompactSeries = compactData('B');
+    const replacementCompactSeries = compactData('A');
+    replacementCompactSeries.series = [
+      { ...Array.from(replacementCompactSeries.series)[0], valueName: 'updated-value' },
+    ];
+
+    ctx.setup(() => {
+      ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }];
+      ctx.start();
+      ctx.emitPacket({ data: [], compactSeries: firstCompactSeries, key: 'A' });
+      ctx.emitPacket({ data: [], compactSeries: secondCompactSeries, key: 'B' });
+      ctx.emitPacket({ data: [], compactSeries: replacementCompactSeries, key: 'A' });
+    });
+
+    it('retains the other compact query and uses only the latest packet for its key', () => {
+      expect(ctx.results[2].compactSeries?.series.map((series) => [series.refId, series.valueName])).toEqual([
+        ['A', 'updated-value'],
+        ['B', 'Value'],
+      ]);
+    });
+  });
+
+  runRequestScenario('When full query data arrives between separate compact responses', (ctx) => {
+    const firstCompactSeries = compactData('A');
+    const secondCompactSeries = compactData('C');
+
+    ctx.setup(() => {
+      ctx.request.targets = [{ refId: 'A' }, { refId: 'B' }, { refId: 'C' }];
+      ctx.start();
+      ctx.emitPacket({ data: [], compactSeries: firstCompactSeries, key: 'A' });
+      ctx.emitPacket({ data: [{ name: 'ordinary-series', refId: 'B' } as DataFrame], key: 'B' });
+      ctx.emitPacket({ data: [], compactSeries: secondCompactSeries, key: 'C' });
+    });
+
+    it('keeps every compact and ordinary query result in the mixed response', () => {
+      expect(ctx.results[2].compactSeries).toBeUndefined();
+      expect(ctx.results[2].series.map((series) => series.refId)).toEqual(['B', 'A', 'C']);
     });
   });
 
@@ -431,7 +538,8 @@ describe('runRequest', () => {
   });
 });
 
-function compactData(buffer: ArrayBuffer): CompactTimeSeriesData {
+function compactData(refId = 'A'): CompactTimeSeriesData {
+  const buffer = new ArrayBuffer(Float64Array.BYTES_PER_ELEMENT);
   return {
     kind: 'compact-response-view',
     format: COMPACT_TIME_SERIES_FORMAT,
@@ -452,7 +560,7 @@ function compactData(buffer: ArrayBuffer): CompactTimeSeriesData {
     axes: [{ start: 0, step: 1, count: 1 }],
     series: [
       {
-        refId: 'A',
+        refId,
         valueName: 'Value',
         axisId: 0,
         labelRecordsOffset: 0,

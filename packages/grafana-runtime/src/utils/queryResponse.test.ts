@@ -521,6 +521,9 @@ describe('Query Response parser', () => {
 
     expect([...columnSeries].map((item) => item.refId)).toEqual(['B', 'A']);
     expect(columnSeries.resolveColumnIndex(0)).toBe(1);
+    expect(columnSeries.take(1).get(0).valueName).toBe('B-series');
+    expect(columnSeries.take(1).columns).toBe(columnSeries.columns);
+    expect(columnSeries.take(2)).toBe(columnSeries);
     expect(columnSeries.filter((item) => item.refId === 'A').get(0).valueName).toBe('A-series');
     expect(columnSeries.columns.presentCounts).toEqual(new Uint32Array([1, 1]));
   });

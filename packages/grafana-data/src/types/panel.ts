@@ -5,7 +5,7 @@ import { Registry } from '../utils/Registry';
 import { OptionsEditorItem } from './OptionsUIRegistryBuilder';
 import { ScopedVars } from './ScopedVars';
 import { AlertStateInfo } from './alerts';
-import { CompactTimeSeriesData } from './compactTimeSeries';
+import { CompactTimeSeriesData, isCompactTimeSeriesSeriesCollection } from './compactTimeSeries';
 import { PanelModel } from './dashboard';
 import { LoadingState } from './data';
 import { DataFrame } from './dataFrame';
@@ -73,6 +73,40 @@ export interface PanelData {
 
   /** traceIds collected during the processing of the requests */
   traceIds?: string[];
+}
+
+/** Returns the number of renderable series without expanding compact data. @internal */
+export function getPanelDataSeriesCount(data?: Pick<PanelData, 'series' | 'compactSeries'>): number {
+  return (data?.series.length ?? 0) + (data?.compactSeries?.series.length ?? 0);
+}
+
+/** Applies the same series cap to ordinary frames and compact-native visualizations. @internal */
+export function limitPanelDataSeries<T extends Pick<PanelData, 'series' | 'compactSeries'>>(
+  data: T,
+  seriesLimit?: number,
+  showAllSeries = false
+): T {
+  if (!seriesLimit || seriesLimit < 0 || showAllSeries || getPanelDataSeriesCount(data) <= seriesLimit) {
+    return data;
+  }
+
+  const series = data.series.slice(0, seriesLimit);
+  if (!data.compactSeries) {
+    return { ...data, series };
+  }
+
+  const compactSeries = data.compactSeries;
+  const remainingSeries = seriesLimit - series.length;
+  return {
+    ...data,
+    series,
+    compactSeries: {
+      ...compactSeries,
+      series: isCompactTimeSeriesSeriesCollection(compactSeries.series)
+        ? compactSeries.series.take(remainingSeries)
+        : compactSeries.series.slice(0, remainingSeries),
+    },
+  };
 }
 
 export interface PanelProps<T = any> {

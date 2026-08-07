@@ -269,7 +269,7 @@ export function getPreferredDashboardQueryFormat({
   panelOptions,
 }: CompactDashboardQueryContext): DataQueryRequest['preferredQueryResultFormat'] {
   if (
-    app !== CoreApp.Dashboard ||
+    (app !== CoreApp.Dashboard && app !== CoreApp.Explore) ||
     isInspecting ||
     isPublicDashboard ||
     hasTimeComparison ||

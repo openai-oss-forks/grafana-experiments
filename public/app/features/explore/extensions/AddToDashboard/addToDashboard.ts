@@ -1,4 +1,4 @@
-import { DataFrame, ExplorePanelsState } from '@grafana/data';
+import { DataFrame, ExplorePanelsState, isCompactTimeSeriesSeriesCollection } from '@grafana/data';
 import { t } from '@grafana/i18n';
 import { DataQuery, DataSourceRef, Panel } from '@grafana/schema';
 import { DataTransformerConfig } from '@grafana/schema/dist/esm/raw/dashboard/x/Dashboard_types.gen';
@@ -76,13 +76,29 @@ export function buildDashboardPanelFromExploreState(options: ExploreToDashboardP
 const isVisible = (query: DataQuery) => !query.hide;
 const hasRefId = (refId: DataFrame['refId']) => (frame: DataFrame) => frame.refId === refId;
 
+function hasCompactRefId(compactSeries: ExplorePanelData['compactSeries'], refId: string): boolean {
+  const series = compactSeries?.series;
+  if (!series) {
+    return false;
+  }
+  if (!isCompactTimeSeriesSeriesCollection(series)) {
+    return series.some((item) => item.refId === refId);
+  }
+  for (let index = 0; index < series.length; index++) {
+    if (series.getRefId(index) === refId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getPanelType(queries: DataQuery[], queryResponse: ExplorePanelData, panelState?: ExplorePanelsState) {
   for (const { refId } of queries.filter(isVisible)) {
     const hasQueryRefId = hasRefId(refId);
     if (queryResponse.flameGraphFrames.some(hasQueryRefId)) {
       return 'flamegraph';
     }
-    if (queryResponse.graphFrames.some(hasQueryRefId)) {
+    if (queryResponse.graphFrames.some(hasQueryRefId) || hasCompactRefId(queryResponse.compactSeries, refId)) {
       return 'timeseries';
     }
     if (queryResponse.logsFrames.some(hasQueryRefId)) {

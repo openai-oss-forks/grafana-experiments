@@ -769,7 +769,7 @@ export class PrometheusDatasource
 
   protected shouldRequestCompactQueryResponse(request: DataQueryRequest<PromQuery>, queries: PromQuery[]): boolean {
     return (
-      request.app === CoreApp.Dashboard &&
+      (request.app === CoreApp.Dashboard || request.app === CoreApp.Explore) &&
       (request.panelPluginId === 'timeseries' || request.panelPluginId === 'barchart') &&
       !config.publicDashboardAccessToken &&
       queries.every((query) => query.datasource?.type === this.type && isCompactTimeSeriesRangeQuery(query))

@@ -1119,6 +1119,18 @@ class CompactV1SeriesCollection implements CompactSeriesCollection {
     return false;
   }
 
+  take(count: number): CompactV1SeriesCollection {
+    const selectedLength = Math.max(0, Math.min(Math.trunc(count), this.length));
+    if (selectedLength === this.length) {
+      return this;
+    }
+
+    const selected = this.selection
+      ? this.selection.subarray(0, selectedLength)
+      : Uint32Array.from({ length: selectedLength }, (_, index) => index);
+    return new CompactV1SeriesCollection(this.columns, this.strings, this.metas, selected);
+  }
+
   filter(callback: (series: CompactTimeSeriesSeries, index: number) => boolean): CompactV1SeriesCollection {
     const selected: number[] = [];
     for (let index = 0; index < this.length; index++) {
