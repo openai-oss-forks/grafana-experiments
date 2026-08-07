@@ -53,7 +53,9 @@ import { PromVisualQuery, PromVisualQueryBinary } from './types';
 export function buildVisualQueryFromString(expr: string): Omit<Context, 'replacements'> {
   expr = replaceBuiltInVariable(expr);
   const { replacedExpr, replacedVariables } = replaceVariables(expr);
-  const tree = parser.parse(replacedExpr);
+  // Preserve parser offsets so handlers still recover the original Chronosphere function name.
+  const parserExpr = replacedExpr.replace(/\bsum_per_second\b(?=\s*\()/g, 'last_over_time');
+  const tree = parser.parse(parserExpr);
   const node = tree.topNode;
 
   // This will be modified in the handlers.
@@ -217,7 +219,7 @@ function getLabel(
   };
 }
 
-const rangeFunctions = ['changes', 'rate', 'irate', 'increase', 'delta'];
+const rangeFunctions = ['changes', 'rate', 'irate', 'increase', 'delta', 'sum_per_second'];
 
 /**
  * Handle function call which is usually and identifier and its body > arguments.

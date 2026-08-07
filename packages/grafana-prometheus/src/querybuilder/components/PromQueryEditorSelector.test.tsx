@@ -185,6 +185,31 @@ describe('PromQueryEditorSelector', () => {
     expect(screen.getByText('Rate')).toBeInTheDocument();
     expect(screen.getByText('$__interval')).toBeInTheDocument();
   });
+
+  it('switches Chronosphere sum_per_second queries into builder without a parsing warning', async () => {
+    const expr =
+      'sum by (plan) (sum_per_second({"api.codex.create_response.token_usage",cluster=~".*",env=~"prod",model=~".*",track=~".*"}[600000ms]))';
+    const { onChange, rerender } = renderWithProps({
+      refId: 'A',
+      expr,
+      editorMode: QueryEditorMode.Code,
+    });
+
+    await switchToMode(QueryEditorMode.Builder);
+
+    expect(screen.queryByText('Parsing error: Switch to the builder mode?')).not.toBeInTheDocument();
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ refId: 'A', expr, editorMode: QueryEditorMode.Builder })
+    );
+
+    rerender(
+      <PromQueryEditorSelector {...defaultProps} query={{ refId: 'A', expr, editorMode: QueryEditorMode.Builder }} />
+    );
+
+    expect(await screen.findByText('Sum per second')).toBeInTheDocument();
+    expect(screen.getByText('600000ms')).toBeInTheDocument();
+    expect(screen.getAllByText('plan')).not.toHaveLength(0);
+  });
 });
 
 function renderWithMode(mode: QueryEditorMode) {

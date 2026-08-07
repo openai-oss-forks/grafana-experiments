@@ -133,6 +133,7 @@ export enum PromOperationId {
   Stdvar = 'stdvar',
   Sum = 'sum',
   SumOverTime = 'sum_over_time',
+  SumPerSecond = 'sum_per_second',
   Tan = 'tan',
   Tanh = 'tanh',
   Time = 'time',
