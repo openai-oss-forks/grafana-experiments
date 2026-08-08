@@ -535,8 +535,26 @@ class JsonlMultiBatchAccumulator {
           for (const row of rows) {
             const frame = this.batchFrame(batchFrames, batchOrder, frameKey, query);
             const values = jsonlRowValues(schema, row);
-            frame.fields[0].values.push(parseTimeValue(values[0]));
-            frame.fields[1].values.push(parseNumberValue(values[1]));
+
+            if (schema.columns[1].type === 'string') {
+              const timestamp = values[0];
+              if (typeof timestamp !== 'number' && typeof timestamp !== 'string') {
+                throw new Error(`Invalid Prometheus multi-batch time value: ${typeof timestamp}`);
+              }
+
+              const histogram = parseHistogramValue(values[1]);
+              const histogramFrame = nativeHistogramFrame(
+                [[timestamp, histogram]],
+                cloneLabels(schema.columns[1].labels ?? {}),
+                query
+              );
+              for (let fieldIndex = 0; fieldIndex < frame.fields.length; fieldIndex++) {
+                frame.fields[fieldIndex].values.push(...histogramFrame.fields[fieldIndex].values);
+              }
+            } else {
+              frame.fields[0].values.push(parseTimeValue(values[0]));
+              frame.fields[1].values.push(parseNumberValue(values[1]));
+            }
             frame.length = frame.fields[0].values.length;
           }
           break;
@@ -821,13 +839,20 @@ function jsonlFrame(schema: JsonlSchema, query: MultiBatchQueryContext): DataFra
     );
   }
 
-  if (schema.columns[0].type !== 'time' || schema.columns[1].type !== 'number') {
+  if (
+    schema.columns[0].type !== 'time' ||
+    (schema.columns[1].type !== 'number' && schema.columns[1].type !== 'string')
+  ) {
     throw new Error(
-      `Prometheus multi-batch JSONL only supports time/number frames, got ${schema.columns[0].type}/${schema.columns[1].type}`
+      `Prometheus multi-batch JSONL only supports time/number or time/string frames, got ${schema.columns[0].type}/${schema.columns[1].type}`
     );
   }
 
   const labels = cloneLabels(schema.columns[1].labels ?? {});
+  if (schema.columns[1].type === 'string') {
+    return nativeHistogramFrame([], labels, query);
+  }
+
   const displayNameFromDS = legendDisplayName(query.legendFormat, labels);
   return timeSeriesFrame({
     labels,
@@ -943,6 +968,25 @@ function parseNumberValue(value: unknown): number {
     throw new Error(`Invalid Prometheus multi-batch numeric value: ${value}`);
   }
   return parsed;
+}
+
+function parseHistogramValue(value: unknown): PrometheusHistogramSample[1] {
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid Prometheus multi-batch histogram value: ${typeof value}`);
+  }
+
+  let histogram: unknown;
+  try {
+    histogram = JSON.parse(value);
+  } catch {
+    throw new Error('Invalid Prometheus multi-batch histogram JSON value');
+  }
+
+  if (histogram === null || typeof histogram !== 'object' || Array.isArray(histogram)) {
+    throw new Error('Invalid Prometheus multi-batch histogram JSON value');
+  }
+
+  return histogram;
 }
 
 function mergeFrameKey(frame: DataFrame): string {
