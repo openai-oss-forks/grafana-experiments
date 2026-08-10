@@ -213,6 +213,53 @@ describe('panelMenuBehavior', () => {
       expect(onClick).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps AgentWolf Explore available while editing without enabling other extensions', async () => {
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [
+          {
+            id: 'agentwolf',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: '[BETA] AgentWolf Explore',
+            description: 'Open the current panel in AgentWolf Explore',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+          {
+            id: 'other',
+            pluginId: 'grafana-basic-app',
+            type: PluginExtensionTypes.link,
+            title: 'Other extension',
+            description: 'Not available while editing',
+          },
+        ],
+      });
+      const { scene, menu, panel } = await buildTestScene({});
+      scene.setState({ isEditing: true });
+      panel.setState({
+        options: { graphMode: 'area' },
+        fieldConfig: { defaults: { unit: 'percent', min: 0, max: 100 }, overrides: [] },
+      });
+      panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+      mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+      mocks.getExploreUrl.mockReturnValue(Promise.resolve('/explore'));
+
+      menu.activate();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      expect(menu.state.items?.map((item) => item.text)).toContain('[BETA] AgentWolf Explore');
+      expect(menu.state.items?.map((item) => item.text)).not.toContain('Extensions');
+      expect(getPluginExtensionsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            panel: {
+              options: { graphMode: 'area' },
+              fieldConfig: { defaults: { unit: 'percent', min: 0, max: 100 }, overrides: [] },
+            },
+          }),
+        })
+      );
+    });
+
     it('should append opted-in extensions after existing extension menus without changing their grouping', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
@@ -292,7 +339,7 @@ describe('panelMenuBehavior', () => {
       ]);
     });
 
-    it('should not show opted-in top-level extensions while the dashboard is being edited', async () => {
+    it('should keep AgentWolf Explore available while the dashboard is being edited', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
@@ -316,7 +363,7 @@ describe('panelMenuBehavior', () => {
       menu.activate();
       await new Promise((resolve) => setTimeout(resolve, 1));
 
-      expect(menu.state.items?.find((item) => item.text === 'AgentWolf Explore')).toBeUndefined();
+      expect(menu.state.items?.find((item) => item.text === 'AgentWolf Explore')).toBeDefined();
       expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
     });
 
@@ -506,6 +553,10 @@ describe('panelMenuBehavior', () => {
           uid: 'dash-1',
           title: 'My dashboard',
         },
+        panel: {
+          options: panel.state.options,
+          fieldConfig: panel.state.fieldConfig ?? { defaults: {}, overrides: [] },
+        },
         scopedVars: {
           a: {
             text: 'a',
@@ -562,6 +613,10 @@ describe('panelMenuBehavior', () => {
           tags: ['database', 'panel'],
           uid: 'dash-1',
           title: 'My dashboard',
+        },
+        panel: {
+          options: panel.state.options,
+          fieldConfig: panel.state.fieldConfig ?? { defaults: {}, overrides: [] },
         },
         scopedVars: {
           a: {

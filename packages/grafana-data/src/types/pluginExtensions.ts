@@ -4,6 +4,7 @@ import { DataQuery, DataSourceJsonData } from '@grafana/schema';
 
 import { ScopedVars } from './ScopedVars';
 import { DataSourcePluginMeta, DataSourceSettings } from './datasource';
+import { FieldConfigSource } from './fieldOverrides';
 import { IconName } from './icon';
 import { PanelData } from './panel';
 import { AbsoluteTimeRange, RawTimeRange, TimeZone } from './time';
@@ -258,6 +259,10 @@ export type PluginExtensionPanelContext = {
   timeZone: TimeZone;
   dashboard: Dashboard;
   targets: DataQuery[];
+  panel?: {
+    options: object;
+    fieldConfig: FieldConfigSource;
+  };
   scopedVars?: ScopedVars;
   data?: PanelData;
 };
