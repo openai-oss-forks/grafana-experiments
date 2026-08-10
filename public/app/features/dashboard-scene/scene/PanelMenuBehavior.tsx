@@ -351,7 +351,23 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
       }
 
       if (topLevelLinks.length > 0) {
-        items.push(...createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined }))));
+        const topLevelItems = createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined })));
+        const agentWolfExploreIndex = topLevelLinks.findIndex(
+          (link) => link.pluginId === 'openai-internal-app' && link.title.endsWith('AgentWolf Explore')
+        );
+
+        if (agentWolfExploreIndex !== -1) {
+          const [agentWolfExploreItem] = topLevelItems.splice(agentWolfExploreIndex, 1);
+
+          if (exploreMenuItem) {
+            items.splice(items.indexOf(exploreMenuItem), 1);
+            items.unshift(agentWolfExploreItem, exploreMenuItem);
+          } else {
+            items.unshift(agentWolfExploreItem);
+          }
+        }
+
+        items.push(...topLevelItems);
       }
     }
 
