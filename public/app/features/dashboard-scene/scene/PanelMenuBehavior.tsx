@@ -310,8 +310,13 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
       limitPerPlugin: 3,
     });
 
-    if (extensions.length > 0 && !dashboard.state.isEditing) {
-      const linkExtensions = extensions.filter((extension) => extension.type === PluginExtensionTypes.link);
+    if (extensions.length > 0) {
+      const linkExtensions = extensions.filter(
+        (extension): extension is PluginExtensionLink =>
+          extension.type === PluginExtensionTypes.link &&
+          (!dashboard.state.isEditing ||
+            (extension.pluginId === 'openai-internal-app' && extension.title.endsWith('AgentWolf Explore')))
+      );
 
       const [metricsDrilldownLinks, otherLinks, topLevelLinks] = linkExtensions.reduce<
         [PluginExtensionLink[], PluginExtensionLink[], PluginExtensionLink[]]
@@ -584,6 +589,10 @@ function createExtensionContext(panel: VizPanel, dashboard: DashboardScene): Plu
       uid: dashboard.state.uid!,
       title: dashboard.state.title,
       tags: dashboard.state.tags || [],
+    },
+    panel: {
+      options: panel.state.options,
+      fieldConfig: panel.state.fieldConfig ?? { defaults: {}, overrides: [] },
     },
     targets,
     scopedVars,
