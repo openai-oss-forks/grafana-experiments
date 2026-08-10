@@ -203,7 +203,7 @@ describe('panelMenuBehavior', () => {
           href: '/a/openai-internal-app/explore',
           iconClassName: 'compass',
           target: '_blank',
-          shortcut: 'Shift+X',
+          shortcut: '⇧ + X',
           onClick,
         })
       );
@@ -328,7 +328,7 @@ describe('panelMenuBehavior', () => {
 
       const menuItems = menu.state.items ?? [];
       expect(menuItems.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', '[BETA] AgentWolf Explore']);
-      expect(menuItems[1].shortcut).toBe('Shift+X');
+      expect(menuItems[1].shortcut).toBe('⇧ + X');
       expect(menuItems.findIndex((item) => item.text === 'Copy link with preview')).toBeGreaterThan(
         menuItems.findIndex((item) => item.text === 'Inspect')
       );

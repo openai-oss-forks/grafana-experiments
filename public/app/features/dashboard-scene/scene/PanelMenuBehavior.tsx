@@ -358,7 +358,7 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
 
         if (agentWolfExploreIndex !== -1) {
           const [agentWolfExploreItem] = topLevelItems.splice(agentWolfExploreIndex, 1);
-          agentWolfExploreItem.shortcut = 'Shift+X';
+          agentWolfExploreItem.shortcut = '⇧ + X';
 
           if (exploreMenuItem) {
             items.splice(items.indexOf(exploreMenuItem), 1);
