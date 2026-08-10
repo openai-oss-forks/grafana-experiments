@@ -358,10 +358,11 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
 
         if (agentWolfExploreIndex !== -1) {
           const [agentWolfExploreItem] = topLevelItems.splice(agentWolfExploreIndex, 1);
+          agentWolfExploreItem.shortcut = 'Shift+X';
 
           if (exploreMenuItem) {
             items.splice(items.indexOf(exploreMenuItem), 1);
-            items.unshift(agentWolfExploreItem, exploreMenuItem);
+            items.unshift(exploreMenuItem, agentWolfExploreItem);
           } else {
             items.unshift(agentWolfExploreItem);
           }
@@ -455,7 +456,7 @@ async function getExploreMenuItem(panel: VizPanel): Promise<PanelMenuItem | unde
   }
 
   return {
-    text: t('panel.header-menu.explore', `Explore`),
+    text: t('panel.header-menu.grafana-explore', 'Grafana Explore'),
     iconClassName: 'compass',
     shortcut: 'p x',
     href: exploreUrl,

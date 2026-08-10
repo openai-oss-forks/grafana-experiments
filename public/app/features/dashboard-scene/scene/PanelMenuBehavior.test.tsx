@@ -117,7 +117,7 @@ describe('panelMenuBehavior', () => {
 
     expect(menu.state.items?.length).toBe(4);
     expect(menu.state.items?.[0].text).toBe('Share');
-    expect(menu.state.items?.[1].text).toBe('Explore');
+    expect(menu.state.items?.[1].text).toBe('Grafana Explore');
     expect(menu.state.items?.[2].text).toBe('Inspect');
     expect(menu.state.items?.[3].text).toBe('More...');
     expect(menu.state.items?.[3].subMenu).toBeDefined();
@@ -203,10 +203,11 @@ describe('panelMenuBehavior', () => {
           href: '/a/openai-internal-app/explore',
           iconClassName: 'compass',
           target: '_blank',
+          shortcut: 'Shift+X',
           onClick,
         })
       );
-      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['AgentWolf Explore', 'Explore']);
+      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'AgentWolf Explore']);
       expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
       expect(menu.state.items?.find((item) => item.text === PANEL_MENU_TOP_LEVEL_CATEGORY)).toBeUndefined();
 
@@ -273,7 +274,7 @@ describe('panelMenuBehavior', () => {
         'Extensions',
         'Second top-level action',
       ]);
-      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['AgentWolf Explore', 'Explore']);
+      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'AgentWolf Explore']);
       expect(extensionItems?.[1].subMenu).toEqual([
         expect.objectContaining({
           text: 'metrics-drilldown',
@@ -326,7 +327,8 @@ describe('panelMenuBehavior', () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
 
       const menuItems = menu.state.items ?? [];
-      expect(menuItems.slice(0, 2).map((item) => item.text)).toEqual(['[BETA] AgentWolf Explore', 'Explore']);
+      expect(menuItems.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', '[BETA] AgentWolf Explore']);
+      expect(menuItems[1].shortcut).toBe('Shift+X');
       expect(menuItems.findIndex((item) => item.text === 'Copy link with preview')).toBeGreaterThan(
         menuItems.findIndex((item) => item.text === 'Inspect')
       );
@@ -383,7 +385,7 @@ describe('panelMenuBehavior', () => {
       menu.activate();
       await new Promise((resolve) => setTimeout(resolve, 1));
 
-      expect(menu.state.items?.map((item) => item.text)).toEqual(['Explore']);
+      expect(menu.state.items?.map((item) => item.text)).toEqual(['Grafana Explore']);
     });
 
     it('should truncate menu item title to 25 chars', async () => {
@@ -814,7 +816,7 @@ describe('panelMenuBehavior', () => {
       await new Promise((r) => setTimeout(r, 1));
 
       expect(menu.state.items?.length).toBe(1);
-      expect(menu.state.items?.[0].text).toBe('Explore');
+      expect(menu.state.items?.[0].text).toBe('Grafana Explore');
     });
 
     describe('plugin links', () => {
