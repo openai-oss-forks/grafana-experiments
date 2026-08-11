@@ -17,7 +17,7 @@ export const CompactOutsideRangePlugin = memo(({ config, plan, onChangeTimeRange
   const bounds = useMemo(() => getDataBounds(plan), [plan]);
 
   useLayoutEffect(() => {
-    config.addHook('setScale', (plot) => setTimeRange(plot.scales.x));
+    config.addHook('setScale', (plot) => setTimeRange({ ...plot.scales.x }));
   }, [config]);
 
   if (!bounds || !timeRange?.time || timeRange.min == null || timeRange.max == null) {
