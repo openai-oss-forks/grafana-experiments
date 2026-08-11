@@ -117,7 +117,7 @@ describe('panelMenuBehavior', () => {
 
     expect(menu.state.items?.length).toBe(4);
     expect(menu.state.items?.[0].text).toBe('Share');
-    expect(menu.state.items?.[1].text).toBe('Explore');
+    expect(menu.state.items?.[1].text).toBe('Grafana Explore');
     expect(menu.state.items?.[2].text).toBe('Inspect');
     expect(menu.state.items?.[3].text).toBe('More...');
     expect(menu.state.items?.[3].subMenu).toBeDefined();
@@ -203,9 +203,11 @@ describe('panelMenuBehavior', () => {
           href: '/a/openai-internal-app/explore',
           iconClassName: 'compass',
           target: '_blank',
+          shortcut: '⇧ X',
           onClick,
         })
       );
+      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'AgentWolf Explore']);
       expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
       expect(menu.state.items?.find((item) => item.text === PANEL_MENU_TOP_LEVEL_CATEGORY)).toBeUndefined();
 
@@ -213,7 +215,7 @@ describe('panelMenuBehavior', () => {
       expect(onClick).toHaveBeenCalledTimes(1);
     });
 
-    it('should append opted-in extensions after existing extension menus without changing their grouping', async () => {
+    it('should prioritize AgentWolf Explore without changing other extension grouping or order', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
@@ -267,12 +269,13 @@ describe('panelMenuBehavior', () => {
       );
 
       expect(extensionItems?.map((item) => item.text)).toEqual([
+        'AgentWolf Explore',
         'Metrics drilldown',
         'Extensions',
-        'AgentWolf Explore',
         'Second top-level action',
       ]);
-      expect(extensionItems?.[0].subMenu).toEqual([
+      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'AgentWolf Explore']);
+      expect(extensionItems?.[1].subMenu).toEqual([
         expect.objectContaining({
           text: 'metrics-drilldown',
           type: 'group',
@@ -284,12 +287,51 @@ describe('panelMenuBehavior', () => {
           ],
         }),
       ]);
-      expect(extensionItems?.[1].subMenu).toEqual([
+      expect(extensionItems?.[2].subMenu).toEqual([
         expect.objectContaining({
           text: 'Declare incident',
           href: '/a/grafana-basic-app/declare-incident',
         }),
       ]);
+    });
+
+    it('should prioritize the beta AgentWolf Explore action over earlier top-level actions', async () => {
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [
+          {
+            id: 'copy-link',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: 'Copy link with preview',
+            description: 'Copy link with preview',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+          {
+            id: 'agentwolf-explore',
+            pluginId: 'openai-internal-app',
+            type: PluginExtensionTypes.link,
+            title: '[BETA] AgentWolf Explore',
+            description: 'Open the panel query in AgentWolf Explore',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+            icon: 'compass',
+          },
+        ],
+      });
+
+      const { menu, panel } = await buildTestScene({});
+      panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+      mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+      mocks.getExploreUrl.mockReturnValue(Promise.resolve('/explore'));
+
+      menu.activate();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      const menuItems = menu.state.items ?? [];
+      expect(menuItems.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', '[BETA] AgentWolf Explore']);
+      expect(menuItems[1].shortcut).toBe('⇧ X');
+      expect(menuItems.findIndex((item) => item.text === 'Copy link with preview')).toBeGreaterThan(
+        menuItems.findIndex((item) => item.text === 'Inspect')
+      );
     });
 
     it('should not show opted-in top-level extensions while the dashboard is being edited', async () => {
@@ -343,7 +385,7 @@ describe('panelMenuBehavior', () => {
       menu.activate();
       await new Promise((resolve) => setTimeout(resolve, 1));
 
-      expect(menu.state.items?.map((item) => item.text)).toEqual(['Explore']);
+      expect(menu.state.items?.map((item) => item.text)).toEqual(['Grafana Explore']);
     });
 
     it('should truncate menu item title to 25 chars', async () => {
@@ -774,7 +816,7 @@ describe('panelMenuBehavior', () => {
       await new Promise((r) => setTimeout(r, 1));
 
       expect(menu.state.items?.length).toBe(1);
-      expect(menu.state.items?.[0].text).toBe('Explore');
+      expect(menu.state.items?.[0].text).toBe('Grafana Explore');
     });
 
     describe('plugin links', () => {
