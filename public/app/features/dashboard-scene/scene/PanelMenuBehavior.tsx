@@ -356,7 +356,24 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
       }
 
       if (topLevelLinks.length > 0) {
-        items.push(...createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined }))));
+        const topLevelItems = createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined })));
+        const agentWolfExploreIndex = topLevelLinks.findIndex(
+          (link) => link.pluginId === 'openai-internal-app' && link.title.endsWith('AgentWolf Explore')
+        );
+
+        if (agentWolfExploreIndex !== -1) {
+          const [agentWolfExploreItem] = topLevelItems.splice(agentWolfExploreIndex, 1);
+          agentWolfExploreItem.shortcut = '⇧ X';
+
+          if (exploreMenuItem) {
+            items.splice(items.indexOf(exploreMenuItem), 1);
+            items.unshift(exploreMenuItem, agentWolfExploreItem);
+          } else {
+            items.unshift(agentWolfExploreItem);
+          }
+        }
+
+        items.push(...topLevelItems);
       }
     }
 
@@ -444,7 +461,7 @@ async function getExploreMenuItem(panel: VizPanel): Promise<PanelMenuItem | unde
   }
 
   return {
-    text: t('panel.header-menu.explore', `Explore`),
+    text: t('panel.header-menu.grafana-explore', 'Grafana Explore'),
     iconClassName: 'compass',
     shortcut: 'p x',
     href: exploreUrl,

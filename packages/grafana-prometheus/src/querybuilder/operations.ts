@@ -70,6 +70,7 @@ export function getOperationDefinitions(): QueryBuilderOperationDef[] {
     },
     createRangeFunction(PromOperationId.Changes),
     createRangeFunction(PromOperationId.Rate, true),
+    createRangeFunction(PromOperationId.SumPerSecond, true),
     createRangeFunction(PromOperationId.Irate),
     createRangeFunction(PromOperationId.Increase, true),
     createRangeFunction(PromOperationId.Idelta),

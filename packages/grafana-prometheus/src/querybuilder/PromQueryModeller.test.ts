@@ -111,6 +111,19 @@ describe('PromQueryModeller', () => {
     ).toBe('rate(metric{pod="A"}[$__rate_interval])');
   });
 
+  it('Can render Chronosphere sum per second with a quoted metric selector', () => {
+    expect(
+      modeller.renderQuery({
+        metric: 'api.codex.create_response.token_usage',
+        labels: [{ label: 'env', op: '=~', value: 'prod' }],
+        operations: [
+          { id: 'sum_per_second', params: ['600000ms'] },
+          { id: '__sum_by', params: ['plan'] },
+        ],
+      })
+    ).toBe('sum by(plan) (sum_per_second({"api.codex.create_response.token_usage", env=~"prod"}[600000ms]))');
+  });
+
   it('Can render increase', () => {
     expect(
       modeller.renderQuery({
