@@ -255,6 +255,28 @@ describe('buildVisualQueryFromString', () => {
     );
   });
 
+  it('parses Chronosphere sum_per_second queries with dotted metrics and millisecond windows', () => {
+    expect(
+      buildVisualQueryFromString(
+        'sum by (plan) (sum_per_second({"api.codex.create_response.token_usage",cluster=~".*",env=~"prod",model=~".*",track=~".*"}[600000ms]))'
+      )
+    ).toEqual(
+      noErrors({
+        metric: 'api.codex.create_response.token_usage',
+        labels: [
+          { label: 'cluster', op: '=~', value: '.*' },
+          { label: 'env', op: '=~', value: 'prod' },
+          { label: 'model', op: '=~', value: '.*' },
+          { label: 'track', op: '=~', value: '.*' },
+        ],
+        operations: [
+          { id: 'sum_per_second', params: ['600000ms'] },
+          { id: '__sum_by', params: ['plan'] },
+        ],
+      })
+    );
+  });
+
   it('parses query with nested query and interval variable', () => {
     expect(
       buildVisualQueryFromString(
