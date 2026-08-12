@@ -53,7 +53,7 @@ import { PromVisualQuery, PromVisualQueryBinary } from './types';
 export function buildVisualQueryFromString(expr: string): Omit<Context, 'replacements'> {
   expr = replaceBuiltInVariable(expr);
   const { replacedExpr, replacedVariables } = replaceVariables(expr);
-  // Preserve parser offsets so handlers still recover the original Chronosphere function name.
+  // Preserve parser offsets so handlers still recover the original custom function name.
   const parserExpr = replacedExpr.replace(/\bsum_per_second\b(?=\s*\()/g, 'last_over_time');
   const tree = parser.parse(parserExpr);
   const node = tree.topNode;

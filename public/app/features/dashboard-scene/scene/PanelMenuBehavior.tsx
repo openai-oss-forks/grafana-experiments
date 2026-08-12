@@ -61,8 +61,8 @@ function setupGetPluginExtensions(registries: PluginExtensionRegistries) {
 // Define the category for metrics drilldown links
 const METRICS_DRILLDOWN_CATEGORY = 'metrics-drilldown';
 
-function isTopLevelExploreExtension(extension: PluginExtensionLink) {
-  return extension.category === PANEL_MENU_TOP_LEVEL_CATEGORY && extension.title.endsWith('Explore');
+function isTopLevelExtension(extension: PluginExtensionLink) {
+  return extension.category === PANEL_MENU_TOP_LEVEL_CATEGORY;
 }
 
 /**
@@ -317,8 +317,7 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
     if (extensions.length > 0) {
       const linkExtensions = extensions.filter(
         (extension): extension is PluginExtensionLink =>
-          extension.type === PluginExtensionTypes.link &&
-          (!dashboard.state.isEditing || isTopLevelExploreExtension(extension))
+          extension.type === PluginExtensionTypes.link && (!dashboard.state.isEditing || isTopLevelExtension(extension))
       );
 
       const [metricsDrilldownLinks, otherLinks, topLevelLinks] = linkExtensions.reduce<
@@ -327,7 +326,7 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
         ([metricsDrilldownLinks, otherLinks, topLevelLinks], link) => {
           if (link.category === METRICS_DRILLDOWN_CATEGORY) {
             metricsDrilldownLinks.push(link);
-          } else if (link.category === PANEL_MENU_TOP_LEVEL_CATEGORY) {
+          } else if (isTopLevelExtension(link)) {
             topLevelLinks.push(link);
           } else {
             otherLinks.push(link);
@@ -360,21 +359,13 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
 
       if (topLevelLinks.length > 0) {
         const topLevelItems = createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined })));
-        const exploreExtensionIndex = topLevelLinks.findIndex(isTopLevelExploreExtension);
 
-        if (exploreExtensionIndex !== -1) {
-          const [exploreExtensionItem] = topLevelItems.splice(exploreExtensionIndex, 1);
-          exploreExtensionItem.shortcut = '⇧ X';
-
-          if (exploreMenuItem) {
-            items.splice(items.indexOf(exploreMenuItem), 1);
-            items.unshift(exploreMenuItem, exploreExtensionItem);
-          } else {
-            items.unshift(exploreExtensionItem);
-          }
+        if (exploreMenuItem) {
+          items.splice(items.indexOf(exploreMenuItem), 1);
+          items.unshift(exploreMenuItem, ...topLevelItems);
+        } else {
+          items.unshift(...topLevelItems);
         }
-
-        items.push(...topLevelItems);
       }
     }
 

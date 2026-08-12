@@ -174,12 +174,12 @@ describe('panelMenuBehavior', () => {
         extensions: [
           {
             id: 'top-level',
-            pluginId: 'grafana-explore-app',
+            pluginId: 'grafana-basic-app',
             type: PluginExtensionTypes.link,
-            title: 'Extension Explore',
-            description: 'Open the panel query in an Explore extension',
-            path: '/a/grafana-explore-app/explore',
-            category: 'top-level',
+            title: 'Custom panel action',
+            description: 'Run a custom panel action',
+            path: '/a/grafana-basic-app/panel-action',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
             icon: 'compass',
             openInNewTab: true,
             onClick,
@@ -195,19 +195,22 @@ describe('panelMenuBehavior', () => {
       menu.activate();
       await new Promise((resolve) => setTimeout(resolve, 1));
 
-      const topLevelItem = menu.state.items?.find((item) => item.text === 'Extension Explore');
+      const topLevelItem = menu.state.items?.find((item) => item.text === 'Custom panel action');
 
       expect(topLevelItem).toEqual(
         expect.objectContaining({
-          text: 'Extension Explore',
-          href: '/a/grafana-explore-app/explore',
+          text: 'Custom panel action',
+          href: '/a/grafana-basic-app/panel-action',
           iconClassName: 'compass',
           target: '_blank',
-          shortcut: '⇧ X',
           onClick,
         })
       );
-      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'Extension Explore']);
+      expect(topLevelItem?.shortcut).toBeUndefined();
+      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual([
+        'Grafana Explore',
+        'Custom panel action',
+      ]);
       expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
       expect(menu.state.items?.find((item) => item.text === PANEL_MENU_TOP_LEVEL_CATEGORY)).toBeUndefined();
 
@@ -215,7 +218,7 @@ describe('panelMenuBehavior', () => {
       expect(onClick).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps top-level Explore extensions available while editing without enabling other extensions', async () => {
+    it('keeps opted-in top-level extensions available while editing without enabling other extensions', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
@@ -238,7 +241,7 @@ describe('panelMenuBehavior', () => {
             pluginId: 'grafana-basic-app',
             type: PluginExtensionTypes.link,
             title: 'Other top-level action',
-            description: 'Not available while editing',
+            description: 'Available while editing',
             category: PANEL_MENU_TOP_LEVEL_CATEGORY,
           },
         ],
@@ -258,7 +261,7 @@ describe('panelMenuBehavior', () => {
 
       expect(menu.state.items?.map((item) => item.text)).toContain('[BETA] Extension Explore');
       expect(menu.state.items?.map((item) => item.text)).not.toContain('Extensions');
-      expect(menu.state.items?.map((item) => item.text)).not.toContain('Other top-level action');
+      expect(menu.state.items?.map((item) => item.text)).toContain('Other top-level action');
       expect(getPluginExtensionsMock).toHaveBeenCalledWith(
         expect.objectContaining({
           context: expect.objectContaining({
@@ -271,7 +274,7 @@ describe('panelMenuBehavior', () => {
       );
     });
 
-    it('should prioritize Explore extensions without changing other extension grouping or order', async () => {
+    it('should prioritize opted-in top-level extensions without changing other extension grouping or order', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
@@ -326,12 +329,16 @@ describe('panelMenuBehavior', () => {
 
       expect(extensionItems?.map((item) => item.text)).toEqual([
         'Extension Explore',
+        'Second top-level action',
         'Metrics drilldown',
         'Extensions',
+      ]);
+      expect(menu.state.items?.slice(0, 3).map((item) => item.text)).toEqual([
+        'Grafana Explore',
+        'Extension Explore',
         'Second top-level action',
       ]);
-      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'Extension Explore']);
-      expect(extensionItems?.[1].subMenu).toEqual([
+      expect(extensionItems?.[2].subMenu).toEqual([
         expect.objectContaining({
           text: 'metrics-drilldown',
           type: 'group',
@@ -343,7 +350,7 @@ describe('panelMenuBehavior', () => {
           ],
         }),
       ]);
-      expect(extensionItems?.[2].subMenu).toEqual([
+      expect(extensionItems?.[3].subMenu).toEqual([
         expect.objectContaining({
           text: 'Declare incident',
           href: '/a/grafana-basic-app/declare-incident',
@@ -351,7 +358,7 @@ describe('panelMenuBehavior', () => {
       ]);
     });
 
-    it('should prioritize beta Explore extensions over earlier top-level actions', async () => {
+    it('should preserve registration order for opted-in top-level extensions', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
@@ -383,14 +390,16 @@ describe('panelMenuBehavior', () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
 
       const menuItems = menu.state.items ?? [];
-      expect(menuItems.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', '[BETA] Extension Explore']);
-      expect(menuItems[1].shortcut).toBe('⇧ X');
-      expect(menuItems.findIndex((item) => item.text === 'Copy link with preview')).toBeGreaterThan(
-        menuItems.findIndex((item) => item.text === 'Inspect')
-      );
+      expect(menuItems.slice(0, 3).map((item) => item.text)).toEqual([
+        'Grafana Explore',
+        'Copy link with preview',
+        '[BETA] Extension Explore',
+      ]);
+      expect(menuItems[1].shortcut).toBeUndefined();
+      expect(menuItems[2].shortcut).toBeUndefined();
     });
 
-    it('should keep top-level Explore extensions available while the dashboard is being edited', async () => {
+    it('should keep opted-in top-level extensions available while the dashboard is being edited', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
