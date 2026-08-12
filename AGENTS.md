@@ -21,6 +21,16 @@ Grafana is a monitoring and observability platform. Go backend, TypeScript/React
 - Separate PRs for frontend and backend changes (deployed at different cadences)
 - Security: prevent XSS, SQL injection, command injection
 
+## Licensing and Confidentiality
+
+- Respect the repository's GNU Affero General Public License v3.0, copyright notices, and third-party license requirements. Include only material that may be publicly distributed under compatible terms.
+- Treat this repository and all contribution artifacts as public, including code, tests, fixtures, documentation, comments, commits, branch names, pull requests, issues, screenshots, recordings, logs, and linked resources.
+- Never include proprietary, confidential, customer-specific, or organization-specific details. Do not identify the organization behind the fork, its customers or vendors, or its internal products and services, even when a name itself is publicly known. Exclude internal URLs or repository paths, infrastructure details, credentials, and private data.
+- Implement specialized requirements as generally useful, configurable features through existing plugin or extension mechanisms. Keep private integrations and customizations in their appropriate private repositories.
+- Public technical identifiers, protocol extensions, and custom function names may remain when they are necessary and compatible with the repository's license. Describe their behavior generically without identifying an associated organization, customer, or vendor.
+- Use neutral terminology and synthetic or appropriately redacted examples. Before sharing any change, review its code, metadata, pull-request and issue titles and descriptions, attachments, and links for licensing and confidentiality issues.
+- If existing content exposes restricted information, fix the current implementation and editable public metadata. Do not assume reverting a change removes information from repository history; ask before rewriting history or taking other destructive action.
+
 ## Commands
 
 ### Build & Run
