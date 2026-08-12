@@ -21,6 +21,7 @@ import { Panel } from '@grafana/schema';
 import { OptionFilter } from 'app/features/dashboard/components/PanelEditor/OptionsPaneOptions';
 import { getLastUsedDatasourceFromStorage } from 'app/features/dashboard/utils/dashboard';
 import { saveLibPanel } from 'app/features/library-panels/state/api';
+import { getPreferredVisualisationPluginId } from 'app/features/panel/suggestions/getAllSuggestions';
 import { MIXED_DATASOURCE_NAME } from 'app/plugins/datasource/mixed/MixedDataSource';
 
 import { DashboardEditActionEvent } from '../edit-pane/shared';
@@ -214,6 +215,37 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       });
     };
 
+    const selectPreferredVisualisation = (currentRunner: SceneQueryRunner) => {
+      if (!this.state.isNewPanel || this.state.optionsPane?.state.hasPickedViz) {
+        return;
+      }
+
+      const data = currentRunner.state.data;
+      if (!data || (data.state !== LoadingState.Done && data.state !== LoadingState.Streaming)) {
+        return;
+      }
+
+      const visibleQueryRefIds = new Set(
+        currentRunner.state.queries.filter((query) => !query.hide).map((query) => query.refId)
+      );
+
+      for (const frame of data.series) {
+        if (frame.refId && !visibleQueryRefIds.has(frame.refId)) {
+          continue;
+        }
+
+        const preferredPluginId = getPreferredVisualisationPluginId(frame);
+        if (!preferredPluginId) {
+          continue;
+        }
+
+        if (panel.state.pluginId !== preferredPluginId) {
+          panel.changePluginType(preferredPluginId);
+        }
+        return;
+      }
+    };
+
     const updateRunner = () => {
       const currentRunner = getQueryRunnerFor(panel);
       if (currentRunner === activeRunner) {
@@ -226,6 +258,7 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       if (currentRunner) {
         runnerSubscription = currentRunner.subscribeToState((newState, previousState) => {
           if (newState.data !== previousState.data) {
+            selectPreferredVisualisation(currentRunner);
             reconcileQueryFormat(currentRunner);
           }
         });
@@ -293,6 +326,10 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
       if (currentRunner) {
         reconcileQueryFormat(currentRunner);
       }
+    }
+
+    if (activeRunner) {
+      selectPreferredVisualisation(activeRunner);
     }
 
     this.waitForPlugin();

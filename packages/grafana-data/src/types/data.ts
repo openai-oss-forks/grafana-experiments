@@ -53,10 +53,10 @@ export interface QueryResultMeta {
   /** Meta Notices */
   notices?: QueryResultMetaNotice[];
 
-  /** Currently used to show results in Explore only in preferred visualisation option */
+  /** Preferred visualization for query results. */
   preferredVisualisationType?: PreferredVisualisationType;
 
-  /** Set the panel plugin id to use to render the data when using Explore. If the plugin cannot be found
+  /** Set the panel plugin id to use to render the data. If the plugin cannot be found
    * will fall back to {@link preferredVisualisationType}.
    *
    * @alpha
