@@ -23,4 +23,4 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           echo "Adding 'pr/external' label to the PR"
-          gh pr edit "$PR_NUMBER" --add-label pr/external
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label pr/external

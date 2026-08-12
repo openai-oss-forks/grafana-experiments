@@ -26,4 +26,8 @@ jobs:
       - run: yarn install --immutable --check-cache
       - run: yarn i18n-extract
       - name: Check for uncommitted translations
-        run: git diff --exit-code
+        run: |
+          git show HEAD:public/locales/en-US/grafana.json | jq --sort-keys . > /tmp/grafana-i18n-before.json
+          jq --sort-keys . public/locales/en-US/grafana.json > /tmp/grafana-i18n-after.json
+          diff -u /tmp/grafana-i18n-before.json /tmp/grafana-i18n-after.json
+          git diff --exit-code -- ':!public/locales/en-US/grafana.json'
