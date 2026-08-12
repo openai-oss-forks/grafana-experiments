@@ -149,11 +149,11 @@ describe('getPanelMenu()', () => {
       const extensions: PluginExtensionLink[] = [
         {
           id: 'top-level',
-          pluginId: 'openai-internal-app',
+          pluginId: 'grafana-explore-app',
           type: PluginExtensionTypes.link,
-          title: 'AgentWolf Explore',
-          description: 'Open the panel query in AgentWolf Explore',
-          path: '/a/openai-internal-app/explore',
+          title: 'Extension Explore',
+          description: 'Open the panel query in an Explore extension',
+          path: '/a/grafana-explore-app/explore',
           category: 'top-level',
           icon: 'compass',
           openInNewTab: true,
@@ -164,12 +164,12 @@ describe('getPanelMenu()', () => {
       const dashboard = createDashboardModelFixture({});
 
       const menuItems = getPanelMenu(dashboard, panel, extensions);
-      const topLevelItem = menuItems.find((item) => item.text === 'AgentWolf Explore');
+      const topLevelItem = menuItems.find((item) => item.text === 'Extension Explore');
 
       expect(topLevelItem).toEqual(
         expect.objectContaining({
-          text: 'AgentWolf Explore',
-          href: '/a/openai-internal-app/explore',
+          text: 'Extension Explore',
+          href: '/a/grafana-explore-app/explore',
           iconClassName: 'compass',
           target: '_blank',
           onClick,
@@ -186,11 +186,11 @@ describe('getPanelMenu()', () => {
       const extensions: PluginExtensionLink[] = [
         {
           id: 'top-level-first',
-          pluginId: 'openai-internal-app',
+          pluginId: 'grafana-explore-app',
           type: PluginExtensionTypes.link,
-          title: 'AgentWolf Explore',
-          description: 'Open the panel query in AgentWolf Explore',
-          path: '/a/openai-internal-app/explore',
+          title: 'Extension Explore',
+          description: 'Open the panel query in an Explore extension',
+          path: '/a/grafana-explore-app/explore',
           category: PANEL_MENU_TOP_LEVEL_CATEGORY,
         },
         {
@@ -212,11 +212,11 @@ describe('getPanelMenu()', () => {
         },
         {
           id: 'top-level-second',
-          pluginId: 'openai-internal-app',
+          pluginId: 'grafana-explore-app',
           type: PluginExtensionTypes.link,
           title: 'Second top-level action',
           description: 'Open another top-level action',
-          path: '/a/openai-internal-app/second',
+          path: '/a/grafana-explore-app/second',
           category: PANEL_MENU_TOP_LEVEL_CATEGORY,
         },
       ];
@@ -225,12 +225,12 @@ describe('getPanelMenu()', () => {
 
       const menuItems = getPanelMenu(dashboard, panel, extensions);
       const extensionItems = menuItems.filter((item) =>
-        ['Extensions', 'AgentWolf Explore', 'Second top-level action'].includes(item.text)
+        ['Extensions', 'Extension Explore', 'Second top-level action'].includes(item.text)
       );
 
       expect(extensionItems.map((item) => item.text)).toEqual([
         'Extensions',
-        'AgentWolf Explore',
+        'Extension Explore',
         'Second top-level action',
       ]);
       expect(extensionItems[0].subMenu).toEqual(
@@ -256,11 +256,11 @@ describe('getPanelMenu()', () => {
       const extensions: PluginExtensionLink[] = [
         {
           id: 'top-level',
-          pluginId: 'openai-internal-app',
+          pluginId: 'grafana-explore-app',
           type: PluginExtensionTypes.link,
-          title: 'AgentWolf Explore',
-          description: 'Open the panel query in AgentWolf Explore',
-          path: '/a/openai-internal-app/explore',
+          title: 'Extension Explore',
+          description: 'Open the panel query in an Explore extension',
+          path: '/a/grafana-explore-app/explore',
           category: PANEL_MENU_TOP_LEVEL_CATEGORY,
         },
       ];
@@ -270,7 +270,7 @@ describe('getPanelMenu()', () => {
 
       const menuItems = getPanelMenu(dashboard, panel, extensions);
 
-      expect(menuItems.find((item) => item.text === 'AgentWolf Explore')).toBeUndefined();
+      expect(menuItems.find((item) => item.text === 'Extension Explore')).toBeUndefined();
       expect(menuItems.find((item) => item.text === 'Extensions')).toBeUndefined();
     });
 

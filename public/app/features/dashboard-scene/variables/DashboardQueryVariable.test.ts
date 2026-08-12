@@ -7,11 +7,11 @@ import { DashboardQueryVariable } from './DashboardQueryVariable';
 
 describe('DashboardQueryVariable', () => {
   const hostOptions: VariableValueOption[] = [
-    { value: 'openai-aks-prod-db2.postgres.database.azure.com', label: 'Production database' },
-    { value: 'openai-aks-prod-db3.postgres.database.azure.com', label: 'Second database' },
+    { value: 'primary-db.example.com', label: 'Production database' },
+    { value: 'secondary-db.example.com', label: 'Second database' },
   ];
 
-  it.each(['openai-aks-prod-db2', 'openai.*'])(
+  it.each(['primary-db', 'primary.*'])(
     'preserves the selected custom value %s when the available options refresh',
     async (selectedValue) => {
       const value = [selectedValue];
@@ -27,8 +27,8 @@ describe('DashboardQueryVariable', () => {
   );
 
   it('preserves custom and exact selected values together', async () => {
-    const value = ['openai-aks-prod-db2', hostOptions[1].value];
-    const text = ['openai-aks-prod-db2', 'Second database'];
+    const value = ['primary-db', hostOptions[1].value];
+    const text = ['primary-db', 'Second database'];
     const variable = createVariable({ value, text });
 
     await refreshOptions(variable, hostOptions);
@@ -38,17 +38,17 @@ describe('DashboardQueryVariable', () => {
   });
 
   it('preserves a single selected custom value', async () => {
-    const variable = createVariable({ value: 'openai-aks-prod-db2', text: 'openai-aks-prod-db2', isMulti: false });
+    const variable = createVariable({ value: 'primary-db', text: 'primary-db', isMulti: false });
 
     await refreshOptions(variable, hostOptions);
 
-    expect(variable.state.value).toBe('openai-aks-prod-db2');
-    expect(variable.state.text).toBe('openai-aks-prod-db2');
+    expect(variable.state.value).toBe('primary-db');
+    expect(variable.state.text).toBe('primary-db');
   });
 
   it('preserves a selected custom value when refreshed options are empty', async () => {
-    const value = ['openai-aks-prod-db2'];
-    const text = ['openai-aks-prod-db2'];
+    const value = ['primary-db'];
+    const text = ['primary-db'];
     const variable = createVariable({ value, text });
 
     await refreshOptions(variable, []);
@@ -99,8 +99,8 @@ describe('DashboardQueryVariable', () => {
 function createVariable(state: Partial<DashboardQueryVariable['state']> = {}): DashboardQueryVariable {
   return new DashboardQueryVariable({
     name: 'dbhost',
-    value: ['openai-aks-prod-db2'],
-    text: ['openai-aks-prod-db2'],
+    value: ['primary-db'],
+    text: ['primary-db'],
     query: 'label_values(dbhost)',
     isMulti: true,
     includeAll: true,
