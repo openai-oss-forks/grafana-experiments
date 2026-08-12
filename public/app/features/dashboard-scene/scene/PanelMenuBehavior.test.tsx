@@ -174,11 +174,11 @@ describe('panelMenuBehavior', () => {
         extensions: [
           {
             id: 'top-level',
-            pluginId: 'openai-internal-app',
+            pluginId: 'grafana-explore-app',
             type: PluginExtensionTypes.link,
-            title: 'AgentWolf Explore',
-            description: 'Open the panel query in AgentWolf Explore',
-            path: '/a/openai-internal-app/explore',
+            title: 'Extension Explore',
+            description: 'Open the panel query in an Explore extension',
+            path: '/a/grafana-explore-app/explore',
             category: 'top-level',
             icon: 'compass',
             openInNewTab: true,
@@ -195,19 +195,19 @@ describe('panelMenuBehavior', () => {
       menu.activate();
       await new Promise((resolve) => setTimeout(resolve, 1));
 
-      const topLevelItem = menu.state.items?.find((item) => item.text === 'AgentWolf Explore');
+      const topLevelItem = menu.state.items?.find((item) => item.text === 'Extension Explore');
 
       expect(topLevelItem).toEqual(
         expect.objectContaining({
-          text: 'AgentWolf Explore',
-          href: '/a/openai-internal-app/explore',
+          text: 'Extension Explore',
+          href: '/a/grafana-explore-app/explore',
           iconClassName: 'compass',
           target: '_blank',
           shortcut: '⇧ X',
           onClick,
         })
       );
-      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'AgentWolf Explore']);
+      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'Extension Explore']);
       expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
       expect(menu.state.items?.find((item) => item.text === PANEL_MENU_TOP_LEVEL_CATEGORY)).toBeUndefined();
 
@@ -215,16 +215,72 @@ describe('panelMenuBehavior', () => {
       expect(onClick).toHaveBeenCalledTimes(1);
     });
 
-    it('should prioritize AgentWolf Explore without changing other extension grouping or order', async () => {
+    it('keeps top-level Explore extensions available while editing without enabling other extensions', async () => {
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [
+          {
+            id: 'explore-extension',
+            pluginId: 'grafana-explore-app',
+            type: PluginExtensionTypes.link,
+            title: '[BETA] Extension Explore',
+            description: 'Open the current panel in an Explore extension',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+          {
+            id: 'other',
+            pluginId: 'grafana-basic-app',
+            type: PluginExtensionTypes.link,
+            title: 'Other extension',
+            description: 'Not available while editing',
+          },
+          {
+            id: 'other-top-level',
+            pluginId: 'grafana-basic-app',
+            type: PluginExtensionTypes.link,
+            title: 'Other top-level action',
+            description: 'Not available while editing',
+            category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          },
+        ],
+      });
+      const { scene, menu, panel } = await buildTestScene({});
+      scene.setState({ isEditing: true });
+      panel.setState({
+        options: { graphMode: 'area' },
+        fieldConfig: { defaults: { unit: 'percent', min: 0, max: 100 }, overrides: [] },
+      });
+      panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+      mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+      mocks.getExploreUrl.mockReturnValue(Promise.resolve('/explore'));
+
+      menu.activate();
+      await new Promise((resolve) => setTimeout(resolve, 1));
+
+      expect(menu.state.items?.map((item) => item.text)).toContain('[BETA] Extension Explore');
+      expect(menu.state.items?.map((item) => item.text)).not.toContain('Extensions');
+      expect(menu.state.items?.map((item) => item.text)).not.toContain('Other top-level action');
+      expect(getPluginExtensionsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: expect.objectContaining({
+            panel: {
+              options: { graphMode: 'area' },
+              fieldConfig: { defaults: { unit: 'percent', min: 0, max: 100 }, overrides: [] },
+            },
+          }),
+        })
+      );
+    });
+
+    it('should prioritize Explore extensions without changing other extension grouping or order', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
             id: 'top-level-first',
-            pluginId: 'openai-internal-app',
+            pluginId: 'grafana-explore-app',
             type: PluginExtensionTypes.link,
-            title: 'AgentWolf Explore',
-            description: 'Open the panel query in AgentWolf Explore',
-            path: '/a/openai-internal-app/explore',
+            title: 'Extension Explore',
+            description: 'Open the panel query in an Explore extension',
+            path: '/a/grafana-explore-app/explore',
             category: PANEL_MENU_TOP_LEVEL_CATEGORY,
           },
           {
@@ -246,11 +302,11 @@ describe('panelMenuBehavior', () => {
           },
           {
             id: 'top-level-second',
-            pluginId: 'openai-internal-app',
+            pluginId: 'grafana-explore-app',
             type: PluginExtensionTypes.link,
             title: 'Second top-level action',
             description: 'Open another top-level action',
-            path: '/a/openai-internal-app/second',
+            path: '/a/grafana-explore-app/second',
             category: PANEL_MENU_TOP_LEVEL_CATEGORY,
           },
         ],
@@ -265,16 +321,16 @@ describe('panelMenuBehavior', () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
 
       const extensionItems = menu.state.items?.filter((item) =>
-        ['Metrics drilldown', 'Extensions', 'AgentWolf Explore', 'Second top-level action'].includes(item.text)
+        ['Metrics drilldown', 'Extensions', 'Extension Explore', 'Second top-level action'].includes(item.text)
       );
 
       expect(extensionItems?.map((item) => item.text)).toEqual([
-        'AgentWolf Explore',
+        'Extension Explore',
         'Metrics drilldown',
         'Extensions',
         'Second top-level action',
       ]);
-      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'AgentWolf Explore']);
+      expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', 'Extension Explore']);
       expect(extensionItems?.[1].subMenu).toEqual([
         expect.objectContaining({
           text: 'metrics-drilldown',
@@ -295,23 +351,23 @@ describe('panelMenuBehavior', () => {
       ]);
     });
 
-    it('should prioritize the beta AgentWolf Explore action over earlier top-level actions', async () => {
+    it('should prioritize beta Explore extensions over earlier top-level actions', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
             id: 'copy-link',
-            pluginId: 'openai-internal-app',
+            pluginId: 'grafana-explore-app',
             type: PluginExtensionTypes.link,
             title: 'Copy link with preview',
             description: 'Copy link with preview',
             category: PANEL_MENU_TOP_LEVEL_CATEGORY,
           },
           {
-            id: 'agentwolf-explore',
-            pluginId: 'openai-internal-app',
+            id: 'explore-extension',
+            pluginId: 'grafana-explore-app',
             type: PluginExtensionTypes.link,
-            title: '[BETA] AgentWolf Explore',
-            description: 'Open the panel query in AgentWolf Explore',
+            title: '[BETA] Extension Explore',
+            description: 'Open the panel query in an Explore extension',
             category: PANEL_MENU_TOP_LEVEL_CATEGORY,
             icon: 'compass',
           },
@@ -327,23 +383,23 @@ describe('panelMenuBehavior', () => {
       await new Promise((resolve) => setTimeout(resolve, 1));
 
       const menuItems = menu.state.items ?? [];
-      expect(menuItems.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', '[BETA] AgentWolf Explore']);
+      expect(menuItems.slice(0, 2).map((item) => item.text)).toEqual(['Grafana Explore', '[BETA] Extension Explore']);
       expect(menuItems[1].shortcut).toBe('⇧ X');
       expect(menuItems.findIndex((item) => item.text === 'Copy link with preview')).toBeGreaterThan(
         menuItems.findIndex((item) => item.text === 'Inspect')
       );
     });
 
-    it('should not show opted-in top-level extensions while the dashboard is being edited', async () => {
+    it('should keep top-level Explore extensions available while the dashboard is being edited', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [
           {
             id: 'top-level',
-            pluginId: 'openai-internal-app',
+            pluginId: 'grafana-explore-app',
             type: PluginExtensionTypes.link,
-            title: 'AgentWolf Explore',
-            description: 'Open the panel query in AgentWolf Explore',
-            path: '/a/openai-internal-app/explore',
+            title: 'Extension Explore',
+            description: 'Open the panel query in an Explore extension',
+            path: '/a/grafana-explore-app/explore',
             category: PANEL_MENU_TOP_LEVEL_CATEGORY,
           },
         ],
@@ -358,7 +414,7 @@ describe('panelMenuBehavior', () => {
       menu.activate();
       await new Promise((resolve) => setTimeout(resolve, 1));
 
-      expect(menu.state.items?.find((item) => item.text === 'AgentWolf Explore')).toBeUndefined();
+      expect(menu.state.items?.find((item) => item.text === 'Extension Explore')).toBeDefined();
       expect(menu.state.items?.find((item) => item.text === 'Extensions')).toBeUndefined();
     });
 
@@ -367,11 +423,11 @@ describe('panelMenuBehavior', () => {
         extensions: [
           {
             id: 'top-level',
-            pluginId: 'openai-internal-app',
+            pluginId: 'grafana-explore-app',
             type: PluginExtensionTypes.link,
-            title: 'AgentWolf Explore',
-            description: 'Open the panel query in AgentWolf Explore',
-            path: '/a/openai-internal-app/explore',
+            title: 'Extension Explore',
+            description: 'Open the panel query in an Explore extension',
+            path: '/a/grafana-explore-app/explore',
             category: PANEL_MENU_TOP_LEVEL_CATEGORY,
           },
         ],
@@ -548,6 +604,10 @@ describe('panelMenuBehavior', () => {
           uid: 'dash-1',
           title: 'My dashboard',
         },
+        panel: {
+          options: panel.state.options,
+          fieldConfig: panel.state.fieldConfig ?? { defaults: {}, overrides: [] },
+        },
         scopedVars: {
           a: {
             text: 'a',
@@ -604,6 +664,10 @@ describe('panelMenuBehavior', () => {
           tags: ['database', 'panel'],
           uid: 'dash-1',
           title: 'My dashboard',
+        },
+        panel: {
+          options: panel.state.options,
+          fieldConfig: panel.state.fieldConfig ?? { defaults: {}, overrides: [] },
         },
         scopedVars: {
           a: {

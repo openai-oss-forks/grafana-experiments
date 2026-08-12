@@ -61,6 +61,10 @@ function setupGetPluginExtensions(registries: PluginExtensionRegistries) {
 // Define the category for metrics drilldown links
 const METRICS_DRILLDOWN_CATEGORY = 'metrics-drilldown';
 
+function isTopLevelExploreExtension(extension: PluginExtensionLink) {
+  return extension.category === PANEL_MENU_TOP_LEVEL_CATEGORY && extension.title.endsWith('Explore');
+}
+
 /**
  * Behavior is called when VizPanelMenu is activated (ie when it's opened).
  */
@@ -310,8 +314,12 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
       limitPerPlugin: 3,
     });
 
-    if (extensions.length > 0 && !dashboard.state.isEditing) {
-      const linkExtensions = extensions.filter((extension) => extension.type === PluginExtensionTypes.link);
+    if (extensions.length > 0) {
+      const linkExtensions = extensions.filter(
+        (extension): extension is PluginExtensionLink =>
+          extension.type === PluginExtensionTypes.link &&
+          (!dashboard.state.isEditing || isTopLevelExploreExtension(extension))
+      );
 
       const [metricsDrilldownLinks, otherLinks, topLevelLinks] = linkExtensions.reduce<
         [PluginExtensionLink[], PluginExtensionLink[], PluginExtensionLink[]]
@@ -352,19 +360,17 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
 
       if (topLevelLinks.length > 0) {
         const topLevelItems = createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined })));
-        const agentWolfExploreIndex = topLevelLinks.findIndex(
-          (link) => link.pluginId === 'openai-internal-app' && link.title.endsWith('AgentWolf Explore')
-        );
+        const exploreExtensionIndex = topLevelLinks.findIndex(isTopLevelExploreExtension);
 
-        if (agentWolfExploreIndex !== -1) {
-          const [agentWolfExploreItem] = topLevelItems.splice(agentWolfExploreIndex, 1);
-          agentWolfExploreItem.shortcut = '⇧ X';
+        if (exploreExtensionIndex !== -1) {
+          const [exploreExtensionItem] = topLevelItems.splice(exploreExtensionIndex, 1);
+          exploreExtensionItem.shortcut = '⇧ X';
 
           if (exploreMenuItem) {
             items.splice(items.indexOf(exploreMenuItem), 1);
-            items.unshift(exploreMenuItem, agentWolfExploreItem);
+            items.unshift(exploreMenuItem, exploreExtensionItem);
           } else {
-            items.unshift(agentWolfExploreItem);
+            items.unshift(exploreExtensionItem);
           }
         }
 
@@ -584,6 +590,10 @@ function createExtensionContext(panel: VizPanel, dashboard: DashboardScene): Plu
       uid: dashboard.state.uid!,
       title: dashboard.state.title,
       tags: dashboard.state.tags || [],
+    },
+    panel: {
+      options: panel.state.options,
+      fieldConfig: panel.state.fieldConfig ?? { defaults: {}, overrides: [] },
     },
     targets,
     scopedVars,
