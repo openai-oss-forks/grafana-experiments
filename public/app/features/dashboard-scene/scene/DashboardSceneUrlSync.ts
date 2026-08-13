@@ -92,7 +92,10 @@ export class DashboardSceneUrlSync implements SceneObjectUrlSyncHandler {
         return;
       }
 
-      update.editPanel = buildPanelEditScene(panel, panel.state.pluginId === UNCONFIGURED_PANEL_PLUGIN_ID);
+      update.editPanel =
+        editPanel?.getPanel() === panel
+          ? editPanel
+          : buildPanelEditScene(panel, panel.state.pluginId === UNCONFIGURED_PANEL_PLUGIN_ID);
     } else if (editPanel && values.editPanel === null) {
       update.editPanel = undefined;
     }
