@@ -170,6 +170,9 @@ describe('PanelEditor', () => {
         });
 
         await waitFor(() => expect(panel.state.pluginId).toBe(expectedPluginId));
+        if (isNewPanel) {
+          await waitFor(() => expect(panelEditor.state.editPreview?.state.pluginId).toBe(expectedPluginId));
+        }
       }
     );
 
