@@ -173,11 +173,18 @@ describe('PanelEditor', () => {
       }
     );
 
-    it('does not replace a visualization explicitly selected for a new panel', async () => {
+    it('does not replace an explicitly selected Time series visualization for a new panel', async () => {
       const { panel, panelEditor } = await setup({ isNewPanel: true });
-      panelEditor.state.optionsPane?.setState({ hasPickedViz: true });
+      const optionsPane = panelEditor.state.optionsPane!;
       const queryRunner = getQueryRunnerFor(panel)!;
 
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey: true });
+
+      expect(optionsPane.state.hasPickedViz).toBe(true);
+      await waitFor(() => expect(panel.state.pluginId).toBe('timeseries'));
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'logs', skipDataQuery: false }));
       queryRunner.setState({
         data: {
           state: LoadingState.Done,
@@ -192,7 +199,8 @@ describe('PanelEditor', () => {
         },
       });
 
-      expect(panel.state.pluginId).toBe('text');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(panel.state.pluginId).toBe('timeseries');
     });
 
     it('wraps eligible compact dashboard data before the first response arrives', () => {

@@ -65,6 +65,10 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
   };
 
   onChangePanel = (options: VizTypeChangeDetails, panel = this.state.panelRef.resolve()) => {
+    if (panel === this.state.panelRef.resolve()) {
+      this.setState({ hasPickedViz: true });
+    }
+
     const { options: prevOptions, fieldConfig: prevFieldConfig, pluginId: prevPluginId } = panel.state;
     const pluginId = options.pluginId;
 
