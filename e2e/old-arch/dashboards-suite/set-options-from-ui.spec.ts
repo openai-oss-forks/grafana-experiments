@@ -123,7 +123,10 @@ describe('Variables - Set options from ui', () => {
 
     e2e.components.LoadingIndicator.icon().should('have.length', 0);
 
-    e2e.pages.Dashboard.SubMenu.submenuItemValueDropDownValueLinkTexts('BB').should('be.visible').click();
+    e2e.pages.Dashboard.SubMenu.submenuItemValueDropDownValueLinkTexts('BB')
+      .should('be.visible')
+      .should('match', 'button')
+      .click();
 
     e2e.pages.Dashboard.SubMenu.submenuItemValueDropDownDropDown()
       .should('be.visible')
