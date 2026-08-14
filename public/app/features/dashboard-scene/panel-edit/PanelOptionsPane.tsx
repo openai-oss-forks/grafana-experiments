@@ -58,10 +58,7 @@ export class PanelOptionsPane extends SceneObjectBase<PanelOptionsPaneState> {
       item: INTERACTION_ITEM.TOGGLE_DROPDOWN,
       open: newState,
     });
-    this.setState({
-      isVizPickerOpen: newState,
-      hasPickedViz: this.state.hasPickedViz || newState === false,
-    });
+    this.setState({ isVizPickerOpen: newState });
   };
 
   onChangePanel = (options: VizTypeChangeDetails, panel = this.state.panelRef.resolve()) => {

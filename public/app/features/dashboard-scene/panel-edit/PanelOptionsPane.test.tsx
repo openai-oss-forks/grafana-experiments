@@ -32,6 +32,15 @@ describe('PanelOptionsPane', () => {
       expect(optionsPane.state.isVizPickerOpen).toBe(withModKey);
     });
 
+    it('does not treat closing the visualization picker as an explicit selection', () => {
+      const { optionsPane } = setupTest('panel-1');
+      optionsPane.setState({ isNewPanel: true, isVizPickerOpen: true });
+
+      optionsPane.onToggleVizPicker();
+
+      expect(optionsPane.state.hasPickedViz).toBeUndefined();
+    });
+
     it('does not treat a visualization preview as an explicit selection', () => {
       const { optionsPane, panel } = setupTest('panel-1');
       const preview = panel.clone();

@@ -239,11 +239,10 @@ export class PanelEditor extends SceneObjectBase<PanelEditorState> {
           continue;
         }
 
-        if (panel.state.pluginId !== preferredPluginId) {
-          panel.changePluginType(preferredPluginId);
-        }
-        if (this.state.editPreview && this.state.editPreview.state.pluginId !== preferredPluginId) {
-          this.state.editPreview.changePluginType(preferredPluginId);
+        for (const target of [panel, this.state.editPreview]) {
+          if (target && target.state.pluginId !== preferredPluginId) {
+            target.changePluginType(preferredPluginId);
+          }
         }
         return;
       }

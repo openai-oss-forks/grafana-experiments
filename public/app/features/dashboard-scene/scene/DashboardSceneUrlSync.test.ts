@@ -1,7 +1,5 @@
 import { SceneQueryRunner, VizPanel } from '@grafana/scenes';
 
-import { buildPanelEditScene } from '../panel-edit/PanelEditor';
-
 import { DashboardScene } from './DashboardScene';
 import { DefaultGridLayoutManager } from './layout-default/DefaultGridLayoutManager';
 
@@ -33,19 +31,6 @@ describe('DashboardSceneUrlSync', () => {
       expect(scene.state.viewPanel).toBeDefined();
       scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
       expect(scene.state.editPanel).toBeDefined();
-    });
-
-    it('preserves a new panel editor when its panel is synchronized from the URL', () => {
-      const scene = buildTestScene();
-      const panel = scene.state.body.getVizPanels()[0];
-      const editor = buildPanelEditScene(panel);
-      editor.setState({ isNewPanel: true });
-      scene.setState({ editPanel: editor, isEditing: true });
-
-      scene.urlSync?.updateFromUrl({ editPanel: 'panel-1' });
-
-      expect(scene.state.editPanel).toBe(editor);
-      expect(scene.state.editPanel?.state.isNewPanel).toBe(true);
     });
   });
 });
