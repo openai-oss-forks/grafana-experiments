@@ -148,7 +148,7 @@ func TestIntegrationPreferences(t *testing.T) {
 			"weekStart":"saturday",
 			"theme":"dark",
 			"language":"en-US", `+ // FROM global default!
-			`"regionalFormat": ""}`, // why empty?
+			`"regionalFormat": "", "sharedCrosshair": false}`, // why empty?
 			string(jj))
 
 		merged := apis.DoRequest(helper, apis.RequestParams{

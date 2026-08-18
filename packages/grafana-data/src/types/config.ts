@@ -181,6 +181,7 @@ export interface CurrentUserDTO {
   weekStart: string;
   regionalFormat: string;
   language: string;
+  sharedCrosshair?: boolean;
   permissions?: Record<string, boolean>;
   analytics: AnalyticsSettings;
   authenticatedBy: string;

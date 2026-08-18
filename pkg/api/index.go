@@ -131,6 +131,7 @@ func (hs *HTTPServer) setIndexViewData(c *contextmodel.ReqContext) (*dtos.IndexV
 	if prefs.WeekStart != nil {
 		weekStart = *prefs.WeekStart
 	}
+	sharedCrosshair := prefs.JSONData != nil && prefs.JSONData.SharedCrosshair != nil && *prefs.JSONData.SharedCrosshair
 
 	theme := hs.getThemeForIndexData(prefs.Theme, urlPrefs.Theme)
 	assets, err := webassets.GetWebAssets(c.Req.Context(), hs.Cfg, hs.License)
@@ -162,6 +163,7 @@ func (hs *HTTPServer) setIndexViewData(c *contextmodel.ReqContext) (*dtos.IndexV
 			Locale:                     locale, // << will be removed in favor of RegionalFormat
 			RegionalFormat:             regionalFormat,
 			Language:                   language,
+			SharedCrosshair:            sharedCrosshair,
 			HelpFlags1:                 c.HelpFlags1,
 			HasEditPermissionInFolders: hasEditPerm,
 			Analytics:                  hs.buildUserAnalyticsSettings(c),
