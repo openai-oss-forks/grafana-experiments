@@ -4,22 +4,14 @@ title: Configure panel Explore actions
 
 # Configure panel Explore actions
 
-This fork lets you configure the native dashboard panel-menu Explore label and lets app plugins choose positions for their top-level menu links.
-
-## Configure the native label
-
-Set `panel_menu_label` in the `[explore]` section of your Grafana configuration. The default is empty, which keeps the existing localized label.
+Set the native panel-menu Explore label in Grafana's configuration. An empty value keeps the localized default.
 
 ```ini
 [explore]
 panel_menu_label = Built-in Explore
 ```
 
-You can also set `GF_EXPLORE_PANEL_MENU_LABEL` in the server environment.
-
-## Position a plugin action
-
-Register a link for `PluginExtensionPoints.DashboardPanelMenu` with `category: 'top-level'` and an optional `panelMenuPosition`:
+The environment-variable equivalent is `GF_EXPLORE_PANEL_MENU_LABEL`. App plugins can independently position top-level panel-menu links:
 
 ```ts
 plugin.addLink({
@@ -32,8 +24,6 @@ plugin.addLink({
 });
 ```
 
-Positions are zero-based indexes in the completed panel menu: `0` is first and `1` is second. Links with the same position keep their existing relative order. Positions beyond the end append the link. Omitted, negative, and non-integer positions preserve the default placement. Positions do not affect nested extension links.
+Positions are zero-based: `0` is first. Ties keep their existing order; positions beyond the end append. Omitted, negative, or non-integer values preserve default placement. Nested links are unaffected. The link's `configure` callback can override its position or return `undefined` to hide it.
 
-The position does not depend on the link's title. Existing titles, destinations, click handlers, shortcuts, and edit-mode visibility remain unchanged. Use the link's `configure` callback to override its position or return `undefined` for unsupported panels. Embedded dashboards continue to omit extensions.
-
-Product-specific names, destinations, and release labels belong in your app plugin. Keep its link registration title and declared extension title in `plugin.json` consistent.
+Positioning does not depend on titles or change shortcuts and visibility. Keep product-specific names and destinations in the app plugin, with matching registration and `plugin.json` titles.
