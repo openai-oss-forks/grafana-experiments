@@ -21,6 +21,7 @@ export type AddedLinkRegistryItem<Context extends object = object> = {
   configure?: PluginAddedLinksConfigureFunc<Context>;
   icon?: IconName;
   category?: string;
+  panelMenuPosition?: number;
   openInNewTab?: boolean;
 };
 

@@ -114,7 +114,6 @@ export class GrafanaBootConfig {
   authProxyEnabled = false;
   exploreEnabled = false;
   explorePanelMenuLabel = '';
-  explorePanelMenuExtensionFirst = false;
   queryHistoryEnabled = false;
   helpEnabled = false;
   profileEnabled = false;

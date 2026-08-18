@@ -132,18 +132,15 @@ func TestIntegrationHTTPServer_GetFrontendSettings_panelExplore(t *testing.T) {
 	testutil.SkipIntegrationTestInShortMode(t)
 	cfg := setting.NewCfg()
 	cfg.ExplorePanelMenuLabel = "Built-in Explore"
-	cfg.ExplorePanelMenuExtensionFirst = true
 	m, _ := setupTestEnvironment(t, cfg, featuremgmt.WithFeatures(), nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	m.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/frontend/settings", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
 	var got struct {
-		Label          string `json:"explorePanelMenuLabel"`
-		ExtensionFirst bool   `json:"explorePanelMenuExtensionFirst"`
+		Label string `json:"explorePanelMenuLabel"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
 	require.Equal(t, "Built-in Explore", got.Label)
-	require.True(t, got.ExtensionFirst)
 }
 
 func TestIntegrationHTTPServer_GetFrontendSettings_hideVersionAnonymous(t *testing.T) {

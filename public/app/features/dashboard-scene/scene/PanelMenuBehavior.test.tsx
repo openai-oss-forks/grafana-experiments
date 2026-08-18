@@ -130,20 +130,17 @@ describe('panelMenuBehavior', () => {
   describe('when extending panel menu from plugins', () => {
     describe('configured Explore presentation', () => {
       const originalLabel = config.explorePanelMenuLabel;
-      const originalExtensionFirst = config.explorePanelMenuExtensionFirst;
 
       afterEach(() => {
         config.explorePanelMenuLabel = originalLabel;
-        config.explorePanelMenuExtensionFirst = originalExtensionFirst;
       });
 
       it.each([
-        { label: '', extensionFirst: true, expected: ['Extension Explore', 'Grafana Explore'] },
-        { label: 'Built-in Explore', extensionFirst: false, expected: ['Built-in Explore', 'Extension Explore'] },
-        { label: 'Built-in Explore', extensionFirst: true, expected: ['Extension Explore', 'Built-in Explore'] },
-      ])('configures label and order independently: $expected', async ({ label, extensionFirst, expected }) => {
+        { label: '', position: 0, expected: ['Extension Explore', 'Grafana Explore'] },
+        { label: 'Built-in Explore', position: undefined, expected: ['Built-in Explore', 'Extension Explore'] },
+        { label: 'Built-in Explore', position: 0, expected: ['Extension Explore', 'Built-in Explore'] },
+      ])('configures label and order independently: $expected', async ({ label, position, expected }) => {
         config.explorePanelMenuLabel = label;
-        config.explorePanelMenuExtensionFirst = extensionFirst;
         const onClick = jest.fn();
         getPluginExtensionsMock.mockReturnValue({
           extensions: [
@@ -155,6 +152,7 @@ describe('panelMenuBehavior', () => {
               description: 'Open the panel in an Explore extension',
               path: '/a/grafana-example-app/explore',
               category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+              panelMenuPosition: position,
               onClick,
             },
           ],
@@ -174,9 +172,45 @@ describe('panelMenuBehavior', () => {
         expect(onClick).toHaveBeenCalledTimes(1);
       });
 
+      it('positions an action independently of its title and ignores positions on nested links', async () => {
+        getPluginExtensionsMock.mockReturnValue({
+          extensions: [
+            {
+              id: 'nested',
+              pluginId: 'grafana-example-app',
+              type: PluginExtensionTypes.link,
+              title: 'Nested action',
+              description: '',
+              path: '/a/grafana-example-app/nested',
+              panelMenuPosition: 0,
+            },
+            {
+              id: 'positioned',
+              pluginId: 'grafana-example-app',
+              type: PluginExtensionTypes.link,
+              title: 'Run analysis',
+              description: '',
+              path: '/a/grafana-example-app/analysis',
+              category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+              panelMenuPosition: 1,
+            },
+          ],
+        });
+        const { menu, panel } = await buildTestScene({});
+        panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+        mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+        mocks.getExploreUrl.mockResolvedValue('/explore');
+        menu.activate();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+
+        expect(menu.state.items?.slice(0, 3).map((item) => item.text)).toEqual(['View', 'Run analysis', 'Edit']);
+        expect(menu.state.items?.find((item) => item.text === 'Extensions')?.subMenu).toEqual(
+          expect.arrayContaining([expect.objectContaining({ text: 'Nested action' })])
+        );
+      });
+
       it.each([false, true])('uses the configured label without an extension, embedded=%s', async (isEmbedded) => {
         config.explorePanelMenuLabel = 'Built-in Explore';
-        config.explorePanelMenuExtensionFirst = true;
         getPluginExtensionsMock.mockReturnValue({ extensions: [] });
         const { menu, panel } = await buildTestScene({ isEmbedded });
         panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });

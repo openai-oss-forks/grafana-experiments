@@ -21,6 +21,7 @@ import {
 } from 'app/features/dashboard/utils/panel';
 import { InspectTab } from 'app/features/inspector/types';
 import { isPanelModelLibraryPanel } from 'app/features/library-panels/guard';
+import { applyPanelMenuPositions } from 'app/features/plugins/extensions/panelMenuPosition';
 import { createExtensionSubMenu, PANEL_MENU_TOP_LEVEL_CATEGORY } from 'app/features/plugins/extensions/utils';
 import { SHARED_DASHBOARD_QUERY } from 'app/plugins/datasource/dashboard/constants';
 import { dispatch, store } from 'app/store/store';
@@ -103,7 +104,7 @@ export function getPanelMenu(
   };
 
   const menu: PanelMenuItem[] = [];
-  let exploreMenuItem: PanelMenuItem | undefined;
+  const positions = new Map<PanelMenuItem, number | undefined>();
 
   if (!panel.isEditing) {
     menu.push({
@@ -135,13 +136,12 @@ export function getPanelMenu(
     !(panel.plugin && panel.plugin.meta.skipDataQuery) &&
     panel.datasource?.uid !== SHARED_DASHBOARD_QUERY
   ) {
-    exploreMenuItem = {
+    menu.push({
       text: config.explorePanelMenuLabel || t('panel.header-menu.explore', `Explore`),
       iconClassName: 'compass',
       onClick: onNavigateToExplore,
       shortcut: 'p x',
-    };
-    menu.push(exploreMenuItem);
+    });
   }
 
   const inspectMenu: PanelMenuItem[] = [];
@@ -295,21 +295,7 @@ export function getPanelMenu(
       const topLevelItems = createExtensionSubMenu(
         topLevelExtensions.map((extension) => ({ ...extension, category: undefined }))
       );
-      const exploreExtensionIndex = config.explorePanelMenuExtensionFirst
-        ? topLevelExtensions.findIndex((extension) => extension.title.endsWith('Explore'))
-        : -1;
-
-      if (exploreExtensionIndex !== -1) {
-        const [exploreExtensionItem] = topLevelItems.splice(exploreExtensionIndex, 1);
-        exploreExtensionItem.shortcut = '⇧ X';
-        if (exploreMenuItem) {
-          menu.splice(menu.indexOf(exploreMenuItem), 1);
-          menu.unshift(exploreExtensionItem, exploreMenuItem);
-        } else {
-          menu.unshift(exploreExtensionItem);
-        }
-      }
-
+      topLevelItems.forEach((item, index) => positions.set(item, topLevelExtensions[index].panelMenuPosition));
       menu.push(...topLevelItems);
     }
   }
@@ -334,5 +320,5 @@ export function getPanelMenu(
     });
   }
 
-  return menu;
+  return applyPanelMenuPositions(menu, positions);
 }

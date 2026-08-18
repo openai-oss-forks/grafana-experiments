@@ -144,6 +144,7 @@ export const getPluginExtensions: GetExtensions = ({
         description: overrides?.description || addedLink.description || '',
         path: isString(path) ? getLinkExtensionPathWithTracking(pluginId, path, extensionPointId) : undefined,
         category: overrides?.category || addedLink.category,
+        panelMenuPosition: overrides?.panelMenuPosition ?? addedLink.panelMenuPosition,
         openInNewTab: overrides?.openInNewTab ?? addedLink.openInNewTab,
       };
 

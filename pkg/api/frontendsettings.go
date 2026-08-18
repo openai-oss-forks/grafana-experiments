@@ -224,7 +224,6 @@ func (hs *HTTPServer) getFrontendSettings(c *contextmodel.ReqContext) (*dtos.Fro
 		RbacEnabled:                          true,
 		ExploreEnabled:                       hs.Cfg.ExploreEnabled,
 		ExplorePanelMenuLabel:                hs.Cfg.ExplorePanelMenuLabel,
-		ExplorePanelMenuExtensionFirst:       hs.Cfg.ExplorePanelMenuExtensionFirst,
 		HelpEnabled:                          hs.Cfg.HelpEnabled,
 		ProfileEnabled:                       hs.Cfg.ProfileEnabled,
 		NewsFeedEnabled:                      hs.Cfg.NewsFeedEnabled,

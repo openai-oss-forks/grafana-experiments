@@ -4,21 +4,36 @@ title: Configure panel Explore actions
 
 # Configure panel Explore actions
 
-This fork provides two independent settings in the `[explore]` section of your Grafana configuration:
+This fork lets you configure the native dashboard panel-menu Explore label and lets app plugins choose positions for their top-level menu links.
 
-- `panel_menu_label` overrides the native dashboard panel-menu Explore label. The default is empty, which keeps the existing localized label.
-- `panel_menu_extension_first` places the first available top-level Explore extension before native Explore. The default is `false`, which preserves the existing menu order.
+## Configure the native label
 
-For example, you can configure an alternative workflow without naming an integration in the fork:
+Set `panel_menu_label` in the `[explore]` section of your Grafana configuration. The default is empty, which keeps the existing localized label.
 
 ```ini
 [explore]
 panel_menu_label = Built-in Explore
-panel_menu_extension_first = true
 ```
 
-You can also set `GF_EXPLORE_PANEL_MENU_LABEL` and `GF_EXPLORE_PANEL_MENU_EXTENSION_FIRST` in the server environment.
+You can also set `GF_EXPLORE_PANEL_MENU_LABEL` in the server environment.
 
-Explore extensions use the existing `top-level` link category and a title ending in `Explore`. Their configured titles, destinations, and click handlers remain unchanged. Use the link's `configure` callback to return `undefined` for unsupported panels. If no matching extension is available, no extension is promoted. Embedded dashboards continue to omit extensions.
+## Position a plugin action
+
+Register a link for `PluginExtensionPoints.DashboardPanelMenu` with `category: 'top-level'` and an optional `panelMenuPosition`:
+
+```ts
+plugin.addLink({
+  targets: [PluginExtensionPoints.DashboardPanelMenu],
+  category: 'top-level',
+  panelMenuPosition: 0,
+  title: 'Run analysis',
+  description: 'Analyze the current panel',
+  path: '/a/grafana-example-app/analysis',
+});
+```
+
+Positions are zero-based indexes in the completed panel menu: `0` is first and `1` is second. Links with the same position keep their existing relative order. Positions beyond the end append the link. Omitted, negative, and non-integer positions preserve the default placement. Positions do not affect nested extension links.
+
+The position does not depend on the link's title. Existing titles, destinations, click handlers, shortcuts, and edit-mode visibility remain unchanged. Use the link's `configure` callback to override its position or return `undefined` for unsupported panels. Embedded dashboards continue to omit extensions.
 
 Product-specific names, destinations, and release labels belong in your app plugin. Keep its link registration title and declared extension title in `plugin.json` consistent.

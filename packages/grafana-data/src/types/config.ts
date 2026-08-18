@@ -245,7 +245,6 @@ export interface GrafanaConfig {
   authProxyEnabled: boolean;
   exploreEnabled: boolean;
   explorePanelMenuLabel: string;
-  explorePanelMenuExtensionFirst: boolean;
   queryHistoryEnabled: boolean;
   helpEnabled: boolean;
   profileEnabled: boolean;
