@@ -1,6 +1,6 @@
 import { PanelMenuItem, urlUtil, PluginExtensionLink } from '@grafana/data';
 import { t } from '@grafana/i18n';
-import { locationService } from '@grafana/runtime';
+import { config, locationService } from '@grafana/runtime';
 import { createErrorNotification } from 'app/core/copy/appNotification';
 import { notifyApp } from 'app/core/reducers/appNotification';
 import { contextSrv } from 'app/core/services/context_srv';
@@ -103,6 +103,7 @@ export function getPanelMenu(
   };
 
   const menu: PanelMenuItem[] = [];
+  let exploreMenuItem: PanelMenuItem | undefined;
 
   if (!panel.isEditing) {
     menu.push({
@@ -134,12 +135,13 @@ export function getPanelMenu(
     !(panel.plugin && panel.plugin.meta.skipDataQuery) &&
     panel.datasource?.uid !== SHARED_DASHBOARD_QUERY
   ) {
-    menu.push({
-      text: t('panel.header-menu.explore', `Explore`),
+    exploreMenuItem = {
+      text: config.explorePanelMenuLabel || t('panel.header-menu.explore', `Explore`),
       iconClassName: 'compass',
       onClick: onNavigateToExplore,
       shortcut: 'p x',
-    });
+    };
+    menu.push(exploreMenuItem);
   }
 
   const inspectMenu: PanelMenuItem[] = [];
@@ -290,9 +292,25 @@ export function getPanelMenu(
     }
 
     if (topLevelExtensions.length > 0) {
-      menu.push(
-        ...createExtensionSubMenu(topLevelExtensions.map((extension) => ({ ...extension, category: undefined })))
+      const topLevelItems = createExtensionSubMenu(
+        topLevelExtensions.map((extension) => ({ ...extension, category: undefined }))
       );
+      const exploreExtensionIndex = config.explorePanelMenuExtensionFirst
+        ? topLevelExtensions.findIndex((extension) => extension.title.endsWith('Explore'))
+        : -1;
+
+      if (exploreExtensionIndex !== -1) {
+        const [exploreExtensionItem] = topLevelItems.splice(exploreExtensionIndex, 1);
+        exploreExtensionItem.shortcut = '⇧ X';
+        if (exploreMenuItem) {
+          menu.splice(menu.indexOf(exploreMenuItem), 1);
+          menu.unshift(exploreExtensionItem, exploreMenuItem);
+        } else {
+          menu.unshift(exploreExtensionItem);
+        }
+      }
+
+      menu.push(...topLevelItems);
     }
   }
 

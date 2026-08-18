@@ -128,6 +128,71 @@ describe('panelMenuBehavior', () => {
   });
 
   describe('when extending panel menu from plugins', () => {
+    describe('configured Explore presentation', () => {
+      const originalLabel = config.explorePanelMenuLabel;
+      const originalExtensionFirst = config.explorePanelMenuExtensionFirst;
+
+      afterEach(() => {
+        config.explorePanelMenuLabel = originalLabel;
+        config.explorePanelMenuExtensionFirst = originalExtensionFirst;
+      });
+
+      it.each([
+        { label: '', extensionFirst: true, expected: ['Extension Explore', 'Grafana Explore'] },
+        { label: 'Built-in Explore', extensionFirst: false, expected: ['Built-in Explore', 'Extension Explore'] },
+        { label: 'Built-in Explore', extensionFirst: true, expected: ['Extension Explore', 'Built-in Explore'] },
+      ])('configures label and order independently: $expected', async ({ label, extensionFirst, expected }) => {
+        config.explorePanelMenuLabel = label;
+        config.explorePanelMenuExtensionFirst = extensionFirst;
+        const onClick = jest.fn();
+        getPluginExtensionsMock.mockReturnValue({
+          extensions: [
+            {
+              id: 'example',
+              pluginId: 'grafana-example-app',
+              type: PluginExtensionTypes.link,
+              title: 'Extension Explore',
+              description: 'Open the panel in an Explore extension',
+              path: '/a/grafana-example-app/explore',
+              category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+              onClick,
+            },
+          ],
+        });
+        const { menu, panel } = await buildTestScene({});
+        panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+        mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+        mocks.getExploreUrl.mockResolvedValue('/explore');
+        menu.activate();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+
+        expect(menu.state.items?.slice(0, 2).map((item) => item.text)).toEqual(expected);
+        expect(menu.state.items?.find((item) => item.shortcut === 'p x')?.href).toBe('/explore');
+        const extension = menu.state.items?.find((item) => item.shortcut === '⇧ X');
+        expect(extension?.href).toBe('/a/grafana-example-app/explore');
+        extension?.onClick?.({} as React.MouseEvent);
+        expect(onClick).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([false, true])('uses the configured label without an extension, embedded=%s', async (isEmbedded) => {
+        config.explorePanelMenuLabel = 'Built-in Explore';
+        config.explorePanelMenuExtensionFirst = true;
+        getPluginExtensionsMock.mockReturnValue({ extensions: [] });
+        const { menu, panel } = await buildTestScene({ isEmbedded });
+        panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+        mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+        mocks.getExploreUrl.mockResolvedValue('/explore');
+        menu.activate();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+
+        expect(menu.state.items?.find((item) => item.shortcut === 'p x')).toMatchObject({
+          text: 'Built-in Explore',
+          href: '/explore',
+        });
+        expect(menu.state.items?.some((item) => item.shortcut === '⇧ X')).toBe(false);
+      });
+    });
+
     it('should contain menu item from link extension', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [

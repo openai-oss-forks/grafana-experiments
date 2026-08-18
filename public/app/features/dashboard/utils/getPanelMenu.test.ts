@@ -117,6 +117,47 @@ describe('getPanelMenu()', () => {
   });
 
   describe('when extending panel menu from plugins', () => {
+    describe('configured Explore presentation', () => {
+      const originalLabel = config.explorePanelMenuLabel;
+      const originalExtensionFirst = config.explorePanelMenuExtensionFirst;
+
+      afterEach(() => {
+        config.explorePanelMenuLabel = originalLabel;
+        config.explorePanelMenuExtensionFirst = originalExtensionFirst;
+      });
+
+      it.each([
+        { label: '', extensionFirst: true, expected: ['Extension Explore', 'Explore'] },
+        { label: 'Built-in Explore', extensionFirst: true, expected: ['Extension Explore', 'Built-in Explore'] },
+        { label: 'Built-in Explore', extensionFirst: false, expected: ['Built-in Explore', 'Extension Explore'] },
+      ])('configures label and order independently: $expected', ({ label, extensionFirst, expected }) => {
+        config.explorePanelMenuLabel = label;
+        config.explorePanelMenuExtensionFirst = extensionFirst;
+        const onClick = jest.fn();
+        const extension: PluginExtensionLink = {
+          id: 'example',
+          pluginId: 'grafana-example-app',
+          type: PluginExtensionTypes.link,
+          title: 'Extension Explore',
+          description: 'Open the panel in an Explore extension',
+          path: '/a/grafana-example-app/explore',
+          category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+          onClick,
+        };
+        const items = getPanelMenu(createDashboardModelFixture({}), new PanelModel({}), [extension]);
+        expect(
+          items.filter((item) => item.shortcut === 'p x' || item.text === extension.title).map((item) => item.text)
+        ).toEqual(expected);
+        expect(items.find((item) => item.shortcut === 'p x')?.onClick).toEqual(expect.any(Function));
+        items.find((item) => item.text === extension.title)?.onClick?.({} as React.MouseEvent);
+        expect(onClick).toHaveBeenCalledTimes(1);
+        if (extensionFirst) {
+          expect(items.slice(0, 2).map((item) => item.text)).toEqual(expected);
+          expect(items[0].shortcut).toBe('⇧ X');
+        }
+      });
+    });
+
     it('should contain menu item from link extension', () => {
       const extensions: PluginExtensionLink[] = [
         {

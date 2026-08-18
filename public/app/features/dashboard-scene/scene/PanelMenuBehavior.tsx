@@ -368,7 +368,11 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
 
           if (exploreMenuItem) {
             items.splice(items.indexOf(exploreMenuItem), 1);
-            items.unshift(exploreMenuItem, exploreExtensionItem);
+            items.unshift(
+              ...(config.explorePanelMenuExtensionFirst
+                ? [exploreExtensionItem, exploreMenuItem]
+                : [exploreMenuItem, exploreExtensionItem])
+            );
           } else {
             items.unshift(exploreExtensionItem);
           }
@@ -462,7 +466,7 @@ async function getExploreMenuItem(panel: VizPanel): Promise<PanelMenuItem | unde
   }
 
   return {
-    text: t('panel.header-menu.grafana-explore', 'Grafana Explore'),
+    text: config.explorePanelMenuLabel || t('panel.header-menu.grafana-explore', 'Grafana Explore'),
     iconClassName: 'compass',
     shortcut: 'p x',
     href: exploreUrl,
