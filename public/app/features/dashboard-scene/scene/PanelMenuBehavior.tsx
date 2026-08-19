@@ -26,6 +26,7 @@ import { getTrackingSource, shareDashboardType } from 'app/features/dashboard/co
 import { InspectTab } from 'app/features/inspector/types';
 import { getScenePanelLinksSupplier } from 'app/features/panel/panellinks/linkSuppliers';
 import { createPluginExtensionsGetter } from 'app/features/plugins/extensions/getPluginExtensions';
+import { applyPanelMenuPositions } from 'app/features/plugins/extensions/panelMenuPosition';
 import { getPluginExtensionRegistries } from 'app/features/plugins/extensions/registry/setup';
 import { PluginExtensionRegistries } from 'app/features/plugins/extensions/registry/types';
 import { GetPluginExtensions } from 'app/features/plugins/extensions/types';
@@ -76,6 +77,7 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
     const plugin = panel.getPlugin();
 
     const items: PanelMenuItem[] = [];
+    const positions = new Map<PanelMenuItem, number | undefined>();
     const moreSubMenu: PanelMenuItem[] = [];
     const dashboard = getDashboardSceneFor(panel);
     const { isEmbedded } = dashboard.state.meta;
@@ -360,6 +362,7 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
 
       if (topLevelLinks.length > 0) {
         const topLevelItems = createExtensionSubMenu(topLevelLinks.map((link) => ({ ...link, category: undefined })));
+        topLevelItems.forEach((item, index) => positions.set(item, topLevelLinks[index].panelMenuPosition));
         const exploreExtensionIndex = topLevelLinks.findIndex(isTopLevelExploreExtension);
 
         if (exploreExtensionIndex !== -1) {
@@ -449,7 +452,7 @@ export function panelMenuBehavior(menu: VizPanelMenu) {
       });
     }
 
-    menu.setState({ items });
+    menu.setState({ items: applyPanelMenuPositions(items, positions) });
   };
 
   asyncFunc();
@@ -462,7 +465,7 @@ async function getExploreMenuItem(panel: VizPanel): Promise<PanelMenuItem | unde
   }
 
   return {
-    text: t('panel.header-menu.grafana-explore', 'Grafana Explore'),
+    text: config.explorePanelMenuLabel || t('panel.header-menu.grafana-explore', 'Grafana Explore'),
     iconClassName: 'compass',
     shortcut: 'p x',
     href: exploreUrl,

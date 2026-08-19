@@ -133,6 +133,17 @@ describe('getPluginExtensions()', () => {
     );
   });
 
+  test.each([
+    { configured: undefined, expected: 3 },
+    { configured: 0, expected: 0 },
+  ])('preserves plugin positions through registration and configure: $expected', async ({ configured, expected }) => {
+    link1.panelMenuPosition = 3;
+    link1.configure = () => (configured === undefined ? {} : { panelMenuPosition: configured });
+    const registries = await createRegistries([{ pluginId, addedLinkConfigs: [link1], addedComponentConfigs: [] }]);
+    const { extensions } = getPluginExtensions({ ...registries, extensionPointId: extensionPoint1 });
+    expect(extensions[0]).toMatchObject({ panelMenuPosition: expected });
+  });
+
   test('should not limit the number of extensions per plugin by default', async () => {
     // Registering 3 extensions for the same plugin for the same placement
     const registries = await createRegistries([

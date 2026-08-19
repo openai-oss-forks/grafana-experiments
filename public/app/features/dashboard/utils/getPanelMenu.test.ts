@@ -117,6 +117,34 @@ describe('getPanelMenu()', () => {
   });
 
   describe('when extending panel menu from plugins', () => {
+    it('applies the configured label and positions only top-level links', () => {
+      const originalLabel = config.explorePanelMenuLabel;
+      const action: PluginExtensionLink = {
+        id: 'example',
+        pluginId: 'grafana-example-app',
+        type: PluginExtensionTypes.link,
+        title: 'Run analysis',
+        description: '',
+        path: '/a/grafana-example-app/analysis',
+        category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+        panelMenuPosition: 0,
+      };
+      try {
+        config.explorePanelMenuLabel = 'Built-in Explore';
+        const items = getPanelMenu(createDashboardModelFixture({}), new PanelModel({}), [
+          action,
+          { ...action, id: 'nested', title: 'Nested action', category: undefined },
+        ]);
+        expect(items[0]).toMatchObject({ text: action.title, href: action.path });
+        expect(items.find((item) => item.shortcut === 'p x')?.text).toBe('Built-in Explore');
+        expect(items.find((item) => item.text === 'Extensions')?.subMenu).toEqual(
+          expect.arrayContaining([expect.objectContaining({ text: 'Nested action' })])
+        );
+      } finally {
+        config.explorePanelMenuLabel = originalLabel;
+      }
+    });
+
     it('should contain menu item from link extension', () => {
       const extensions: PluginExtensionLink[] = [
         {

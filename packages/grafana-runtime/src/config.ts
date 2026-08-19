@@ -113,6 +113,7 @@ export class GrafanaBootConfig {
   defaultDatasource = ''; // UID
   authProxyEnabled = false;
   exploreEnabled = false;
+  explorePanelMenuLabel = '';
   queryHistoryEnabled = false;
   helpEnabled = false;
   profileEnabled = false;

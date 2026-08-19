@@ -2,6 +2,7 @@ import {
   FieldType,
   LoadingState,
   PanelData,
+  PluginExtensionLink,
   PluginExtensionPanelContext,
   PluginExtensionTypes,
   getDefaultTimeRange,
@@ -128,6 +129,43 @@ describe('panelMenuBehavior', () => {
   });
 
   describe('when extending panel menu from plugins', () => {
+    it('applies the configured label and positions only top-level links', async () => {
+      const originalLabel = config.explorePanelMenuLabel;
+      const action: PluginExtensionLink = {
+        id: 'example',
+        pluginId: 'grafana-example-app',
+        type: PluginExtensionTypes.link,
+        title: 'Run analysis',
+        description: '',
+        path: '/a/grafana-example-app/analysis',
+        category: PANEL_MENU_TOP_LEVEL_CATEGORY,
+        panelMenuPosition: 0,
+      };
+      getPluginExtensionsMock.mockReturnValue({
+        extensions: [action, { ...action, id: 'nested', title: 'Nested action', category: undefined }],
+      });
+      try {
+        config.explorePanelMenuLabel = 'Built-in Explore';
+        const { menu, panel } = await buildTestScene({});
+        panel.getPlugin = () => getPanelPlugin({ skipDataQuery: false });
+        mocks.contextSrv.hasAccessToExplore.mockReturnValue(true);
+        mocks.getExploreUrl.mockResolvedValue('/explore');
+        menu.activate();
+        await new Promise((resolve) => setTimeout(resolve, 1));
+
+        expect(menu.state.items?.[0]).toMatchObject({ text: action.title, href: action.path });
+        expect(menu.state.items?.find((item) => item.shortcut === 'p x')).toMatchObject({
+          text: 'Built-in Explore',
+          href: '/explore',
+        });
+        expect(menu.state.items?.find((item) => item.text === 'Extensions')?.subMenu).toEqual(
+          expect.arrayContaining([expect.objectContaining({ text: 'Nested action' })])
+        );
+      } finally {
+        config.explorePanelMenuLabel = originalLabel;
+      }
+    });
+
     it('should contain menu item from link extension', async () => {
       getPluginExtensionsMock.mockReturnValue({
         extensions: [

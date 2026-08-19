@@ -31,6 +31,7 @@ export type PluginExtensionLink = PluginExtensionBase & {
   onClick?: (event?: React.MouseEvent) => void;
   icon?: IconName;
   category?: string;
+  panelMenuPosition?: number;
   openInNewTab?: boolean;
 };
 
@@ -109,6 +110,7 @@ export type PluginAddedLinksConfigureFunc<Context extends object> = (context: Re
       onClick: (event: React.MouseEvent | undefined, helpers: PluginExtensionEventHelpers<Context>) => void;
       icon: IconName;
       category: string;
+      panelMenuPosition: number;
       openInNewTab: boolean;
     }>
   | undefined;
@@ -141,6 +143,10 @@ export type PluginExtensionAddedLinkConfig<Context extends object = object> = Pl
 
   // (Optional) A category to be used when grouping the options in the ui
   category?: string;
+
+  // Optional zero-based position for top-level dashboard panel-menu links.
+  // Non-negative integers are accepted; omitting it preserves the default order.
+  panelMenuPosition?: number;
 
   // (Optional) If true, opens the link in a new tab (renders with target="_blank")
   // (Important: this is not guaranteed, depends on the extension point if it implements it.)

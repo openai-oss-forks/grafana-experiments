@@ -491,6 +491,7 @@ export function getLinkExtensionOverrides(
       path = config.path,
       icon = config.icon,
       category = config.category,
+      panelMenuPosition = config.panelMenuPosition,
       openInNewTab = config.openInNewTab,
       ...rest
     } = overrides;
@@ -516,6 +517,7 @@ export function getLinkExtensionOverrides(
       path,
       icon,
       category,
+      panelMenuPosition,
       openInNewTab,
     };
   } catch (error) {

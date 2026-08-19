@@ -35,6 +35,7 @@ func TestLoadingSettings(t *testing.T) {
 		require.Equal(t, "admin", cfg.AdminUser)
 		require.Equal(t, "", cfg.RendererCallbackUrl)
 		require.Equal(t, "TLS1.2", cfg.MinTLSVersion)
+		require.Empty(t, cfg.ExplorePanelMenuLabel)
 	})
 
 	t.Run("default.ini should have no semi-colon commented entries", func(t *testing.T) {
@@ -76,6 +77,13 @@ func TestLoadingSettings(t *testing.T) {
 		require.Equal(t, "superduper", cfg.AdminUser)
 		require.Equal(t, filepath.Join(cfg.HomePath, "data"), cfg.DataPath)
 		require.Equal(t, filepath.Join(cfg.DataPath, "log"), cfg.LogsPath)
+	})
+
+	t.Run("Should configure the panel Explore label", func(t *testing.T) {
+		t.Setenv("GF_EXPLORE_PANEL_MENU_LABEL", "Built-in Explore")
+		cfg := NewCfg()
+		require.NoError(t, cfg.Load(CommandLineArgs{HomePath: "../../"}))
+		require.Equal(t, "Built-in Explore", cfg.ExplorePanelMenuLabel)
 	})
 
 	t.Run("Should be able to override via plugins.preinstall with GF_INSTALL_PLUGINS env var when GF_PLUGINS_PREINSTALL and cfg.plugins.preinstall are not set", func(t *testing.T) {

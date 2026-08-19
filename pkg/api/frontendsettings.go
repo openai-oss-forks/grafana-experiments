@@ -223,6 +223,7 @@ func (hs *HTTPServer) getFrontendSettings(c *contextmodel.ReqContext) (*dtos.Fro
 		AzureAuthEnabled:                     hs.Cfg.AzureAuthEnabled,
 		RbacEnabled:                          true,
 		ExploreEnabled:                       hs.Cfg.ExploreEnabled,
+		ExplorePanelMenuLabel:                hs.Cfg.ExplorePanelMenuLabel,
 		HelpEnabled:                          hs.Cfg.HelpEnabled,
 		ProfileEnabled:                       hs.Cfg.ProfileEnabled,
 		NewsFeedEnabled:                      hs.Cfg.NewsFeedEnabled,

@@ -1,6 +1,6 @@
 import { PanelMenuItem, urlUtil, PluginExtensionLink } from '@grafana/data';
 import { t } from '@grafana/i18n';
-import { locationService } from '@grafana/runtime';
+import { config, locationService } from '@grafana/runtime';
 import { createErrorNotification } from 'app/core/copy/appNotification';
 import { notifyApp } from 'app/core/reducers/appNotification';
 import { contextSrv } from 'app/core/services/context_srv';
@@ -21,6 +21,7 @@ import {
 } from 'app/features/dashboard/utils/panel';
 import { InspectTab } from 'app/features/inspector/types';
 import { isPanelModelLibraryPanel } from 'app/features/library-panels/guard';
+import { applyPanelMenuPositions } from 'app/features/plugins/extensions/panelMenuPosition';
 import { createExtensionSubMenu, PANEL_MENU_TOP_LEVEL_CATEGORY } from 'app/features/plugins/extensions/utils';
 import { SHARED_DASHBOARD_QUERY } from 'app/plugins/datasource/dashboard/constants';
 import { dispatch, store } from 'app/store/store';
@@ -103,6 +104,7 @@ export function getPanelMenu(
   };
 
   const menu: PanelMenuItem[] = [];
+  const positions = new Map<PanelMenuItem, number | undefined>();
 
   if (!panel.isEditing) {
     menu.push({
@@ -135,7 +137,7 @@ export function getPanelMenu(
     panel.datasource?.uid !== SHARED_DASHBOARD_QUERY
   ) {
     menu.push({
-      text: t('panel.header-menu.explore', `Explore`),
+      text: config.explorePanelMenuLabel || t('panel.header-menu.explore', `Explore`),
       iconClassName: 'compass',
       onClick: onNavigateToExplore,
       shortcut: 'p x',
@@ -290,9 +292,11 @@ export function getPanelMenu(
     }
 
     if (topLevelExtensions.length > 0) {
-      menu.push(
-        ...createExtensionSubMenu(topLevelExtensions.map((extension) => ({ ...extension, category: undefined })))
+      const topLevelItems = createExtensionSubMenu(
+        topLevelExtensions.map((extension) => ({ ...extension, category: undefined }))
       );
+      topLevelItems.forEach((item, index) => positions.set(item, topLevelExtensions[index].panelMenuPosition));
+      menu.push(...topLevelItems);
     }
   }
 
@@ -316,5 +320,5 @@ export function getPanelMenu(
     });
   }
 
-  return menu;
+  return applyPanelMenuPositions(menu, positions);
 }

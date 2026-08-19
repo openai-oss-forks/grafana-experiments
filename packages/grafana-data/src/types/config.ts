@@ -244,6 +244,7 @@ export interface GrafanaConfig {
   defaultAllowRecordingRulesTargetAlertsUIToggle: boolean;
   authProxyEnabled: boolean;
   exploreEnabled: boolean;
+  explorePanelMenuLabel: string;
   queryHistoryEnabled: boolean;
   helpEnabled: boolean;
   profileEnabled: boolean;
