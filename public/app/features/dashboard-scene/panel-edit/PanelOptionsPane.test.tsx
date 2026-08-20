@@ -21,6 +21,37 @@ jest.mock('@grafana/runtime', () => ({
 
 describe('PanelOptionsPane', () => {
   describe('When changing plugin', () => {
+    it.each([false, true])('records an explicitly selected visualization (keep picker open: %s)', (withModKey) => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      panel.changePluginType = jest.fn();
+      optionsPane.setState({ isNewPanel: true, isVizPickerOpen: true });
+
+      optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey });
+
+      expect(optionsPane.state.hasPickedViz).toBe(true);
+      expect(optionsPane.state.isVizPickerOpen).toBe(withModKey);
+    });
+
+    it('does not treat closing the visualization picker as an explicit selection', () => {
+      const { optionsPane } = setupTest('panel-1');
+      optionsPane.setState({ isNewPanel: true, isVizPickerOpen: true });
+
+      optionsPane.onToggleVizPicker();
+
+      expect(optionsPane.state.hasPickedViz).toBeUndefined();
+    });
+
+    it('does not treat a visualization preview as an explicit selection', () => {
+      const { optionsPane, panel } = setupTest('panel-1');
+      const preview = panel.clone();
+      preview.changePluginType = jest.fn();
+      optionsPane.setState({ isNewPanel: true, isVizPickerOpen: true });
+
+      optionsPane.onChangePanel({ pluginId: 'table', withModKey: true }, preview);
+
+      expect(optionsPane.state.hasPickedViz).toBeUndefined();
+    });
+
     it('Should set the cache', () => {
       const { optionsPane, panel } = setupTest('panel-1');
       panel.changePluginType = jest.fn();
