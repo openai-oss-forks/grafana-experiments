@@ -3,7 +3,7 @@ import { lowerCase } from 'lodash';
 import moment from 'moment-timezone';
 
 import { DateTimeOptions, getTimeZone } from './common';
-import { parse, isValid } from './datemath';
+import { toDateTime, isValid } from './datemath';
 import { systemDateFormats } from './formats';
 import { DateTimeInput, DateTime, isDateTime, dateTime, toUtc, dateTimeForTimeZone } from './moment_wrapper';
 
@@ -21,6 +21,10 @@ export interface DateTimeOptionsWhenParsing extends DateTimeOptions {
    */
   roundUp?: boolean;
   fiscalYearStartMonth?: number;
+  /**
+   * Time to use for now in relative date expressions.
+   */
+  now?: DateTimeInput;
 }
 
 type DateTimeParser<T extends DateTimeOptions = DateTimeOptions> = (value: DateTimeInput, options?: T) => DateTime;
@@ -58,7 +62,12 @@ const parseString = (value: string, options?: DateTimeOptionsWhenParsing): DateT
       return dateTime();
     }
 
-    const parsed = parse(value, options?.roundUp, options?.timeZone, options?.fiscalYearStartMonth);
+    const parsed = toDateTime(value, {
+      roundUp: options?.roundUp,
+      timezone: options?.timeZone,
+      fiscalYearStartMonth: options?.fiscalYearStartMonth,
+      now: options?.now,
+    });
     return parsed || dateTime();
   }
 
