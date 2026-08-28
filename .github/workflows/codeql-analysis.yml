@@ -27,6 +27,7 @@ permissions:
 jobs:
   detect-changes:
     name: Detect whether code changed
+    if: github.repository == 'grafana/grafana'
     runs-on: ubuntu-latest
     permissions:
       contents: read

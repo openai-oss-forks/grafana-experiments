@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   stale:
+    if: github.repository == 'grafana/grafana'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/stale@v10

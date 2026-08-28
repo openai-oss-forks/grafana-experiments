@@ -6,6 +6,7 @@ on:
 jobs:
   gen-swagger:
     name: Alerting Swagger spec generation cron job
+    if: github.repository == 'grafana/grafana'
     runs-on: ubuntu-latest
 
     steps:

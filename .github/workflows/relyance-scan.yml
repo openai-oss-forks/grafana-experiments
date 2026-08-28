@@ -6,6 +6,7 @@ on:
 
 jobs:
   relyance-compliance-inspector:
+    if: github.repository == 'grafana/grafana'
     permissions:
       contents: read
       id-token: write # Needed for Vault access

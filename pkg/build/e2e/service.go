@@ -68,8 +68,12 @@ func GrafanaService(ctx context.Context, d *dagger.Client, opts GrafanaServiceOp
 	}
 	log.Println("done getting node version")
 
+	nodeContainer := d.Container().From(NodeImage(nodeVersion)).
+		WithExec([]string{"apt-get", "update", "-yq"}).
+		WithExec([]string{"apt-get", "install", "-yq", "--no-install-recommends", "git"})
+
 	src := WithYarnCache(
-		WithGrafanaFrontend(d.Container().From(NodeImage(nodeVersion)), opts.GrafanaDir),
+		WithGrafanaFrontend(nodeContainer, opts.GrafanaDir),
 		opts.YarnCache,
 	).WithEnvVariable("YARN_CACHE_FOLDER", "/yarn/cache").
 		WithExec([]string{"yarn", "install", "--immutable"}).
