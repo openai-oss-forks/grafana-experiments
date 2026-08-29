@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -472,7 +473,13 @@ func (d *dashboardStore) saveDashboard(ctx context.Context, sess *db.Session, cm
 	dash := cmd.GetDashboardModel()
 
 	isParentFolderChanged, err := d.ValidateDashboardBeforeSave(ctx, dash, cmd.Overwrite)
+	if cmd.ExpectedVersion != nil && *cmd.ExpectedVersion == 0 && dash.ID != 0 {
+		return nil, dashboards.ErrDashboardWithSameUIDExists
+	}
 	if err != nil {
+		if cmd.ExpectedVersion != nil && *cmd.ExpectedVersion != 0 && errors.Is(err, dashboards.ErrDashboardNotFound) {
+			return nil, dashboards.ErrDashboardVersionMismatch
+		}
 		return nil, err
 	}
 
@@ -488,12 +495,18 @@ func (d *dashboardStore) saveDashboard(ctx context.Context, sess *db.Session, cm
 	var affectedRows int64
 
 	if dash.ID == 0 {
+		if cmd.ExpectedVersion != nil && *cmd.ExpectedVersion != 0 {
+			return nil, dashboards.ErrDashboardVersionMismatch
+		}
 		dash.SetVersion(1)
 		dash.Created = time.Now()
 		dash.CreatedBy = dash.UpdatedBy
 		dash.Updated = time.Now()
 		metrics.MApiDashboardInsert.Inc()
 		affectedRows, err = sess.Nullable("folder_uid").Insert(dash)
+		if err != nil && cmd.ExpectedVersion != nil && *cmd.ExpectedVersion == 0 && d.store.GetDialect().IsUniqueConstraintViolation(err) {
+			return nil, dashboards.ErrDashboardWithSameUIDExists
+		}
 	} else {
 		dash.SetVersion(dash.Version + 1)
 
@@ -503,6 +516,9 @@ func (d *dashboardStore) saveDashboard(ctx context.Context, sess *db.Session, cm
 			dash.Updated = time.Now()
 		}
 
+		if cmd.ExpectedVersion != nil {
+			sess.Where("version = ?", *cmd.ExpectedVersion)
+		}
 		affectedRows, err = sess.MustCols("folder_id", "folder_uid").Nullable("folder_uid").ID(dash.ID).Update(dash)
 	}
 
@@ -511,6 +527,9 @@ func (d *dashboardStore) saveDashboard(ctx context.Context, sess *db.Session, cm
 	}
 
 	if affectedRows == 0 {
+		if cmd.ExpectedVersion != nil {
+			return nil, dashboards.ErrDashboardVersionMismatch
+		}
 		return nil, dashboards.ErrDashboardNotFound
 	}
 
@@ -539,15 +558,12 @@ func (d *dashboardStore) saveDashboard(ctx context.Context, sess *db.Session, cm
 	}
 
 	// insert new tags
-	tags := dash.GetTags()
-	if len(tags) > 0 {
-		for _, tag := range tags {
-			if len(tag) > 50 {
-				return nil, dashboards.ErrDashboardTagTooLong
-			}
-			if _, err := sess.Insert(dashboardTag{DashboardId: dash.ID, Term: tag, OrgID: dash.OrgID, DashboardUID: dash.UID}); err != nil {
-				return nil, err
-			}
+	for _, tag := range dash.GetTags() {
+		if len(tag) > 50 {
+			return nil, dashboards.ErrDashboardTagTooLong
+		}
+		if _, err := sess.Insert(dashboardTag{DashboardId: dash.ID, Term: tag, OrgID: dash.OrgID, DashboardUID: dash.UID}); err != nil {
+			return nil, err
 		}
 	}
 

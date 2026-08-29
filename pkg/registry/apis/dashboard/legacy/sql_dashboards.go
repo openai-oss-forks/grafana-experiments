@@ -830,34 +830,35 @@ func (a *dashboardSqlAccess) DeleteDashboard(ctx context.Context, orgId int64, u
 	return dash, true, nil
 }
 
-func (a *dashboardSqlAccess) buildSaveDashboardCommand(ctx context.Context, orgId int64, dash *dashboardV1.Dashboard) (*dashboards.SaveDashboardCommand, bool, error) {
+func (a *dashboardSqlAccess) buildSaveDashboardCommand(ctx context.Context, orgId int64, dash *dashboardV1.Dashboard, expectedVersion int64) (*dashboards.SaveDashboardCommand, error) {
 	ctx, span := tracer.Start(ctx, "legacy.dashboardSqlAccess.buildSaveDashboardCommand")
 	defer span.End()
 
-	created := false
 	user, ok := claims.AuthInfoFrom(ctx)
 	if !ok || user == nil {
-		return nil, created, fmt.Errorf("no user found in context")
+		return nil, fmt.Errorf("no user found in context")
+	}
+
+	meta, err := utils.MetaAccessor(dash)
+	if err != nil {
+		return nil, err
 	}
 
 	if dash.Name != "" {
 		dash.Spec.Set("uid", dash.Name)
-
-		// Get the previous version to set the internal ID
-		old, _ := a.dashStore.GetDashboard(ctx, &dashboards.GetDashboardQuery{
-			OrgID: orgId,
-			UID:   dash.Name,
-		})
-		if old != nil {
-			dash.Spec.Set("id", old.ID)
-			dash.Spec.Set("version", float64(old.Version))
-		} else {
-			dash.Spec.Remove("id") // existing of "id" makes it an update
-			created = true
+	} else {
+		dash.Spec.Remove("uid")
+	}
+	if expectedVersion > 0 {
+		id := meta.GetDeprecatedInternalID() //nolint:staticcheck
+		if id <= 0 {
+			return nil, apierrors.NewBadRequest("dashboard update must include the stored dashboard ID")
 		}
+		dash.Spec.Set("id", id)
+		dash.Spec.Set("version", float64(expectedVersion))
 	} else {
 		dash.Spec.Remove("id")
-		dash.Spec.Remove("uid")
+		dash.Spec.Remove("version")
 	}
 
 	var userID int64
@@ -865,15 +866,11 @@ func (a *dashboardSqlAccess) buildSaveDashboardCommand(ctx context.Context, orgI
 		var err error
 		userID, err = identity.UserIdentifier(user.GetSubject())
 		if err != nil {
-			return nil, created, err
+			return nil, err
 		}
 	}
 
 	apiVersion := strings.TrimPrefix(dash.APIVersion, dashboardV1.GROUP+"/")
-	meta, err := utils.MetaAccessor(dash)
-	if err != nil {
-		return nil, created, err
-	}
 
 	// v1 should be saved as schema version 41. v0 allows for older versions
 	if strings.HasPrefix(apiVersion, "v1") {
@@ -885,69 +882,64 @@ func (a *dashboardSqlAccess) buildSaveDashboardCommand(ctx context.Context, orgI
 	}
 
 	return &dashboards.SaveDashboardCommand{
-		OrgID:      orgId,
-		Message:    meta.GetMessage(),
-		PluginID:   dashboardOG.GetPluginIDFromMeta(meta),
-		Dashboard:  simplejson.NewFromAny(dash.Spec.UnstructuredContent()),
-		FolderUID:  meta.GetFolder(),
-		Overwrite:  true, // already passed the revisionVersion checks!
-		UserID:     userID,
-		APIVersion: apiVersion,
-	}, created, nil
+		OrgID:           orgId,
+		Message:         meta.GetMessage(),
+		PluginID:        dashboardOG.GetPluginIDFromMeta(meta),
+		Dashboard:       simplejson.NewFromAny(dash.Spec.UnstructuredContent()),
+		FolderUID:       meta.GetFolder(),
+		Overwrite:       true, // ExpectedVersion enforces the storage precondition.
+		UserID:          userID,
+		APIVersion:      apiVersion,
+		ExpectedVersion: &expectedVersion,
+	}, nil
 }
 
-func (a *dashboardSqlAccess) SaveDashboard(ctx context.Context, orgId int64, dash *dashboardV1.Dashboard, failOnExisting bool) (*dashboardV1.Dashboard, bool, error) {
+func (a *dashboardSqlAccess) SaveDashboard(ctx context.Context, orgId int64, dash *dashboardV1.Dashboard, expectedVersion int64) (*dashboardV1.Dashboard, error) {
 	ctx, span := tracer.Start(ctx, "legacy.dashboardSqlAccess.SaveDashboard")
 	defer span.End()
 
 	user, ok := claims.AuthInfoFrom(ctx)
 	if !ok || user == nil {
-		return nil, false, fmt.Errorf("no user found in context")
+		return nil, fmt.Errorf("no user found in context")
 	}
 
-	cmd, created, err := a.buildSaveDashboardCommand(ctx, orgId, dash)
+	cmd, err := a.buildSaveDashboardCommand(ctx, orgId, dash, expectedVersion)
 	if err != nil {
-		return nil, created, err
-	}
-	if failOnExisting && !created {
-		return nil, created, apierrors.NewConflict(dashboardV1.DashboardResourceInfo.GroupResource(), dash.Name, dashboards.ErrDashboardWithSameUIDExists)
+		return nil, err
 	}
 
 	out, err := a.dashStore.SaveDashboard(ctx, *cmd)
 	if err != nil {
-		return nil, false, err
-	}
-	if out != nil {
-		created = (out.Created.Unix() == out.Updated.Unix()) // and now?
+		return nil, err
 	}
 	dash, _, err = a.GetDashboard(ctx, orgId, out.UID, 0)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	} else if dash == nil {
-		return nil, false, fmt.Errorf("unable to retrieve dashboard after save")
+		return nil, fmt.Errorf("unable to retrieve dashboard after save")
 	}
 
 	// TODO: for modes 3+, we need to migrate /api to /apis for library connections, and begin to
 	// use search to return the connections, rather than the connections table.
 	requester, err := identity.GetRequester(ctx)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	err = a.libraryPanelSvc.ConnectLibraryPanelsForDashboard(ctx, requester, out)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	// stash the raw value in context (if requested)
 	finalMeta, err := utils.MetaAccessor(dash)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	access := GetLegacyAccess(ctx)
 	if access != nil {
 		access.DashboardID = finalMeta.GetDeprecatedInternalID() // nolint:staticcheck
 	}
-	return dash, created, err
+	return dash, err
 }
 
 type panel struct {

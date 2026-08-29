@@ -66,7 +66,7 @@ type DashboardAccessor interface {
 	resourcepb.ResourceIndexServer
 
 	GetDashboard(ctx context.Context, orgId int64, uid string, version int64) (*dashboardV1.Dashboard, int64, error)
-	SaveDashboard(ctx context.Context, orgId int64, dash *dashboardV1.Dashboard, failOnExisting bool) (*dashboardV1.Dashboard, bool, error)
+	SaveDashboard(ctx context.Context, orgId int64, dash *dashboardV1.Dashboard, expectedVersion int64) (*dashboardV1.Dashboard, error)
 	DeleteDashboard(ctx context.Context, orgId int64, uid string) (*dashboardV1.Dashboard, bool, error)
 
 	// Get a typed list

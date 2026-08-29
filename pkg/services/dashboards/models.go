@@ -281,6 +281,10 @@ type SaveDashboardCommand struct {
 	IsFolder  bool   `json:"isFolder"`
 
 	UpdatedAt time.Time
+
+	// ExpectedVersion requires absence when zero or the stored version when positive.
+	// Nil imposes no additional precondition.
+	ExpectedVersion *int64 `json:"-"`
 }
 
 type RestoreDeletedDashboardCommand struct {
