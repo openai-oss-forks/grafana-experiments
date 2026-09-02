@@ -124,12 +124,16 @@ export class LegacyDashboardAPI implements DashboardAPI<DashboardDTO, Dashboard>
   }
 
   async restoreDashboardVersion(uid: string, version: number): Promise<SaveDashboardResponseDTO> {
-    const [historicalVersion] = await this.getDashboardHistoryVersions(uid, [version]);
+    const [[historicalVersion], currentDashboard] = await Promise.all([
+      this.getDashboardHistoryVersions(uid, [version]),
+      this.getDashboardDTO(uid),
+    ]);
     return await this.saveDashboard({
       dashboard: {
         ...historicalVersion.spec,
         uid,
       },
+      folderUid: currentDashboard.meta.folderUid,
       message: `Restored from version ${version}`,
       overwrite: true,
     });
