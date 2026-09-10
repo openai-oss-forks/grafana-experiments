@@ -1177,7 +1177,21 @@ func TestIntegrationDashboardServicePermissions(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("When moving a dashboard by existing uid to the General folder from other folder, requires dashboard creation permissions on the general folder and write access to the dashboard", func(t *testing.T) {
+	t.Run("Reject moving a dashboard by existing UID from a named folder to General", func(t *testing.T) {
+		readDashboard := func(login string) dtos.DashboardFullWithMeta {
+			t.Helper()
+			u := fmt.Sprintf("http://%s:%s@%s/api/dashboards/uid/%s", login, login, grafanaListedAddr, savedDashInFolder.UID)
+			resp, err := http.Get(u) // nolint:gosec
+			require.NoError(t, err)
+			defer func() { require.NoError(t, resp.Body.Close()) }()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			var dashboard dtos.DashboardFullWithMeta
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&dashboard))
+			return dashboard
+		}
+		before := readDashboard("editor")
+		readDashboard("viewer")
+
 		dashboardPayload := map[string]interface{}{
 			"dashboard": map[string]interface{}{
 				"uid":   savedDashInFolder.UID,
@@ -1195,9 +1209,12 @@ func TestIntegrationDashboardServicePermissions(t *testing.T) {
 
 		resp, err = postDashboard(t, grafanaListedAddr, "editor", "editor", dashboardPayload)
 		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		err = resp.Body.Close()
 		require.NoError(t, err)
+
+		assert.Equal(t, before, readDashboard("editor"))
+		readDashboard("viewer")
 	})
 
 	t.Run("RBAC tests", func(t *testing.T) {

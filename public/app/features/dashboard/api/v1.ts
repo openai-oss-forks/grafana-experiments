@@ -264,7 +264,10 @@ export class K8sDashboardAPI implements DashboardAPI<DashboardDTO, Dashboard> {
 
   async restoreDashboardVersion(uid: string, version: number): Promise<SaveDashboardResponseDTO> {
     // get version to restore to, and save as new one
-    const [historicalVersion] = await this.getDashboardHistoryVersions(uid, [version]);
+    const [[historicalVersion], currentDashboard] = await Promise.all([
+      this.getDashboardHistoryVersions(uid, [version]),
+      this.client.get(uid),
+    ]);
     return await this.saveDashboard({
       dashboard: {
         ...historicalVersion.spec,
@@ -274,7 +277,7 @@ export class K8sDashboardAPI implements DashboardAPI<DashboardDTO, Dashboard> {
         name: uid,
       },
       message: `Restored from version ${version}`,
-      folderUid: historicalVersion.metadata?.annotations?.[AnnoKeyFolder],
+      folderUid: currentDashboard.metadata.annotations?.[AnnoKeyFolder],
     });
   }
 
