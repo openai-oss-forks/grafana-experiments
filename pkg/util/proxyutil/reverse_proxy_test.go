@@ -43,7 +43,7 @@ func TestReverseProxy(t *testing.T) {
 
 		cfg := setting.NewCfg()
 		cfg.AuthProxy.Enabled = true
-		cfg.AuthProxy.SharedSecret = []string{"secret", "second"}
+		cfg.AuthProxy.SharedSecrets = []string{"secret", "second"}
 		cfg.AuthProxy.SharedSecretHeader = "X-Auth-Proxy-Secret"
 		req = req.WithContext(contexthandler.WithAuthHTTPHeaders(req.Context(), cfg))
 		req.Header.Set("Authorization", "val")

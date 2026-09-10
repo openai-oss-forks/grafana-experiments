@@ -188,7 +188,7 @@ func (c *Proxy) hasValidSharedSecret(r *authn.Request) bool {
 		return false
 	}
 	matched := 0
-	for _, secret := range c.cfg.AuthProxy.SharedSecret {
+	for _, secret := range c.cfg.AuthProxy.SharedSecrets {
 		matched |= subtle.ConstantTimeCompare([]byte(provided), []byte(secret))
 	}
 	return matched == 1

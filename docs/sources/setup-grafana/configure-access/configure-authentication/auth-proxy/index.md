@@ -47,7 +47,7 @@ whitelist =
 # Require a shared secret on auth proxy requests when enabled
 shared_secret_enabled = false
 # Accepted shared secrets, separated by whitespace
-shared_secret =
+shared_secrets =
 # HTTP header that contains the shared secret
 shared_secret_header = X-WEBAUTH-SECRET
 # Optionally define more headers to sync other user attributes
@@ -62,7 +62,8 @@ enable_login_token = false
 ## Protect auth proxy headers with a shared secret
 
 Set `shared_secret_enabled` to `true` to require callers to prove that they are trusted before Grafana accepts the user identity header.
-Set `shared_secret` to one or more whitespace-separated secrets.
+Set `shared_secrets` to one or more whitespace-separated secrets.
+When upgrading from the single-secret setting, rename `shared_secret` to `shared_secrets` (or `GF_AUTH_PROXY_SHARED_SECRET` to `GF_AUTH_PROXY_SHARED_SECRETS` for environment variables).
 Grafana accepts any configured secret, allowing separate credentials for trusted proxies or overlapping credentials during rotation.
 A single secret still works as a one-item list; individual secrets must not contain whitespace.
 Store secrets outside the configuration file and use a [configuration provider](../../../configure-grafana/#variable-expansion) to load them.
@@ -73,7 +74,7 @@ For example:
 enabled = true
 header_name = X-WEBAUTH-USER
 shared_secret_enabled = true
-shared_secret = $__file{/run/secrets/auth-proxy/shared-secret}
+shared_secrets = $__file{/run/secrets/auth-proxy/shared-secret}
 shared_secret_header = X-WEBAUTH-SECRET
 ```
 

@@ -292,14 +292,14 @@ func TestLoadingSettings(t *testing.T) {
 			HomePath: "../../",
 			Args: []string{
 				"cfg:auth.proxy.shared_secret_enabled=true",
-				"cfg:auth.proxy.shared_secret=secret",
+				"cfg:auth.proxy.shared_secrets=secret",
 				"cfg:auth.proxy.shared_secret_header=X-Auth-Proxy-Secret",
 			},
 		})
 		require.NoError(t, err)
 
 		require.True(t, cfg.AuthProxy.SharedSecretEnabled)
-		require.Equal(t, []string{"secret"}, cfg.AuthProxy.SharedSecret)
+		require.Equal(t, []string{"secret"}, cfg.AuthProxy.SharedSecrets)
 		require.Equal(t, "X-Auth-Proxy-Secret", cfg.AuthProxy.SharedSecretHeader)
 	})
 
@@ -309,11 +309,11 @@ func TestLoadingSettings(t *testing.T) {
 			HomePath: "../../",
 			Args: []string{
 				"cfg:auth.proxy.shared_secret_enabled=true",
-				"cfg:auth.proxy.shared_secret=  first  second  ",
+				"cfg:auth.proxy.shared_secrets=  first  second  ",
 			},
 		})
 		require.NoError(t, err)
-		require.Equal(t, []string{"first", "second"}, cfg.AuthProxy.SharedSecret)
+		require.Equal(t, []string{"first", "second"}, cfg.AuthProxy.SharedSecrets)
 	})
 
 	for _, tc := range []struct {
@@ -329,11 +329,11 @@ func TestLoadingSettings(t *testing.T) {
 				HomePath: "../../",
 				Args: []string{
 					"cfg:auth.proxy.shared_secret_enabled=true",
-					"cfg:auth.proxy.shared_secret=" + tc.secret,
+					"cfg:auth.proxy.shared_secrets=" + tc.secret,
 				},
 			})
 			require.Error(t, err)
-			require.ErrorContains(t, err, "shared_secret must not be empty")
+			require.ErrorContains(t, err, "shared_secrets must not be empty")
 		})
 	}
 
