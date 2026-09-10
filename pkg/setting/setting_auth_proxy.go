@@ -20,6 +20,7 @@ type AuthProxySettings struct {
 	SyncTTL             int
 	SharedSecretEnabled bool
 	SharedSecret        string
+	SharedSecrets       []string
 	SharedSecretHeader  string
 }
 
@@ -41,9 +42,10 @@ func (cfg *Cfg) readAuthProxySettings() error {
 		authProxySettings.SharedSecretEnabled = sharedSecretEnabled
 	}
 	authProxySettings.SharedSecret = valueAsString(authProxy, "shared_secret", "")
+	authProxySettings.SharedSecrets = strings.Fields(valueAsString(authProxy, "shared_secrets", ""))
 	authProxySettings.SharedSecretHeader = valueAsString(authProxy, "shared_secret_header", "X-WEBAUTH-SECRET")
-	if authProxySettings.SharedSecretEnabled && strings.TrimSpace(authProxySettings.SharedSecret) == "" {
-		return fmt.Errorf("[auth.proxy].shared_secret must not be empty when shared_secret_enabled is true")
+	if authProxySettings.SharedSecretEnabled && strings.TrimSpace(authProxySettings.SharedSecret) == "" && len(authProxySettings.SharedSecrets) == 0 {
+		return fmt.Errorf("[auth.proxy].shared_secret or shared_secrets must not be empty when shared_secret_enabled is true")
 	}
 	if authProxySettings.SharedSecretEnabled && strings.TrimSpace(authProxySettings.SharedSecretHeader) == "" {
 		return fmt.Errorf("[auth.proxy].shared_secret_header must not be empty when shared_secret_enabled is true")

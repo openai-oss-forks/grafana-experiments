@@ -259,21 +259,34 @@ func TestProxy_Authenticate_SharedSecret(t *testing.T) {
 		return c
 	}
 
-	t.Run("accepts a valid shared secret", func(t *testing.T) {
-		called := false
-		c := newProxy(t, authntest.MockProxyClient{AuthenticateProxyFunc: func(ctx context.Context, r *authn.Request, username string, additional map[string]string) (*authn.Identity, error) {
-			called = true
-			assert.Equal(t, "username", username)
-			return nil, nil
-		}})
+	for _, tc := range []struct {
+		name, legacy, provided string
+		secrets                []string
+	}{
+		{name: "legacy secret", legacy: "secret", provided: "secret"},
+		{name: "legacy alongside additional secrets", legacy: "secret", secrets: []string{"first", "second"}, provided: "secret"},
+		{name: "first additional secret", secrets: []string{"first", "second"}, provided: "first"},
+		{name: "second additional secret", secrets: []string{"first", "second"}, provided: "second"},
+	} {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			called := false
+			c := newProxy(t, authntest.MockProxyClient{AuthenticateProxyFunc: func(ctx context.Context, r *authn.Request, username string, additional map[string]string) (*authn.Identity, error) {
+				called = true
+				assert.Equal(t, "username", username)
+				return nil, nil
+			}})
 
-		_, err := c.Authenticate(context.Background(), &authn.Request{HTTPRequest: &http.Request{Header: map[string][]string{
-			"Proxy-Header":  {"username"},
-			"Secret-Header": {"secret"},
-		}}})
-		require.NoError(t, err)
-		assert.True(t, called)
-	})
+			c.cfg.AuthProxy.SharedSecret = tc.legacy
+			c.cfg.AuthProxy.SharedSecrets = tc.secrets
+
+			_, err := c.Authenticate(context.Background(), &authn.Request{HTTPRequest: &http.Request{Header: map[string][]string{
+				"Proxy-Header":  {"username"},
+				"Secret-Header": {tc.provided},
+			}}})
+			require.NoError(t, err)
+			assert.True(t, called)
+		})
+	}
 
 	for _, tc := range []struct {
 		name   string
@@ -281,6 +294,7 @@ func TestProxy_Authenticate_SharedSecret(t *testing.T) {
 	}{
 		{name: "rejects a missing shared secret", header: ""},
 		{name: "rejects an invalid shared secret", header: "wrong secret"},
+		{name: "rejects a whitespace-only shared secret", header: "   "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
@@ -288,6 +302,8 @@ func TestProxy_Authenticate_SharedSecret(t *testing.T) {
 				called = true
 				return nil, nil
 			}})
+			c.cfg.AuthProxy.SharedSecret = ""
+			c.cfg.AuthProxy.SharedSecrets = []string{"first", "second"}
 			headers := map[string][]string{"Proxy-Header": {"username"}}
 			if tc.header != "" {
 				headers["Secret-Header"] = []string{tc.header}

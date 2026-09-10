@@ -184,7 +184,14 @@ func (c *Proxy) sharedSecretEnabled() bool {
 
 func (c *Proxy) hasValidSharedSecret(r *authn.Request) bool {
 	provided := getProxyHeader(r, c.cfg.AuthProxy.SharedSecretHeader, false)
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(c.cfg.AuthProxy.SharedSecret)) == 1
+	if strings.TrimSpace(provided) == "" {
+		return false
+	}
+	matched := subtle.ConstantTimeCompare([]byte(provided), []byte(c.cfg.AuthProxy.SharedSecret))
+	for _, secret := range c.cfg.AuthProxy.SharedSecrets {
+		matched |= subtle.ConstantTimeCompare([]byte(provided), []byte(secret))
+	}
+	return matched == 1
 }
 
 func (c *Proxy) Hook(ctx context.Context, id *authn.Identity, r *authn.Request) error {
