@@ -266,7 +266,7 @@ func TestService_Authenticate_AuthProxySharedSecretSelection(t *testing.T) {
 	cfg := setting.NewCfg()
 	cfg.AuthProxy.HeaderName = "Proxy-Header"
 	cfg.AuthProxy.SharedSecretEnabled = true
-	cfg.AuthProxy.SharedSecret = "secret"
+	cfg.AuthProxy.SharedSecret = []string{"secret", "second"}
 	cfg.AuthProxy.SharedSecretHeader = "Secret-Header"
 	cfg.AuthProxy.SyncTTL = 0
 

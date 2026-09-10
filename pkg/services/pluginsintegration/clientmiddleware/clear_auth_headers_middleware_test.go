@@ -21,7 +21,7 @@ func TestClearAuthHeadersMiddleware(t *testing.T) {
 	t.Run("When requests are for a datasource", func(t *testing.T) {
 		cfg := setting.NewCfg()
 		cfg.AuthProxy.Enabled = true
-		cfg.AuthProxy.SharedSecret = "secret"
+		cfg.AuthProxy.SharedSecret = []string{"secret", "second"}
 		cfg.AuthProxy.SharedSecretHeader = "X-Auth-Proxy-Secret"
 		cdt := handlertest.NewHandlerMiddlewareTest(t,
 			WithReqContext(req, &user.SignedInUser{}),

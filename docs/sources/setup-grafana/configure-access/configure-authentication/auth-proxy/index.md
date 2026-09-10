@@ -46,10 +46,8 @@ sync_ttl = 15
 whitelist =
 # Require a shared secret on auth proxy requests when enabled
 shared_secret_enabled = false
-# Shared secret used to authenticate trusted proxy requests
+# Accepted shared secrets, separated by whitespace
 shared_secret =
-# Additional accepted secrets, separated by whitespace
-shared_secrets =
 # HTTP header that contains the shared secret
 shared_secret_header = X-WEBAUTH-SECRET
 # Optionally define more headers to sync other user attributes
@@ -64,9 +62,9 @@ enable_login_token = false
 ## Protect auth proxy headers with a shared secret
 
 Set `shared_secret_enabled` to `true` to require callers to prove that they are trusted before Grafana accepts the user identity header.
-Set a non-empty `shared_secret`, a whitespace-separated `shared_secrets` list, or both.
+Set `shared_secret` to one or more whitespace-separated secrets.
 Grafana accepts any configured secret, allowing separate credentials for trusted proxies or overlapping credentials during rotation.
-List entries must not contain whitespace; the existing `shared_secret` setting continues to accept a single value unchanged.
+A single secret still works as a one-item list; individual secrets must not contain whitespace.
 Store secrets outside the configuration file and use a [configuration provider](../../../configure-grafana/#variable-expansion) to load them.
 For example:
 
