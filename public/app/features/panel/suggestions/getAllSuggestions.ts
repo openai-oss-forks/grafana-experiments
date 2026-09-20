@@ -11,7 +11,7 @@ import {
 import { t } from '@grafana/i18n';
 import { config } from '@grafana/runtime';
 import { appEvents } from 'app/core/app_events';
-import { importPanelPlugin, isBuiltInPlugin } from 'app/features/plugins/importPanelPlugin';
+import { hasPanelPlugin, importPanelPlugin, isBuiltInPlugin } from 'app/features/plugins/importPanelPlugin';
 
 import { getAllPanelPluginMeta } from '../state/util';
 
@@ -22,12 +22,18 @@ interface PluginLoadResult {
   hasErrors: boolean;
 }
 
-function getPanelPluginIds(): string[] {
-  return config.featureToggles.externalVizSuggestions
+function getPanelPluginIds(series?: DataFrame[]): string[] {
+  const pluginIds = config.featureToggles.externalVizSuggestions
     ? getAllPanelPluginMeta()
         .filter((panel) => panel.suggestions)
         .map((m) => m.id)
     : panelsToCheckFirst;
+
+  const preferredPluginIds = (series ?? [])
+    .map(getPreferredVisualisationPluginId)
+    .filter((pluginId): pluginId is string => pluginId !== undefined && hasPanelPlugin(pluginId));
+
+  return [...new Set([...preferredPluginIds, ...pluginIds])];
 }
 
 /**
@@ -86,11 +92,37 @@ const mapPreferredVisualisationTypeToPlugin = (type: string): PreferredVisualisa
   return PLUGIN_ID_TO_PREFERRED_VIZ_TYPE[type];
 };
 
+export function getPreferredVisualisationPluginId(frame: DataFrame): string | undefined {
+  const preferredPluginId = frame.meta?.preferredVisualisationPluginId;
+  if (preferredPluginId && hasPanelPlugin(preferredPluginId)) {
+    return preferredPluginId;
+  }
+
+  const preferredType = frame.meta?.preferredVisualisationType;
+  if (!preferredType) {
+    return undefined;
+  }
+
+  return Object.keys(PLUGIN_ID_TO_PREFERRED_VIZ_TYPE).find(
+    (pluginId) => PLUGIN_ID_TO_PREFERRED_VIZ_TYPE[pluginId] === preferredType
+  );
+}
+
 /**
  * given a list of suggestions, sort them in place based on score and preferred visualisation type
  */
 export function sortSuggestions(suggestions: PanelPluginVisualizationSuggestion[], dataSummary: PanelDataSummary) {
+  const preferredPluginIds = new Set(
+    dataSummary.rawFrames?.map((frame) => frame.meta?.preferredVisualisationPluginId).filter(Boolean)
+  );
+
   suggestions.sort((a, b) => {
+    const isPluginAPreferred = preferredPluginIds.has(a.pluginId);
+    const isPluginBPreferred = preferredPluginIds.has(b.pluginId);
+    if (isPluginAPreferred !== isPluginBPreferred) {
+      return isPluginAPreferred ? -1 : 1;
+    }
+
     // if one of these suggestions is from a built-in panel and the other isn't, prioritize the core panel.
     const isPluginABuiltIn = isBuiltInPlugin(a.pluginId);
     const isPluginBBuiltIn = isBuiltInPlugin(b.pluginId);
@@ -132,15 +164,23 @@ export async function getAllSuggestions(series?: DataFrame[]): Promise<Suggestio
   const dataSummary = getPanelDataSummary(series);
   const list: PanelPluginVisualizationSuggestion[] = [];
 
-  const pluginIds: string[] = getPanelPluginIds();
+  const pluginIds: string[] = getPanelPluginIds(series);
   const { plugins, hasErrors: pluginLoadErrors } = await loadPlugins(pluginIds);
 
   let pluginSuggestionsError = false;
   for (const plugin of plugins) {
     try {
       const suggestions = plugin.getSuggestions(dataSummary);
-      if (suggestions) {
+      if (suggestions?.length) {
         list.push(...suggestions);
+      } else if (series?.some((frame) => getPreferredVisualisationPluginId(frame) === plugin.meta.id)) {
+        list.push({
+          pluginId: plugin.meta.id,
+          name: plugin.meta.name,
+          hash: `preferred-${plugin.meta.id}`,
+          options: {},
+          fieldConfig: { defaults: {}, overrides: [] },
+        });
       }
     } catch (e) {
       console.warn(`error when loading suggestions from plugin "${plugin.meta.id}"`, e);

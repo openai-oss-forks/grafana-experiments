@@ -6,6 +6,7 @@ import {
   getPanelDataSummary,
   LoadingState,
   PanelData,
+  PanelPlugin,
   PanelPluginVisualizationSuggestion,
   PluginType,
   toDataFrame,
@@ -25,7 +26,12 @@ import { clearPanelPluginCache, getPanelPluginMeta } from 'app/features/plugins/
 import { pluginImporter } from 'app/features/plugins/importer/pluginImporter';
 
 import { panelsToCheckFirst } from './consts';
-import { getAllSuggestions, loadPlugins, sortSuggestions } from './getAllSuggestions';
+import {
+  getAllSuggestions,
+  getPreferredVisualisationPluginId,
+  loadPlugins,
+  sortSuggestions,
+} from './getAllSuggestions';
 
 jest.mock('app/core/app_events', () => ({
   appEvents: {
@@ -35,6 +41,7 @@ jest.mock('app/core/app_events', () => ({
 }));
 
 config.featureToggles.externalVizSuggestions = true;
+const { panels: mockPanelPluginMetas } = config;
 
 let idx = 0;
 for (const pluginId of panelsToCheckFirst) {
@@ -509,6 +516,32 @@ scenario('Given a preferredVisualisationType with multiple entries', (ctx) => {
 });
 
 describe('sortSuggestions', () => {
+  it("prioritizes the datasource's preferred panel plugin over built-in suggestions", () => {
+    const suggestions = [
+      { pluginId: 'timeseries', name: 'Time series', hash: 'timeseries', score: VisualizationSuggestionScore.Best },
+      {
+        pluginId: 'preferred-custom-panel',
+        name: 'Custom panel',
+        hash: 'custom',
+        score: VisualizationSuggestionScore.OK,
+      },
+    ] satisfies PanelPluginVisualizationSuggestion[];
+
+    const dataSummary = getPanelDataSummary([
+      toDataFrame({
+        meta: {
+          preferredVisualisationPluginId: 'preferred-custom-panel',
+          preferredVisualisationType: 'graph',
+        },
+        fields: [{ name: 'value', type: FieldType.number, values: [1] }],
+      }),
+    ]);
+
+    sortSuggestions(suggestions, dataSummary);
+
+    expect(suggestions[0].pluginId).toBe('preferred-custom-panel');
+  });
+
   it('should sort suggestions correctly by score', () => {
     const suggestions = [
       { pluginId: 'timeseries', name: 'Time series', hash: 'b', score: VisualizationSuggestionScore.OK },
@@ -569,6 +602,61 @@ describe('sortSuggestions', () => {
     expect(suggestions[2].hash).toBe('d');
     expect(suggestions[3].pluginId).toBe('fake-external-panel');
     expect(suggestions[3].hash).toBe('b');
+  });
+});
+
+describe('getPreferredVisualisationPluginId', () => {
+  it.each([
+    [{ preferredVisualisationType: 'graph' }, 'timeseries'],
+    [{ preferredVisualisationType: 'trace' }, 'traces'],
+    [{ preferredVisualisationPluginId: 'timeseries', preferredVisualisationType: 'logs' }, 'timeseries'],
+    [{ preferredVisualisationPluginId: 'missing-panel', preferredVisualisationType: 'logs' }, 'logs'],
+  ] as const)('resolves %j to %s', (meta, pluginId) => {
+    expect(getPreferredVisualisationPluginId(toDataFrame({ meta, fields: [] }))).toBe(pluginId);
+  });
+});
+
+describe('getAllSuggestions with datasource-preferred panel plugins', () => {
+  it('includes a preferred panel even when the plugin does not provide visualization suggestions', async () => {
+    const pluginId = 'preferred-custom-panel';
+    const plugin = new PanelPlugin(() => null);
+    plugin.meta = {
+      ...mockPanelPluginMetas.table,
+      id: pluginId,
+      name: 'Preferred custom panel',
+      module: 'plugins/preferred-custom-panel/module',
+      suggestions: false,
+    };
+    mockPanelPluginMetas[pluginId] = plugin.meta;
+
+    const originalImportPanel = pluginImporter.importPanel;
+    const importPanel = jest.spyOn(pluginImporter, 'importPanel').mockImplementation(async (meta) => {
+      if (meta.id === pluginId) {
+        return plugin;
+      }
+      return await originalImportPanel(meta);
+    });
+
+    try {
+      const result = await getAllSuggestions([
+        toDataFrame({
+          meta: {
+            preferredVisualisationPluginId: pluginId,
+            preferredVisualisationType: 'graph',
+          },
+          fields: [
+            { name: 'time', type: FieldType.time, values: [1] },
+            { name: 'value', type: FieldType.number, values: [1] },
+          ],
+        }),
+      ]);
+
+      expect(result.suggestions[0]).toEqual(expect.objectContaining({ pluginId, name: 'Preferred custom panel' }));
+    } finally {
+      importPanel.mockRestore();
+      delete mockPanelPluginMetas[pluginId];
+      clearPanelPluginCache();
+    }
   });
 });
 
