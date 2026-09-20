@@ -365,6 +365,38 @@ describe('Prometheus multi-batch streaming', () => {
     expect(responses[1].data[0].fields[1].values).toEqual([10, 2]);
   });
 
+  it('decodes NaN samples in non-compact JSONL responses', async () => {
+    const target: PromQuery = { expr: 'up', refId: 'A' };
+    const request = requestForTarget(target, false);
+    const jsonl = [jsonlSchema('series:1'), jsonlData('series:1', '60', 'NaN')].join('\n');
+    global.fetch = jest.fn().mockResolvedValue({
+      body: readableBody([
+        concatBytes(
+          responseHeaderFrame(),
+          frame(jsonl, FINAL_BATCH_FLAG, PAYLOAD_ENCODING_IDENTITY, PAYLOAD_TYPE_JSONL)
+        ),
+      ]),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'content-type' ? `${MULTIBATCH_PREFERRED_CONTENT_TYPE}; version=1` : null,
+      },
+      ok: true,
+      text: jest.fn(),
+    });
+
+    const responses = await collectResponses(
+      queryPrometheusMultiBatch('prometheus', request, target, {
+        customQueryParameters: new URLSearchParams(),
+        httpMethod: 'POST',
+      })
+    );
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].state).toBe(LoadingState.Done);
+    expect(responses[0].data[0].length).toBe(1);
+    expect(Number.isNaN(responses[0].data[0].fields[1].values[0])).toBe(true);
+  });
+
   it('keeps non-ASCII legend formats in the JSON body instead of browser headers', async () => {
     const legendFormat =
       '[{{app}}] in [{{cluster_short_name}}] ➡️ [{{oai_sd_target_service}}] in [{{oai_sd_routed_to}}] via {{route_type}}';

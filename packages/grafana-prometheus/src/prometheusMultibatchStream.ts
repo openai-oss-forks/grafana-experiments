@@ -955,6 +955,10 @@ function parseNumberValue(value: unknown): number {
     return Number.NaN;
   }
 
+  if (/^nan$/i.test(value)) {
+    return Number.NaN;
+  }
+
   if (/^\+?inf(?:inity)?$/i.test(value)) {
     return Number.POSITIVE_INFINITY;
   }
