@@ -10,6 +10,8 @@ permissions: {}
 
 jobs:
   detect-changes:
+    # Run on `grafana/grafana` pushes, or on pull requests, to prevent double-running on mirrors
+    if: (github.event_name == 'pull_request' || (github.event_name == 'push' && github.repository == 'grafana/grafana'))
     name: Detect whether code changed
     runs-on: ubuntu-latest
     permissions:
@@ -53,8 +55,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
-    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && needs.detect-changes.outputs.prettier == 'true'
+    # Run this workflow for upstream pushes or internal upstream PRs.
+    if: github.repository == 'grafana/grafana' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false && needs.detect-changes.outputs.prettier == 'true'))
     name: Lint
     runs-on: ubuntu-latest
     steps:
@@ -63,10 +65,15 @@ jobs:
         persist-credentials: false
     - name: Setup Node
       uses: ./.github/actions/setup-node
+    - name: Get GitHub App token
+      id: get-github-app-token
+      uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+      with:
+        github_app: grafana-ci-bot
     - name: Setup Enterprise
       uses: ./.github/actions/setup-enterprise
       with:
-        github-app-name: 'grafana-ci-bot'
+        token: ${{ steps.get-github-app-token.outputs.token }}
     - run: yarn install --immutable --check-cache
     - run: yarn run prettier:check
     - run: yarn run lint
@@ -80,6 +87,8 @@ jobs:
     if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork == true || github.repository != 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
     name: Typecheck
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
     - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
@@ -95,20 +104,27 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
-    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana') && needs.detect-changes.outputs.changed == 'true'
+    # Run this workflow for upstream pushes or internal upstream PRs.
+    if: github.repository == 'grafana/grafana' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false && needs.detect-changes.outputs.changed == 'true'))
     name: Typecheck
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
     - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       with:
         persist-credentials: false
     - name: Setup Node
       uses: ./.github/actions/setup-node
+    - name: Get GitHub App token
+      id: get-github-app-token
+      uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+      with:
+        github_app: grafana-ci-bot
     - name: Setup Enterprise
       uses: ./.github/actions/setup-enterprise
       with:
-        github-app-name: 'grafana-ci-bot'
+        token: ${{ steps.get-github-app-token.outputs.token }}
     - run: yarn install --immutable --check-cache
     - run: yarn run typecheck
       env:
@@ -146,8 +162,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
-    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
+    # Run this workflow for upstream pushes or internal upstream PRs.
+    if: github.repository == 'grafana/grafana' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false))
     name: Verify API clients (enterprise)
     runs-on: ubuntu-latest
     steps:
@@ -156,10 +172,15 @@ jobs:
         persist-credentials: false
     - name: Setup Node
       uses: ./.github/actions/setup-node
+    - name: Get GitHub App token
+      id: get-github-app-token
+      uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+      with:
+        github_app: grafana-ci-bot
     - name: Setup Enterprise
       uses: ./.github/actions/setup-enterprise
       with:
-        github-app-name: 'grafana-ci-bot'
+        token: ${{ steps.get-github-app-token.outputs.token }}
     - run: yarn install --immutable --check-cache
     - name: Generate API clients
       run: |
@@ -168,7 +189,9 @@ jobs:
     - name: Verify generated clients
       run: |
         uncommited_error_message="ERROR! API client generation has not been committed. Please run 'yarn generate-apis', commit the changes and push again."
-        file_diff="$(git diff ':!conf')"
+        # LICENSE is swapped to the Enterprise License Agreement by the "Setup Enterprise"
+        # step above (grafana-enterprise's build.sh overlay), not by API client generation.
+        file_diff="$(git diff ':!conf' ':!LICENSE')"
         if [ -n "$file_diff" ]; then
             echo "$file_diff"
             echo "${uncommited_error_message}"

@@ -63,15 +63,23 @@ jobs:
 
       # Enterprise setup is needed for complete OpenAPI spec generation
       # We only do this for internal PRs
+      - name: Get GitHub App token
+        id: get-github-app-token
+        if: (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+        with:
+          github_app: grafana-ci-bot
       - name: Setup Grafana Enterprise
         if: (github.event.pull_request.head.repo.fork == false && github.repository == 'grafana/grafana')
         uses: ./.github/actions/setup-enterprise
+        with:
+          token: ${{ steps.get-github-app-token.outputs.token }}
 
       - name: Generate and Validate OpenAPI Specs
         run: |
-          # For PRs from forks, we'll just run the basic swagger-gen without validation
-          if [[ "${{ github.event_name }}" == "pull_request" && ( "${{ github.event.pull_request.head.repo.fork }}" == "true" || "${{ github.repository }}" != "grafana/grafana" ) ]]; then
-            echo "PR is from a fork, skipping enterprise-based validation"
+          # Outside the upstream repository and for fork PRs, generate the OSS spec only.
+          if [[ "${{ github.repository }}" != "grafana/grafana" || ( "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.head.repo.fork }}" == "true" ) ]]; then
+            echo "Skipping enterprise-based validation for the OSS build"
             make swagger-gen
             exit 0
           fi

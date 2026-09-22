@@ -15,6 +15,8 @@ import {
 import { DataQuery, DataSourceJsonData, VariableHide, VariableType } from '@grafana/schema';
 import { SHARED_DASHBOARD_QUERY, DASHBOARD_DATASOURCE_PLUGIN_ID } from 'app/plugins/datasource/dashboard/constants';
 
+import { DashboardQueryVariable } from '../../variables/DashboardQueryVariable';
+
 import { AdHocFiltersVariableEditor } from './editors/AdHocFiltersVariableEditor';
 import { ConstantVariableEditor } from './editors/ConstantVariableEditor';
 import { CustomVariableEditor } from './editors/CustomVariableEditor/CustomVariableEditor';
@@ -56,22 +58,24 @@ const dsMock: DataSourceApi = {
   },
 } as DataSourceApi<DataQuery, DataSourceJsonData, {}>;
 
+const defaultDsSettings = {
+  name: 'DataSourceInstance1',
+  uid: 'ds1',
+  type: 'dsTestDataSource',
+  meta: {
+    name: 'ds1',
+    id: 'dsTestDataSource',
+  },
+};
+
+let mockDefaultDsSettings: typeof defaultDsSettings | undefined = defaultDsSettings;
+
 jest.mock('@grafana/runtime', () => ({
   ...jest.requireActual('@grafana/runtime'),
   getDataSourceSrv: () => ({
     get: async () => dsMock,
-    getList: () => {
-      return [
-        {
-          name: 'DataSourceInstance1',
-          uid: 'ds1',
-          meta: {
-            name: 'ds1',
-            id: 'dsTestDataSource',
-          },
-        },
-      ];
-    },
+    getInstanceSettings: (ref: string | null) => (ref === null ? mockDefaultDsSettings : undefined),
+    getList: () => [defaultDsSettings],
   }),
 }));
 
@@ -252,6 +256,33 @@ describe('getVariableScene', () => {
     expect(sceneVariable).toBeInstanceOf(ConstantVariable);
     expect(sceneVariable.state.name).toBe(initialState.name);
     expect(sceneVariable.state.hide).toBe(VariableHide.hideVariable);
+  });
+});
+
+describe('query variable factories', () => {
+  const factories: Array<[string, () => ReturnType<typeof getVariableScene>]> = [
+    ['getVariableScene', () => getVariableScene('query', { name: 'query' })],
+    ['getVariableDefault', () => getVariableDefault([])],
+  ];
+
+  afterEach(() => {
+    mockDefaultDsSettings = defaultDsSettings;
+  });
+
+  it.each(factories)('%s creates a dashboard query variable with the configured default data source', (_, create) => {
+    const variable = create();
+
+    expect(variable).toBeInstanceOf(DashboardQueryVariable);
+    expect(variable.state).toMatchObject({ datasource: { uid: defaultDsSettings.uid, type: defaultDsSettings.type } });
+  });
+
+  it.each(factories)('%s leaves the data source unset when no default is configured', (_, create) => {
+    mockDefaultDsSettings = undefined;
+
+    const variable = create();
+
+    expect(variable).toBeInstanceOf(DashboardQueryVariable);
+    expect(variable.state).toMatchObject({ datasource: null });
   });
 });
 

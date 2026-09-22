@@ -151,7 +151,7 @@ Created,Name,Stage,Owner,requiresDevMode,RequiresRestart,FrontendOnly
 2025-11-04,timeRangePan,GA,@grafana/dataviz-squad,false,false,true
 2025-11-20,newTimeRangeZoomShortcuts,GA,@grafana/dataviz-squad,false,false,true
 2024-10-24,azureMonitorDisableLogLimit,GA,@grafana/partner-datasources,false,false,false
-2024-12-19,playlistsReconciler,experimental,@grafana/grafana-app-platform-squad,false,true,false
+2024-12-20,playlistsReconciler,experimental,@grafana/grafana-app-platform-squad,false,true,false
 2024-11-14,passwordlessMagicLinkAuthentication,experimental,@grafana/identity-access-team,false,false,false
 2024-12-18,prometheusSpecialCharsInLabelValues,experimental,@grafana/oss-big-tent,false,false,true
 2024-11-05,enableExtensionsAdminPage,experimental,@grafana/plugins-platform-backend,false,true,false
@@ -293,3 +293,5 @@ Created,Name,Stage,Owner,requiresDevMode,RequiresRestart,FrontendOnly
 2026-02-09,kubernetesTeamSync,experimental,@grafana/identity-access-team,false,false,false
 2026-01-27,alertingMultiplePolicies,experimental,@grafana/alerting-squad,false,false,false
 2026-02-11,alertingIgnorePendingForNoDataAndError,experimental,@grafana/alerting-squad,false,false,false
+2026-07-28,authzListFoldersViaSearch,experimental,@grafana/identity-access-team,false,false,false
+2026-07-28,libraryElementsFolderTreeViaSearch,experimental,@grafana/identity-access-team,false,false,false

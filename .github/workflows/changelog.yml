@@ -70,19 +70,11 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - name: "Get vault secrets"
-        id: vault-secrets
-        uses: grafana/shared-workflows/actions/get-vault-secrets@main
+      - name: Get GitHub App token
+        id: get-github-app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
         with:
-          # Secrets placed in the ci/data/repo/grafana/grafana/delivery-bot-app path in Vault
-          repo_secrets: |
-            GRAFANA_DELIVERY_BOT_APP_PEM=delivery-bot-app:PRIVATE_KEY
-      - name: "Generate token"
-        id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
-        with:
-          app_id: ${{ vars.DELIVERY_BOT_APP_ID }}
-          private_key: ${{ env.GRAFANA_DELIVERY_BOT_APP_PEM }}
+          github_app: grafana-releases-oss
       - name: "Checkout Grafana repo"
         uses: "actions/checkout@v5"
         with:
@@ -125,8 +117,12 @@ jobs:
         uses: ./.github/actions/changelog
         with:
           previous: ${{ inputs.previous_version }}
-          github_token: ${{ steps.generate_token.outputs.token }}
-          target: v${{ inputs.version }}
+          github_token: ${{ steps.get-github-app-token.outputs.token }}
+          # The release tag doesn't exist yet at this point; diff against the release branch instead.
+          target: release-${{ inputs.version }}
+          # target is a branch name now, not semver-parseable; give the action a real version
+          # string to look up the previous release tag from when previous_version isn't set.
+          version: v${{ inputs.version }}
           output_file: changelog_items.md
       - name: "Patch CHANGELOG.md"
         run: |
@@ -173,6 +169,7 @@ jobs:
 
             gh pr create \
               --dry-run="${DRY_RUN}" \
+              --draft \
               --label "no-backport" \
               --label "no-changelog" \
               -B "${TARGET}" \

@@ -554,7 +554,7 @@ func requestAcceptsMultiBatch(req *backend.CallResourceRequest) bool {
 }
 
 func getSelectors(expr string) ([]string, error) {
-	parsed, err := parser.ParseExpr(expr)
+	parsed, err := parser.NewParser(parser.Options{}).ParseExpr(expr)
 	if err != nil {
 		return nil, err
 	}
