@@ -458,7 +458,7 @@ func (st DBstore) UpdateAlertRules(ctx context.Context, user *ngmodels.UserUID, 
 				return fmt.Errorf("failed to convert alert rule %s to storage model: %w", r.New.UID, err)
 			}
 			// no way to update multiple rules at once
-			if updated, err := sess.ID(r.Existing.ID).AllCols().Omit("rule_guid").Update(converted); err != nil || updated == 0 {
+			if updated, err := sess.Table(alertRule{}).ID(r.Existing.ID).AllCols().Omit("guid").Update(converted); err != nil || updated == 0 {
 				if err != nil {
 					if st.SQLStore.GetDialect().IsUniqueConstraintViolation(err) {
 						return ngmodels.ErrAlertRuleConflict(r.New.UID, r.New.OrgID, err)
@@ -560,7 +560,7 @@ func (st DBstore) preventIntermediateUniqueConstraintViolations(sess *db.Session
 			uniqueTempTitle = r.Title[:AlertRuleMaxTitleLength-len(u)] + uuid.New().String()
 		}
 
-		if updated, err := sess.ID(r.ID).Cols("title").Update(&alertRule{Title: uniqueTempTitle, Version: r.Version}); err != nil || updated == 0 {
+		if updated, err := sess.Table(alertRule{}).ID(r.ID).Cols("title").Update(&alertRule{Title: uniqueTempTitle, Version: r.Version}); err != nil || updated == 0 {
 			if err != nil {
 				return fmt.Errorf("failed to set temporary rule title [%s] %s: %w", r.UID, r.Title, err)
 			}
@@ -991,7 +991,7 @@ func (st DBstore) buildListAlertRulesQuery(sess *db.Session, query *ngmodels.Lis
 	case ngmodels.RuleTypeFilterAll:
 		// no additional filter
 	default:
-		return nil, groupsSet, fmt.Errorf("unknown rule type filter %q", query.RuleType)
+		return nil, groupsSet, fmt.Errorf("unknown rule type filter %v", query.RuleType)
 	}
 
 	q = q.Asc("namespace_uid", "rule_group", "rule_group_idx", "id")
@@ -1131,7 +1131,7 @@ func (st DBstore) GetAlertRulesKeysForScheduling(ctx context.Context) ([]ngmodel
 	var result []ngmodels.AlertRuleKeyWithVersion
 	err := st.SQLStore.WithDbSession(ctx, func(sess *db.Session) error {
 		alertRulesSql := sess.Table("alert_rule").Select("org_id, uid, version")
-		var disabledOrgs []int64
+		disabledOrgs := make([]int64, 0, len(st.Cfg.DisabledOrgs))
 
 		for orgID := range st.Cfg.DisabledOrgs {
 			disabledOrgs = append(disabledOrgs, orgID)
@@ -1154,7 +1154,7 @@ func (st DBstore) GetAlertRulesKeysForScheduling(ctx context.Context) ([]ngmodel
 func (st DBstore) GetAlertRulesForScheduling(ctx context.Context, query *ngmodels.GetAlertRulesForSchedulingQuery) error {
 	var rules []*ngmodels.AlertRule
 	return st.SQLStore.WithDbSession(ctx, func(sess *db.Session) error {
-		var disabledOrgs []int64
+		disabledOrgs := make([]int64, 0, len(st.Cfg.DisabledOrgs))
 		for orgID := range st.Cfg.DisabledOrgs {
 			disabledOrgs = append(disabledOrgs, orgID)
 		}

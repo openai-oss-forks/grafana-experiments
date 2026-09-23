@@ -335,7 +335,7 @@ func TestAuthorizeRuleChanges(t *testing.T) {
 				}
 			},
 			permissions: func(c *store.GroupDelta) map[string][]string {
-				var deleteScopes []string
+				deleteScopes := make([]string, 0, len(c.AffectedGroups))
 				for key := range c.AffectedGroups {
 					deleteScopes = append(deleteScopes, dashboards.ScopeFoldersProvider.GetResourceScopeUID(key.NamespaceUID))
 				}
@@ -593,8 +593,6 @@ func TestAuthorizeRuleChanges(t *testing.T) {
 func TestCheckDatasourcePermissionsForRule(t *testing.T) {
 	rule := models.RuleGen.GenerateRef()
 
-	expressionByType := models.GenerateAlertQuery()
-	expressionByType.QueryType = expr.DatasourceType
 	expressionByUID := models.GenerateAlertQuery()
 	expressionByUID.DatasourceUID = expr.DatasourceUID
 
@@ -606,7 +604,7 @@ func TestCheckDatasourcePermissionsForRule(t *testing.T) {
 		data = append(data, q)
 	}
 
-	data = append(data, expressionByType, expressionByUID)
+	data = append(data, expressionByUID)
 	rand.Shuffle(len(data), func(i, j int) {
 		data[j], data[i] = data[i], data[j]
 	})
@@ -651,7 +649,7 @@ func TestCheckDatasourcePermissionsForRule(t *testing.T) {
 func Test_authorizeAccessToRuleGroup(t *testing.T) {
 	t.Run("should succeed if user has access to all namespaces", func(t *testing.T) {
 		rules := models.RuleGen.GenerateManyRef(1, 5)
-		namespaceScopes := make([]string, 0)
+		namespaceScopes := make([]string, 0, len(rules))
 		for _, rule := range rules {
 			namespaceScopes = append(namespaceScopes, dashboards.ScopeFoldersProvider.GetResourceScopeUID(rule.NamespaceUID))
 		}

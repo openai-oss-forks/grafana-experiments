@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
-	"strings"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -383,8 +382,11 @@ func (l *LibraryElementService) getByNameHandler(c *contextmodel.ReqContext) res
 
 func (l *LibraryElementService) filterLibraryPanelsByPermission(c *contextmodel.ReqContext, elements []model.LibraryElementDTO) ([]model.LibraryElementDTO, error) {
 	filteredPanels := make([]model.LibraryElementDTO, 0)
+	// Record each panel's folder so the permission scope resolver can skip the
+	// per-panel database lookup it would otherwise do to rediscover the folder.
+	ctx := withPanelFolders(c.Req.Context(), elements)
 	for _, p := range elements {
-		allowed, err := l.AccessControl.Evaluate(c.Req.Context(), c.SignedInUser, ac.EvalPermission(ActionLibraryPanelsRead, ScopeLibraryPanelsProvider.GetResourceScopeUID(p.UID)))
+		allowed, err := l.AccessControl.Evaluate(ctx, c.SignedInUser, ac.EvalPermission(ActionLibraryPanelsRead, ScopeLibraryPanelsProvider.GetResourceScopeUID(p.UID)))
 		if err != nil {
 			// This could fail because the folder that contains the library panel does not exist or the user doesn't have permissions to read it.
 			// We skip it instead of breaking the library panel list rendering flow and log the error.
@@ -430,7 +432,7 @@ func (l *LibraryElementService) toLibraryElementError(err error, message string)
 	if errors.Is(err, model.ErrLibraryElementProvisionedFolder) {
 		return response.Error(http.StatusConflict, model.ErrLibraryElementProvisionedFolder.Error(), err)
 	}
-	if err != nil && strings.Contains(err.Error(), "insufficient permissions") {
+	if errors.Is(err, model.ErrLibraryElementInsufficientPermissions) {
 		return response.Error(http.StatusForbidden, err.Error(), err)
 	}
 

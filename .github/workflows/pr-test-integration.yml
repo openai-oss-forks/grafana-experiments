@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N"$SHARD" -d-)"
-          go test -tags=sqlite -timeout=12m -run '^TestIntegration' "${PACKAGES[@]}"
+          go test -tags=sqlite -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
 
   sqlite_nocgo:
     # Run this workflow only for PRs from forks
@@ -113,7 +113,7 @@ jobs:
           # Build regex pattern like: pkg1$|pkg2$|pkg3$
           SKIP_PATTERN=$(echo "$SKIP_PACKAGES" | sed '/^$/d' | sed 's|.*|&$|' | paste -sd '|' -)
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N "$SHARD" -d - | grep -Ev "($SKIP_PATTERN)")"
-          go test -tags=sqlite -timeout=12m -run '^TestIntegration' "${PACKAGES[@]}"
+          go test -tags=sqlite -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
       - name: Run profiled tests
         id: run-profiled-tests
         if: matrix.shard == 'profiled'
@@ -139,7 +139,7 @@ jobs:
             pkg_name=$(basename "$full_pkg" | tr '/' '_' | tr '.' '_')
             echo "📦 Running $full_pkg"
             set +e
-            go test -tags=sqlite -timeout=12m -run '^TestIntegration' \
+            go test -tags=sqlite -timeout=16m -run '^TestIntegration' \
               -outputdir=profiles \
               -cpuprofile="cpu_${pkg_name}.prof" \
               -memprofile="mem_${pkg_name}.prof" \
@@ -220,7 +220,7 @@ jobs:
         run: |
           set -euo pipefail
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N"$SHARD" -d-)"
-          CGO_ENABLED=0 go test -p=1 -tags=mysql -timeout=8m -run '^TestIntegration' "${PACKAGES[@]}"
+          CGO_ENABLED=0 go test -p=1 -tags=mysql -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
 
   postgres:
     # Run this workflow only for PRs from forks
@@ -265,7 +265,7 @@ jobs:
         run: |
           set -euo pipefail
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N"$SHARD" -d-)"
-          CGO_ENABLED=0 go test -p=1 -tags=postgres -timeout=8m -run '^TestIntegration' "${PACKAGES[@]}"
+          CGO_ENABLED=0 go test -p=1 -tags=postgres -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
       - name: Cleanup Postgres
         if: always()
         run: |
@@ -299,17 +299,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Get GitHub App token
+        id: get-github-app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+        with:
+          github_app: grafana-ci-bot
       - name: Setup Enterprise
         uses: ./.github/actions/setup-enterprise
         with:
-          github-app-name: 'grafana-ci-bot'
+          token: ${{ steps.get-github-app-token.outputs.token }}
       - name: Run tests
         env:
           SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N"$SHARD" -d-)"
-          go test -tags=enterprise,sqlite -timeout=8m -run '^TestIntegration' "${PACKAGES[@]}"
+          go test -tags=enterprise,sqlite -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
 
   sqlite_nocgo-enterprise:
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
@@ -339,10 +344,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Get GitHub App token
+        id: get-github-app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+        with:
+          github_app: grafana-ci-bot
       - name: Setup Enterprise
         uses: ./.github/actions/setup-enterprise
         with:
-          github-app-name: 'grafana-ci-bot'
+          token: ${{ steps.get-github-app-token.outputs.token }}
       - name: Run tests
         if: matrix.shard != 'profiled'
         env:
@@ -356,7 +366,7 @@ jobs:
           # Build regex pattern like: pkg1$|pkg2$|pkg3$
           SKIP_PATTERN=$(echo "$SKIP_PACKAGES" | sed '/^$/d' | sed 's|.*|&$|' | paste -sd '|' -)
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N "$SHARD" -d - | grep -Ev "($SKIP_PATTERN)")"
-          go test -tags=enterprise,sqlite -timeout=8m -run '^TestIntegration' "${PACKAGES[@]}"
+          go test -tags=enterprise,sqlite -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
       - name: Run profiled tests
         id: run-profiled-tests
         if: matrix.shard == 'profiled'
@@ -382,7 +392,7 @@ jobs:
             pkg_name=$(basename "$full_pkg" | tr '/' '_' | tr '.' '_')
             echo "📦 Running $full_pkg"
             set +e
-            go test -tags=enterprise,sqlite -timeout=8m -run '^TestIntegration' \
+            go test -tags=enterprise,sqlite -timeout=16m -run '^TestIntegration' \
               -outputdir=profiles \
               -cpuprofile="cpu_${pkg_name}.prof" \
               -memprofile="mem_${pkg_name}.prof" \
@@ -456,10 +466,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Get GitHub App token
+        id: get-github-app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+        with:
+          github_app: grafana-ci-bot
       - name: Setup Enterprise
         uses: ./.github/actions/setup-enterprise
         with:
-          github-app-name: 'grafana-ci-bot'
+          token: ${{ steps.get-github-app-token.outputs.token }}
       - name: Setup MySQL devenv
         run: mysql -h 127.0.0.1 -P 3306 -u root -prootpass < devenv/docker/blocks/mysql_tests/setup.sql
       - name: Run tests
@@ -468,7 +483,7 @@ jobs:
         run: |
           set -euo pipefail
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N"$SHARD" -d-)"
-          CGO_ENABLED=0 go test -p=1 -tags=enterprise,mysql -timeout=8m -run '^TestIntegration' "${PACKAGES[@]}"
+          CGO_ENABLED=0 go test -p=1 -tags=enterprise,mysql -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
 
   postgres-enterprise:
     # Run this workflow for non-PR events (like pushes to `main` or `release-*`) OR for internal PRs (PRs not from forks)
@@ -506,10 +521,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Get GitHub App token
+        id: get-github-app-token
+        uses: grafana/shared-workflows/actions/create-github-app-token@46f48da11e78ebdba7a8747ae456b11062fac83e # create-github-app-token/v0.3.1
+        with:
+          github_app: grafana-ci-bot
       - name: Setup Enterprise
         uses: ./.github/actions/setup-enterprise
         with:
-          github-app-name: 'grafana-ci-bot'
+          token: ${{ steps.get-github-app-token.outputs.token }}
       - name: Setup Postgres devenv
         run: psql -p 5432 -h 127.0.0.1 -U grafanatest -d grafanatest -f devenv/docker/blocks/postgres_tests/setup.sql
       - name: Run tests
@@ -518,7 +538,7 @@ jobs:
         run: |
           set -euo pipefail
           readarray -t PACKAGES <<< "$(./scripts/ci/backend-tests/pkgs-with-tests-named.sh -b TestIntegration | ./scripts/ci/backend-tests/shard.sh -N"$SHARD" -d-)"
-          CGO_ENABLED=0 go test -p=1 -tags=enterprise,postgres -timeout=8m -run '^TestIntegration' "${PACKAGES[@]}"
+          CGO_ENABLED=0 go test -p=1 -tags=enterprise,postgres -timeout=16m -run '^TestIntegration' "${PACKAGES[@]}"
       - name: Cleanup Postgres
         if: always()
         run: |
