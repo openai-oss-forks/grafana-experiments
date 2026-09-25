@@ -465,6 +465,8 @@ func IsNoData(res backend.DataResponse) bool {
 func queryDataResponseToExecutionResults(c models.Condition, execResp *backend.QueryDataResponse) ExecutionResults {
 	// captures contains the values of all instant queries and expressions for each dimension
 	captures := make(map[string]map[data.Fingerprint]NumberValueCapture)
+	// A negative count denotes captures with differing label counts for a RefID.
+	captureLabelCounts := make(map[string]int)
 
 	// Build a lookup table for expression types by RefID
 	expressionTypes := make(map[string]string)
@@ -478,6 +480,9 @@ func queryDataResponseToExecutionResults(c models.Condition, execResp *backend.Q
 		m := captures[refID]
 		if m == nil {
 			m = make(map[data.Fingerprint]NumberValueCapture)
+			captureLabelCounts[refID] = len(labels)
+		} else if captureLabelCounts[refID] != len(labels) {
+			captureLabelCounts[refID] = -1
 		}
 		fp := labels.Fingerprint()
 
@@ -559,14 +564,17 @@ func queryDataResponseToExecutionResults(c models.Condition, execResp *backend.Q
 			theseLabels := frame.Fields[0].Labels
 			fp := theseLabels.Fingerprint()
 
-			for _, fps := range captures {
+			for refID, fps := range captures {
 				// First look for a capture whose labels are an exact match
 				if v, ok := fps[fp]; ok {
 					if frame.Meta.Custom == nil {
 						frame.Meta.Custom = []NumberValueCapture{}
 					}
 					frame.Meta.Custom = append(frame.Meta.Custom.([]NumberValueCapture), v)
-				} else {
+				} else if captureLabelCounts[refID] != len(theseLabels) {
+					// Equal-sized label sets can only contain each other when equal.
+					// If every capture has this size, the exact lookup already ruled
+					// out any match. Mixed-size captures still need the full scan.
 					// If no exact match was found, look for captures whose labels are either subsets
 					// or supersets
 					for _, v := range fps {
