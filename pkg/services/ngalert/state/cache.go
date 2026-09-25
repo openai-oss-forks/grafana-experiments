@@ -149,7 +149,10 @@ func expandAnnotationsAndLabels(ctx context.Context, log log.Logger, alertRule *
 	}
 	// Merge both the extra labels and the labels from the evaluation into a common set
 	// of labels that can be expanded in custom labels and annotations.
-	templateData := template.NewData(mergeLabels(extraLabels, resultLabels), result)
+	var templateData template.Data
+	if hasTemplate(alertRule.Labels) || hasTemplate(alertRule.Annotations) {
+		templateData = template.NewData(mergeLabels(extraLabels, resultLabels), result)
+	}
 
 	// For now, do nothing with these errors as they are already logged in expand.
 	// In the future, we want to show these errors to the user somehow.
@@ -228,6 +231,17 @@ func expand(ctx context.Context, log log.Logger, name string, original map[strin
 		}
 	}
 	return expanded, errs
+}
+
+// Match template.Expand's literal-string fast path. Literal labels and
+// annotations do not consume template data, so avoid constructing it for them.
+func hasTemplate(values map[string]string) bool {
+	for _, value := range values {
+		if strings.Contains(value, "{{") {
+			return true
+		}
+	}
+	return false
 }
 
 func (rs *ruleStates) deleteStates(predicate func(s *State) bool) {
