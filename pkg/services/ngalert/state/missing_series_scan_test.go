@@ -14,6 +14,62 @@ import (
 	"github.com/grafana/grafana/pkg/services/ngalert/models"
 )
 
+// deleteRuleStates always takes the cache write lock before traversing entries.
+// Holding a read lock lets the snapshot/processing pass run, but prevents a
+// deletion pass. Completion therefore verifies the actual manager skips it.
+func TestMissingSeriesWithoutStaleStatesSkipsDeletionLock(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			now := time.Unix(1700000000, 0).UTC()
+			rule := &models.AlertRule{OrgID: 1, UID: "synthetic", IntervalSeconds: 60}
+			last := now
+			if missing {
+				last = now.Add(-time.Minute)
+			}
+			manager := &Manager{cache: newCache()}
+			state := &State{OrgID: 1, AlertRuleUID: rule.UID, CacheID: 1, State: eval.Normal, LastEvaluationTime: last}
+			manager.Put([]*State{state})
+			type outcome struct {
+				transitions []StateTransition
+				stale       int
+			}
+			done := make(chan outcome, 1)
+			manager.cache.mtxStates.RLock()
+			go func() {
+				transitions, stale := manager.processMissingSeriesStates(log.NewNopLogger(), now, rule, func(string) *models.Image { return nil })
+				done <- outcome{transitions, stale}
+			}()
+			var got outcome
+			completed := false
+			select {
+			case got = <-done:
+				completed = true
+			case <-time.After(5 * time.Second):
+			}
+			// Release before failing so an unexpected deletion pass can finish.
+			manager.cache.mtxStates.RUnlock()
+			if !completed {
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("processing did not finish after releasing the cache read lock")
+				}
+				t.Fatal("processing without stale states waited for the cache write lock")
+			}
+			require.Zero(t, got.stale)
+			if missing {
+				require.Len(t, got.transitions, 1)
+				require.Same(t, state, got.transitions[0].State)
+			} else {
+				require.Empty(t, got.transitions)
+			}
+			require.Same(t, state, manager.cache.get(1, rule.UID, 1))
+			require.Equal(t, last, state.LastEvaluationTime)
+			require.Equal(t, eval.Normal, state.State)
+		})
+	}
+}
+
 func TestMissingSeriesDeletionSelection(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	rule := &models.AlertRule{OrgID: 1, UID: "synthetic", IntervalSeconds: 60}
