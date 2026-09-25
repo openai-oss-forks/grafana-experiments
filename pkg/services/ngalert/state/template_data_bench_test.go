@@ -71,6 +71,7 @@ func BenchmarkTemplateStateCycle(b *testing.B) {
 				results[i].Instance = data.Labels{"series": strconv.Itoa(i)}
 			}
 			errorResults := eval.Results{{State: eval.Error, Error: errors.New("synthetic error")}}
+			errorResult := &errorResults[0]
 			tick := result.EvaluatedAt
 			ctx := context.Background()
 			b.ReportAllocs()
@@ -86,7 +87,7 @@ func BenchmarkTemplateStateCycle(b *testing.B) {
 						current = results[:50]
 					}
 					if phase == 3 {
-						errorResults[0].EvaluatedAt = tick
+						errorResult.EvaluatedAt = tick
 						current = errorResults
 					}
 					manager.ProcessEvalResults(ctx, tick, &rule, current, nil, nil)

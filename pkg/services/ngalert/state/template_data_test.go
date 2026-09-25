@@ -47,33 +47,34 @@ func TestTemplateDataAdvancingStateEquivalence(t *testing.T) {
 				ctx := context.Background()
 				clean := func(transitions StateTransitions) StateTransitions {
 					for _, tr := range transitions {
-						delete(tr.State.Annotations, marker)
+						delete(tr.Annotations, marker)
 					}
-					sort.Slice(transitions, func(i, j int) bool { return transitions[i].State.CacheID < transitions[j].State.CacheID })
+					sort.Slice(transitions, func(i, j int) bool { return transitions[i].CacheID < transitions[j].CacheID })
 					return transitions
 				}
 				for phase := 0; phase < 7; phase++ {
 					tick = tick.Add(time.Minute)
-					results := eval.Results{result, result}
-					for i := range results {
-						results[i].Instance = data.Labels{"series": fmt.Sprint(i)}
-						results[i].EvaluatedAt = tick
-						if phase >= 1 && phase <= 3 {
-							results[i].State = eval.Alerting
-						}
+					phaseResult := result
+					phaseResult.EvaluatedAt = tick
+					if phase >= 1 && phase <= 3 {
+						phaseResult.State = eval.Alerting
 					}
+					first, second := phaseResult, phaseResult
+					first.Instance = data.Labels{"series": "0"}
+					second.Instance = data.Labels{"series": "1"}
+					current := eval.Results{first, second}
 					if phase == 2 || phase == 3 {
-						results = results[:1]
+						current = current[:1]
 					}
 					if phase == 4 {
-						results = eval.Results{{State: eval.Error, Error: errors.New("synthetic error"), EvaluatedAt: tick}}
+						current = eval.Results{{State: eval.Error, Error: errors.New("synthetic error"), EvaluatedAt: tick}}
 					}
 					if phase == 5 {
-						results = eval.Results{{State: eval.NoData, EvaluatedAt: tick}}
+						current = eval.Results{{State: eval.NoData, EvaluatedAt: tick}}
 					}
 					var gotSent, wantSent StateTransitions
-					got := actual.ProcessEvalResults(ctx, tick, &rule, results, nil, func(_ context.Context, s StateTransitions) { gotSent = s })
-					want := reference.ProcessEvalResults(ctx, tick, &referenceRule, results, nil, func(_ context.Context, s StateTransitions) { wantSent = s })
+					got := actual.ProcessEvalResults(ctx, tick, &rule, current, nil, func(_ context.Context, s StateTransitions) { gotSent = s })
+					want := reference.ProcessEvalResults(ctx, tick, &referenceRule, current, nil, func(_ context.Context, s StateTransitions) { wantSent = s })
 					require.Equal(t, clean(want), clean(got), "phase %d transitions", phase)
 					require.Equal(t, clean(wantSent), clean(gotSent), "phase %d notifications", phase)
 					gotCache := actual.GetStatesForRuleUID(ctx, 1, rule.UID)
@@ -103,7 +104,7 @@ func TestTemplateDataAdvancingStateEquivalence(t *testing.T) {
 						require.Equal(t, eval.Alerting, gotCache[0].State)
 						stale := 0
 						for _, tr := range got {
-							if tr.State.StateReason == models.StateReasonMissingSeries {
+							if tr.StateReason == models.StateReasonMissingSeries {
 								stale++
 								require.Equal(t, eval.Normal, tr.State.State)
 							}
