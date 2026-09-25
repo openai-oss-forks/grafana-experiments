@@ -559,10 +559,12 @@ func (st *Manager) processMissingSeriesStates(logger log.Logger, evaluatedAt tim
 		}
 	}
 
-	st.cache.deleteRuleStates(alertRule.GetKey(), func(s *State) bool {
-		_, ok := toDeleteStates[s.CacheID]
-		return ok
-	})
+	if len(toDeleteStates) > 0 {
+		st.cache.deleteRuleStates(alertRule.GetKey(), func(s *State) bool {
+			_, ok := toDeleteStates[s.CacheID]
+			return ok
+		})
+	}
 
 	return missingTransitions, staleStatesCount
 }
