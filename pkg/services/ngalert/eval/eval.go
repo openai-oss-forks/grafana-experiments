@@ -462,6 +462,30 @@ func IsNoData(res backend.DataResponse) bool {
 	return false
 }
 
+func captureNumberValue(captures map[string]map[data.Fingerprint]NumberValueCapture, captureLabelCounts map[string]int, refID string, datasourceType expr.NodeType, exprType string, labels data.Labels, value *float64) {
+	m := captures[refID]
+	if m == nil {
+		m = make(map[data.Fingerprint]NumberValueCapture)
+		captureLabelCounts[refID] = len(labels)
+	} else if captureLabelCounts[refID] != len(labels) {
+		captureLabelCounts[refID] = -1
+	}
+	fp := labels.Fingerprint()
+
+	if exprType == "" && datasourceType == expr.TypeDatasourceNode {
+		exprType = "query"
+	}
+
+	m[fp] = NumberValueCapture{
+		Var:              refID,
+		IsDatasourceNode: datasourceType == expr.TypeDatasourceNode,
+		Value:            value,
+		Labels:           labels.Copy(),
+		Type:             exprType,
+	}
+	captures[refID] = m
+}
+
 func queryDataResponseToExecutionResults(c models.Condition, execResp *backend.QueryDataResponse) ExecutionResults {
 	// captures contains the values of all instant queries and expressions for each dimension
 	captures := make(map[string]map[data.Fingerprint]NumberValueCapture)
@@ -477,28 +501,7 @@ func queryDataResponseToExecutionResults(c models.Condition, execResp *backend.Q
 	}
 
 	captureFn := func(refID string, datasourceType expr.NodeType, labels data.Labels, value *float64) {
-		m := captures[refID]
-		if m == nil {
-			m = make(map[data.Fingerprint]NumberValueCapture)
-			captureLabelCounts[refID] = len(labels)
-		} else if captureLabelCounts[refID] != len(labels) {
-			captureLabelCounts[refID] = -1
-		}
-		fp := labels.Fingerprint()
-
-		exprType := expressionTypes[refID]
-		if exprType == "" && datasourceType == expr.TypeDatasourceNode {
-			exprType = "query"
-		}
-
-		m[fp] = NumberValueCapture{
-			Var:              refID,
-			IsDatasourceNode: datasourceType == expr.TypeDatasourceNode,
-			Value:            value,
-			Labels:           labels.Copy(),
-			Type:             exprType,
-		}
-		captures[refID] = m
+		captureNumberValue(captures, captureLabelCounts, refID, datasourceType, expressionTypes[refID], labels, value)
 	}
 
 	// datasourceUIDsForRefIDs is a short-lived lookup table of RefID to DatasourceUID

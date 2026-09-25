@@ -64,8 +64,9 @@ func TestCaptureMatchingAgainstExhaustiveReference(t *testing.T) {
 					}
 				}
 			}
-			var got []string
-			for _, capture := range frame.Meta.Custom.([]NumberValueCapture) {
+			captures := frame.Meta.Custom.([]NumberValueCapture)
+			got := make([]string, 0, len(captures))
+			for _, capture := range captures {
 				got = append(got, captureSignature(capture))
 			}
 			sort.Strings(want)
@@ -110,8 +111,9 @@ func TestCaptureMatchingEdgeCases(t *testing.T) {
 				response.Responses["A"] = r
 			}
 			result := queryDataResponseToExecutionResults(models.Condition{Condition: "C"}, response)
-			var got []string
-			for _, c := range result.Condition[0].Meta.Custom.([]NumberValueCapture) {
+			captures := result.Condition[0].Meta.Custom.([]NumberValueCapture)
+			got := make([]string, 0, len(captures))
+			for _, c := range captures {
 				got = append(got, captureSignature(c))
 			}
 			require.ElementsMatch(t, tc.want, got)
