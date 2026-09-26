@@ -131,6 +131,21 @@ func Expand(ctx context.Context, name, tmpl string, data Data, externalURL *url.
 		return tmpl, nil
 	}
 
+	expander, fullText := newExpander(ctx, name, tmpl, data, externalURL, evaluatedAt)
+
+	result, err := expander.Expand()
+	if err != nil {
+		return "", ExpandError{Tmpl: fullText, Err: err}
+	}
+
+	// We need to replace <no value> with [no value] as some integrations think <no value> is invalid HTML. For example,
+	// Telegram in HTML mode rejects messages with unsupported tags.
+	result = strings.ReplaceAll(result, "<no value>", "[no value]")
+	return result, nil
+}
+
+// newExpander preserves the bindings shared by single expansion and reused construction.
+func newExpander(ctx context.Context, name, tmpl string, data any, externalURL *url.URL, evaluatedAt time.Time) (*template.Expander, string) {
 	// add __alert_ to avoid possible conflicts with other templates
 	name = "__alert_" + name
 	// add variables for the labels and values to the beginning of the template
@@ -146,13 +161,5 @@ func Expand(ctx context.Context, name, tmpl string, data Data, externalURL *url.
 	expander := template.NewTemplateExpander(ctx, tmpl, name, data, tm, queryFunc, externalURL, options)
 	expander.Funcs(defaultFuncs)
 
-	result, err := expander.Expand()
-	if err != nil {
-		return "", ExpandError{Tmpl: tmpl, Err: err}
-	}
-
-	// We need to replace <no value> with [no value] as some integrations think <no value> is invalid HTML. For example,
-	// Telegram in HTML mode rejects messages with unsupported tags.
-	result = strings.ReplaceAll(result, "<no value>", "[no value]")
-	return result, nil
+	return expander, tmpl
 }
