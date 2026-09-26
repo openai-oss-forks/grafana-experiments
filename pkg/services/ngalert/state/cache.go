@@ -120,6 +120,10 @@ func (c *cache) RegisterMetrics(r prometheus.Registerer) {
 }
 
 func expandAnnotationsAndLabels(ctx context.Context, log log.Logger, alertRule *ngModels.AlertRule, result eval.Result, extraLabels data.Labels, externalURL *url.URL) (data.Labels, data.Labels) {
+	return expandAnnotationsAndLabelsWithTemplates(ctx, log, alertRule, result, extraLabels, externalURL, nil)
+}
+
+func expandAnnotationsAndLabelsWithTemplates(ctx context.Context, log log.Logger, alertRule *ngModels.AlertRule, result eval.Result, extraLabels data.Labels, externalURL *url.URL, batch *template.Batch) (data.Labels, data.Labels) {
 	var reserved []string
 	resultLabels := result.Instance
 	if len(resultLabels) > 0 {
@@ -156,8 +160,8 @@ func expandAnnotationsAndLabels(ctx context.Context, log log.Logger, alertRule *
 
 	// For now, do nothing with these errors as they are already logged in expand.
 	// In the future, we want to show these errors to the user somehow.
-	labels, _ := expand(ctx, log, alertRule.Title, alertRule.Labels, templateData, externalURL, result.EvaluatedAt)
-	annotations, _ := expand(ctx, log, alertRule.Title, alertRule.Annotations, templateData, externalURL, result.EvaluatedAt)
+	labels, _ := expandWithTemplates(ctx, log, alertRule.Title, alertRule.Labels, templateData, externalURL, result.EvaluatedAt, batch, "labels")
+	annotations, _ := expandWithTemplates(ctx, log, alertRule.Title, alertRule.Annotations, templateData, externalURL, result.EvaluatedAt, batch, "annotations")
 
 	// If the result contains an error, we want to add the ref_id and datasource_uid labels
 	// to the new state if the alert rule should be in the ErrorErrState.
@@ -215,12 +219,22 @@ func expandAnnotationsAndLabels(ctx context.Context, log log.Logger, alertRule *
 // maintained and an error is added to the multierror. All errors in the multierror are
 // template.ExpandError errors.
 func expand(ctx context.Context, log log.Logger, name string, original map[string]string, data template.Data, externalURL *url.URL, evaluatedAt time.Time) (map[string]string, error) {
+	return expandWithTemplates(ctx, log, name, original, data, externalURL, evaluatedAt, nil, "")
+}
+
+func expandWithTemplates(ctx context.Context, log log.Logger, name string, original map[string]string, data template.Data, externalURL *url.URL, evaluatedAt time.Time, batch *template.Batch, namespace string) (map[string]string, error) {
 	var (
 		errs     error
 		expanded = make(map[string]string, len(original))
 	)
 	for k, v := range original {
-		result, err := template.Expand(ctx, name, v, data, externalURL, evaluatedAt)
+		var result string
+		var err error
+		if batch == nil {
+			result, err = template.Expand(ctx, name, v, data, externalURL, evaluatedAt)
+		} else {
+			result, err = batch.Expand(namespace, k, v, data, evaluatedAt)
+		}
 		if err != nil {
 			log.Error("Error in expanding template", "error", err)
 			errs = errors.Join(errs, err)
