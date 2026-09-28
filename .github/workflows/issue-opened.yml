@@ -49,7 +49,7 @@ jobs:
 
       - name: "Get vault secrets"
         id: vault-secrets
-        uses: grafana/shared-workflows/actions/get-vault-secrets@get-vault-secrets/v1.3.0 # zizmor: ignore[unpinned-uses]
+        uses: grafana/shared-workflows/actions/get-vault-secrets@get-vault-secrets/v2.1.0 # zizmor: ignore[unpinned-uses]
         with:
           # Secrets placed in the ci/repo/grafana/grafana/plugins_platform_issue_triager path in Vault
           repo_secrets: |
