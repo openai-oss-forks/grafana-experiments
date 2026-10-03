@@ -67,6 +67,97 @@ func TestConversionMatrixExist(t *testing.T) {
 	}
 }
 
+func TestVariableHideAcrossAPIVersions(t *testing.T) {
+	dsProvider := migrationtestutil.NewDataSourceProvider(migrationtestutil.StandardTestConfig)
+	leProvider := migrationtestutil.NewTestLibraryElementProvider()
+	migration.Initialize(dsProvider, leProvider, migration.DefaultCacheTTL)
+	scheme := runtime.NewScheme()
+	require.NoError(t, RegisterConversions(scheme, dsProvider, leProvider))
+
+	for _, tc := range []struct {
+		name   string
+		hide   string
+		v2Hide string
+		v1Hide int
+	}{
+		{"visible", "0", "dontHide", 0},
+		{"label hidden", "1", "hideLabel", 1},
+		{"variable hidden", "2", "hideVariable", 2},
+		{"visible string", `"dontHide"`, "dontHide", 0},
+		{"label hidden string", `"hideLabel"`, "hideLabel", 1},
+		{"variable hidden string", `"hideVariable"`, "hideVariable", 2},
+		{"controls menu number", "3", "inControlsMenu", 3},
+		{"controls menu string", `"inControlsMenu"`, "inControlsMenu", 3},
+		{"missing", "null", "dontHide", 0},
+		{"empty string", `""`, "dontHide", 0},
+		{"unknown number", "99", "dontHide", 0},
+		{"unknown string", `"bogus"`, "dontHide", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, target := range []struct {
+				name string
+				out  runtime.Object
+			}{
+				{"v2alpha1", &dashv2alpha1.Dashboard{}},
+				{"v2beta1", &dashv2beta1.Dashboard{}},
+			} {
+				t.Run(target.name, func(t *testing.T) {
+					var in dashv1.Dashboard
+					data := fmt.Sprintf(`{
+						"kind":"Dashboard",
+						"apiVersion":"dashboard.grafana.app/v1beta1",
+						"metadata":{"name":"variable-hide-test"},
+						"spec":{
+							"title":"Variable visibility",
+							"panels":[],
+							"templating":{"list":[{
+								"name":"region","type":"custom","query":"east,west",
+								"current":{"text":"east","value":"east"},"hide":%s
+							}]}
+						}
+					}`, tc.hide)
+					require.NoError(t, json.Unmarshal([]byte(data), &in))
+
+					require.NoError(t, scheme.Convert(&in, target.out, nil))
+					encoded, err := json.Marshal(target.out)
+					require.NoError(t, err)
+					var response struct {
+						Spec struct {
+							Variables []struct {
+								Spec struct {
+									Name string `json:"name"`
+									Hide string `json:"hide"`
+								} `json:"spec"`
+							} `json:"variables"`
+						} `json:"spec"`
+					}
+					require.NoError(t, json.Unmarshal(encoded, &response))
+					require.Len(t, response.Spec.Variables, 1)
+					require.Equal(t, "region", response.Spec.Variables[0].Spec.Name)
+					require.Equal(t, tc.v2Hide, response.Spec.Variables[0].Spec.Hide)
+
+					var back dashv1.Dashboard
+					require.NoError(t, scheme.Convert(target.out, &back, nil))
+					encoded, err = json.Marshal(back.Spec)
+					require.NoError(t, err)
+					var legacy struct {
+						Templating struct {
+							List []struct {
+								Name string `json:"name"`
+								Hide int    `json:"hide"`
+							} `json:"list"`
+						} `json:"templating"`
+					}
+					require.NoError(t, json.Unmarshal(encoded, &legacy))
+					require.Len(t, legacy.Templating.List, 1)
+					require.Equal(t, "region", legacy.Templating.List[0].Name)
+					require.Equal(t, tc.v1Hide, legacy.Templating.List[0].Hide)
+				})
+			}
+		})
+	}
+}
+
 func TestDeepCopyValid(t *testing.T) {
 	dash1 := &dashv0.Dashboard{}
 	meta1, err := utils.MetaAccessor(dash1)
