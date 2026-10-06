@@ -1,7 +1,10 @@
-import { MonitoringLogger } from '@grafana/runtime';
+import { config, MonitoringLogger } from '@grafana/runtime';
 import { getAppPluginMetas, invalidateCache, setLogger } from '@grafana/runtime/internal';
 
+import { registerCoreExtensions } from './registerCoreExtensions';
 import { getPluginExtensionRegistries } from './setup';
+
+jest.mock('./registerCoreExtensions', () => ({ registerCoreExtensions: jest.fn() }));
 
 jest.mock('@grafana/runtime/internal', () => ({
   ...jest.requireActual('@grafana/runtime/internal'),
@@ -15,6 +18,9 @@ describe('getPluginExtensionRegistries', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     invalidateCache();
+    window.history.replaceState({}, '', '/');
+    config.appSubUrl = '';
+    config.featureToggles.dashboardScene = true;
     getAppPluginMetasMock.mockResolvedValue([]);
     logger = {
       logDebug: jest.fn(),
@@ -25,6 +31,27 @@ describe('getPluginExtensionRegistries', () => {
     };
     setLogger(logger);
   });
+
+  test.each(['/d-solo/test/dashboard', '/grafana/d-solo/test/dashboard'])(
+    'embedded scenes keep core editor extensions unloaded at %s',
+    async (path) => {
+      config.appSubUrl = path.startsWith('/grafana/') ? '/grafana' : '';
+      window.history.replaceState({}, '', path);
+      await getPluginExtensionRegistries();
+      expect(registerCoreExtensions).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['/d/test/dashboard', '/d-solo/test/dashboard'])(
+    'normal and legacy dashboards retain core extensions at %s',
+    async (path) => {
+      config.featureToggles.dashboardScene = false;
+      config.featureToggles.dashboardNewLayouts = false;
+      window.history.replaceState({}, '', path);
+      const registries = await getPluginExtensionRegistries();
+      expect(registerCoreExtensions).toHaveBeenCalledWith(registries);
+    }
+  );
 
   test('should only call getAppPluginMetas once', async () => {
     const promise1 = getPluginExtensionRegistries();

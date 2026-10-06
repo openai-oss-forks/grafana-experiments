@@ -1,9 +1,11 @@
 package webassets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -148,4 +150,39 @@ func TestReadWebassetsFromCDN(t *testing.T) {
 		"dark": "https://grafana-assets.grafana.net/grafana/10.3.0-64123/public/build/grafana.dark.b44253d019cd9cb46428.css",
 		"light": "https://grafana-assets.grafana.net/grafana/10.3.0-64123/public/build/grafana.light.e8e11c59b604d62836be.css"
 	  }`, string(dto))
+}
+
+func TestEmbeddedPanelAssets(t *testing.T) {
+	manifest, err := os.ReadFile("testdata/build/assets-manifest.json")
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(manifest, &raw))
+	var entries map[string]any
+	require.NoError(t, json.Unmarshal(raw["entrypoints"], &entries))
+	entries["embedded"] = map[string]any{"assets": map[string]any{
+		"js":  []string{"public/build/runtime.js", "public/build/embedded.js"},
+		"css": []string{"public/build/embedded.css"},
+	}}
+	raw["entrypoints"], err = json.Marshal(entries)
+	require.NoError(t, err)
+	raw["embedded.js"] = json.RawMessage(`{"src":"public/build/embedded.js","integrity":"sha384-embedded"}`)
+	manifest, err = json.Marshal(raw)
+	require.NoError(t, err)
+	assets, err := readWebAssets(bytes.NewReader(manifest))
+	require.NoError(t, err)
+	originalJS := assets.JSFiles
+	assets.SetContentDeliveryURL("https://cdn.example/grafana/")
+	embedded := assets.ForEmbeddedPanel()
+	require.Len(t, embedded.JSFiles, 2)
+	require.Equal(t, "https://cdn.example/grafana/public/build/embedded.js", embedded.JSFiles[1].FilePath)
+	require.Equal(t, "sha384-embedded", embedded.JSFiles[1].Integrity)
+	require.Equal(t, "https://cdn.example/grafana/public/build/embedded.css", embedded.CSSFiles[0].FilePath)
+	require.Equal(t, originalJS, assets.JSFiles, "selecting an embed must not change the cached full-app entrypoint")
+	require.Equal(t, assets.Dark, embedded.Dark)
+}
+
+func TestEmbeddedPanelFallsBackForOldManifests(t *testing.T) {
+	assets, err := ReadWebAssetsFromFile("testdata/build/assets-manifest.json")
+	require.NoError(t, err)
+	require.Same(t, assets, assets.ForEmbeddedPanel())
 }

@@ -21,10 +21,11 @@ type ManifestInfo struct {
 	Integrity string `json:"integrity,omitempty"`
 
 	// The known entrypoints
-	App     *EntryPointInfo `json:"app,omitempty"`
-	Dark    *EntryPointInfo `json:"dark,omitempty"`
-	Light   *EntryPointInfo `json:"light,omitempty"`
-	Swagger *EntryPointInfo `json:"swagger,omitempty"`
+	App      *EntryPointInfo `json:"app,omitempty"`
+	Embedded *EntryPointInfo `json:"embedded,omitempty"`
+	Dark     *EntryPointInfo `json:"dark,omitempty"`
+	Light    *EntryPointInfo `json:"light,omitempty"`
+	Swagger  *EntryPointInfo `json:"swagger,omitempty"`
 }
 
 type EntryPointInfo struct {
@@ -155,6 +156,14 @@ func readWebAssets(r io.Reader) (*dtos.EntryPointAssets, error) {
 			FilePath:  entry,
 			Integrity: integrity[entry],
 		})
+	}
+	if entryPoints.Embedded != nil {
+		for _, entry := range entryPoints.Embedded.Assets.JS {
+			rsp.EmbeddedJSFiles = append(rsp.EmbeddedJSFiles, dtos.EntryPointAsset{FilePath: entry, Integrity: integrity[entry]})
+		}
+		for _, entry := range entryPoints.Embedded.Assets.CSS {
+			rsp.EmbeddedCSSFiles = append(rsp.EmbeddedCSSFiles, dtos.EntryPointAsset{FilePath: entry, Integrity: integrity[entry]})
+		}
 	}
 	for _, entry := range entryPoints.Swagger.Assets.JS {
 		rsp.Swagger = append(rsp.Swagger, dtos.EntryPointAsset{

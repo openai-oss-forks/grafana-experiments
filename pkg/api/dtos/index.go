@@ -39,6 +39,8 @@ type IndexViewData struct {
 type EntryPointAssets struct {
 	ContentDeliveryURL string            `json:"cdn,omitempty"`
 	JSFiles            []EntryPointAsset `json:"jsFiles"`
+	EmbeddedJSFiles    []EntryPointAsset `json:"embeddedJsFiles,omitempty"`
+	EmbeddedCSSFiles   []EntryPointAsset `json:"embeddedCssFiles,omitempty"`
 	CSSFiles           []EntryPointAsset `json:"cssFiles"`
 	Dark               string            `json:"dark"`
 	Light              string            `json:"light"`
@@ -64,10 +66,28 @@ func (a *EntryPointAssets) SetContentDeliveryURL(prefix string) {
 	for i, p := range a.CSSFiles {
 		a.CSSFiles[i].FilePath = prefix + p.FilePath
 	}
+	for i, p := range a.EmbeddedJSFiles {
+		a.EmbeddedJSFiles[i].FilePath = prefix + p.FilePath
+	}
+	for i, p := range a.EmbeddedCSSFiles {
+		a.EmbeddedCSSFiles[i].FilePath = prefix + p.FilePath
+	}
 	for i, p := range a.Swagger {
 		a.Swagger[i].FilePath = prefix + p.FilePath
 	}
 	for i, p := range a.SwaggerCSSFiles {
 		a.SwaggerCSSFiles[i].FilePath = prefix + p.FilePath
 	}
+}
+
+// ForEmbeddedPanel selects the panel entrypoint without mutating the shared assets cache.
+// Older/development manifests can still use the normal application entrypoint.
+func (a *EntryPointAssets) ForEmbeddedPanel() *EntryPointAssets {
+	if len(a.EmbeddedJSFiles) == 0 {
+		return a
+	}
+	result := *a
+	result.JSFiles = a.EmbeddedJSFiles
+	result.CSSFiles = a.EmbeddedCSSFiles
+	return &result
 }

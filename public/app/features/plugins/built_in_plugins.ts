@@ -9,7 +9,9 @@ const influxdbPlugin = async () =>
 const mixedPlugin = async () =>
   await import(/* webpackChunkName: "mixedPlugin" */ 'app/plugins/datasource/mixed/module');
 const prometheusPlugin = async () =>
-  await import(/* webpackChunkName: "prometheusPlugin" */ 'app/plugins/datasource/prometheus/module');
+  await import(
+    /* webpackChunkName: "prometheusPlugin", webpackFetchPriority: "high" */ 'app/plugins/datasource/prometheus/module'
+  );
 const alertmanagerPlugin = async () =>
   await import(/* webpackChunkName: "alertmanagerPlugin" */ 'app/plugins/datasource/alertmanager/module');
 
@@ -51,7 +53,9 @@ const statusHistoryPanel = async () =>
 const tablePanel = async () => await import(/* webpackChunkName: "tablePanel" */ 'app/plugins/panel/table/module');
 const textPanel = async () => await import(/* webpackChunkName: "textPanel" */ 'app/plugins/panel/text/module');
 const timeseriesPanel = async () =>
-  await import(/* webpackChunkName: "timeseriesPanel" */ 'app/plugins/panel/timeseries/module');
+  await import(
+    /* webpackChunkName: "timeseriesPanel", webpackFetchPriority: "high" */ 'app/plugins/panel/timeseries/module'
+  );
 const tracesPanel = async () => await import(/* webpackChunkName: "tracesPanel" */ 'app/plugins/panel/traces/module');
 const trendPanel = async () => await import(/* webpackChunkName: "trendPanel" */ 'app/plugins/panel/trend/module');
 const welcomeBanner = async () =>

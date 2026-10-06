@@ -138,6 +138,12 @@ func (hs *HTTPServer) setIndexViewData(c *contextmodel.ReqContext) (*dtos.IndexV
 		return nil, err
 	}
 
+	// Embedded panels use their own entrypoint; authentication and boot settings
+	// still come from the same Index handler as the full application.
+	if strings.HasPrefix(strings.TrimPrefix(c.Req.URL.Path, hs.Cfg.AppSubURL), "/d-solo/") {
+		assets = assets.ForEmbeddedPanel()
+	}
+
 	hasAccess := ac.HasAccess(hs.AccessControl, c)
 	hasEditPerm := hasAccess(ac.EvalAny(ac.EvalPermission(dashboards.ActionDashboardsCreate), ac.EvalPermission(dashboards.ActionFoldersCreate)))
 
