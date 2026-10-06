@@ -26,7 +26,8 @@ async function bootstrapWindowData() {
   // This entrypoint contains the embedded application, not the full app shell.
   // Use eager to ensure the app is included in the initial chunk and does not
   // require additional network requests to load.
-  await import(/* webpackMode: "eager" */ './initEmbeddedApp');
+  const { initEmbeddedApp } = await import(/* webpackMode: "eager" */ './initEmbeddedApp');
+  await initEmbeddedApp();
 }
 
 bootstrapWindowData().catch((error) => {

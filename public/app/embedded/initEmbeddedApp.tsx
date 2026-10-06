@@ -248,8 +248,3 @@ export async function initEmbeddedApp() {
   document.querySelector('.preloader')?.remove();
   performance.mark('embedded_app_ready');
 }
-
-void initEmbeddedApp().catch((error) => {
-  console.error('Failed to start embedded Grafana panel', error);
-  window.__grafana_load_failed();
-});

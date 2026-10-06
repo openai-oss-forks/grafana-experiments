@@ -94,6 +94,7 @@ import {
   getObservablePluginComponents,
   getObservablePluginLinks,
 } from './features/plugins/extensions/getPluginExtensions';
+import { registerCoreExtensions } from './features/plugins/extensions/registry/registerCoreExtensions';
 import { getPluginExtensionRegistries } from './features/plugins/extensions/registry/setup';
 import { usePluginComponent } from './features/plugins/extensions/usePluginComponent';
 import { usePluginComponents } from './features/plugins/extensions/usePluginComponents';
@@ -253,14 +254,15 @@ export class GrafanaApp {
       setDataSourceSrv(dataSourceSrv);
       initWindowRuntime();
 
+      // Core navigation and editor extensions belong to the full application shell.
+      registerCoreExtensions(await getPluginExtensionRegistries());
+
       // Do not pre-load apps if rendererDisableAppPluginsPreload is true and the request comes from the image renderer
       const skipAppPluginsPreload =
         config.featureToggles.rendererDisableAppPluginsPreload && contextSrv.user.authenticatedBy === 'render';
       if (contextSrv.user.orgRole !== '' && !skipAppPluginsPreload) {
         preloadPlugins(await getAppPluginsToPreload());
       }
-
-      getPluginExtensionRegistries();
 
       setHelpNavItemHook(useHelpNode);
       setPluginLinksHook(usePluginLinks);

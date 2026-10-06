@@ -1,6 +1,4 @@
-/* eslint-disable @grafana/i18n/no-untranslated-strings */
 import { AppPluginConfig } from '@grafana/data';
-import { config } from '@grafana/runtime';
 import { getAppPluginMetas, getCachedPromise } from '@grafana/runtime/internal';
 
 import { AddedComponentsRegistry } from './AddedComponentsRegistry';
@@ -19,20 +17,7 @@ function initRegistries(apps: AppPluginConfig[]): PluginExtensionRegistries {
 
 async function initPluginExtensionRegistries(): Promise<PluginExtensionRegistries> {
   const apps = await getAppPluginMetas();
-  const registries = initRegistries(apps);
-  // A solo panel has no application navigation or editor extension points.
-  // Keep the core editor modules out of its initial dependency graph.
-  const pathname = window.location.pathname;
-  const appPath = pathname.startsWith(config.appSubUrl) ? pathname.slice(config.appSubUrl.length) : pathname;
-  const embeddedScene =
-    appPath.startsWith('/d-solo/') &&
-    (config.featureToggles.dashboardScene || config.featureToggles.dashboardNewLayouts);
-  if (!embeddedScene) {
-    const { registerCoreExtensions } = await import('./registerCoreExtensions');
-    registerCoreExtensions(registries);
-  }
-
-  return registries;
+  return initRegistries(apps);
 }
 
 /**
