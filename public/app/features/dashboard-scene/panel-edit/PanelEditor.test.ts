@@ -9,6 +9,7 @@ import {
   LoadingState,
   PanelPlugin,
   standardTransformersRegistry,
+  toDataFrame,
 } from '@grafana/data';
 import { getPanelPlugin } from '@grafana/data/test';
 import { config } from '@grafana/runtime';
@@ -131,6 +132,80 @@ describe('PanelEditor', () => {
   });
 
   describe('Entering panel edit', () => {
+    it.each([
+      { isNewPanel: true, isHidden: false, expectedPluginId: 'logs' },
+      { isNewPanel: true, isHidden: true, expectedPluginId: 'timeseries' },
+      { isNewPanel: false, isHidden: false, expectedPluginId: 'timeseries' },
+    ])(
+      'applies visualization preferences only to visible queries in new panels (new: $isNewPanel, hidden: $isHidden)',
+      async ({ isNewPanel, isHidden, expectedPluginId }) => {
+        pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+        const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A', hide: isHidden }] });
+        jest.spyOn(queryRunner, 'runQueries').mockImplementation(() => {});
+        const panel = new VizPanel({ key: 'panel-1', pluginId: 'timeseries', $data: queryRunner });
+        const gridItem = new DashboardGridItem({ body: panel });
+        const panelEditor = buildPanelEditScene(panel, isNewPanel);
+        const dashboard = new DashboardScene({
+          editPanel: panelEditor,
+          isEditing: true,
+          $timeRange: new SceneTimeRange({ from: 'now-6h', to: 'now' }),
+          body: new DefaultGridLayoutManager({ grid: new SceneGridLayout({ children: [gridItem] }) }),
+        });
+
+        deactivate = activateFullSceneTree(dashboard);
+        pluginPromise = Promise.resolve(getPanelPlugin({ id: 'logs', skipDataQuery: false }));
+
+        queryRunner.setState({
+          data: {
+            state: LoadingState.Done,
+            series: [
+              toDataFrame({
+                refId: 'A',
+                meta: { preferredVisualisationType: 'logs' },
+                fields: [],
+              }),
+            ],
+            timeRange: getDefaultTimeRange(),
+          },
+        });
+
+        await waitFor(() => expect(panel.state.pluginId).toBe(expectedPluginId));
+        if (isNewPanel) {
+          await waitFor(() => expect(panelEditor.state.editPreview?.state.pluginId).toBe(expectedPluginId));
+        }
+      }
+    );
+
+    it('does not replace an explicitly selected Time series visualization for a new panel', async () => {
+      const { panel, panelEditor } = await setup({ isNewPanel: true });
+      const optionsPane = panelEditor.state.optionsPane!;
+      const queryRunner = getQueryRunnerFor(panel)!;
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
+      optionsPane.onChangePanel({ pluginId: 'timeseries', withModKey: true });
+
+      expect(optionsPane.state.hasPickedViz).toBe(true);
+      await waitFor(() => expect(panel.state.pluginId).toBe('timeseries'));
+
+      pluginPromise = Promise.resolve(getPanelPlugin({ id: 'logs', skipDataQuery: false }));
+      queryRunner.setState({
+        data: {
+          state: LoadingState.Done,
+          series: [
+            toDataFrame({
+              refId: 'A',
+              meta: { preferredVisualisationType: 'logs' },
+              fields: [],
+            }),
+          ],
+          timeRange: getDefaultTimeRange(),
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(panel.state.pluginId).toBe('timeseries');
+    });
+
     it('wraps eligible compact dashboard data before the first response arrives', () => {
       pluginPromise = Promise.resolve(getPanelPlugin({ id: 'timeseries', skipDataQuery: false }));
       const queryRunner = new SceneQueryRunner({ queries: [{ refId: 'A' }] });
