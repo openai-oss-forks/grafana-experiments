@@ -1,3 +1,7 @@
+// Real panel plugins load plugin-ui asynchronously. Its bundled testing-library
+// registers Jest hooks, so load it while this test module is still initializing.
+import '@grafana/plugin-ui';
+
 import {
   AppEvents,
   DataFrame,

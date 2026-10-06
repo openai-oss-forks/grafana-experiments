@@ -63,8 +63,10 @@ import { DashboardModel } from './DashboardModel';
 import { PanelModel } from './PanelModel';
 import { getPanelPluginToMigrateTo } from './getPanelPluginToMigrateTo';
 
-standardEditorsRegistry.setInit(getAllOptionEditors);
-standardFieldConfigEditorRegistry.setInit(getAllStandardFieldConfigs);
+// OptionsUI imports dashboard state too. Resolve its factories when the registry
+// is first used, after both sides of that import cycle have initialized.
+standardEditorsRegistry.setInit(() => getAllOptionEditors());
+standardFieldConfigEditorRegistry.setInit(() => getAllStandardFieldConfigs());
 
 type PanelSchemeUpgradeHandler = (panel: PanelModel) => PanelModel;
 

@@ -8,6 +8,7 @@ module.exports = {
   target: 'web',
   entry: {
     app: './public/app/index.ts',
+    embedded: './public/app/embedded/index.ts',
     swagger: './public/swagger/index.tsx',
   },
   experiments: {

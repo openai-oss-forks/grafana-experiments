@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,7 @@ import (
 func TestReadWebassets(t *testing.T) {
 	assets, err := ReadWebAssetsFromFile("testdata/build/assets-manifest.json")
 	require.NoError(t, err)
+	require.Same(t, assets, assets.ForEmbeddedPanel(), "old manifests retain the full-app entrypoint")
 
 	dto, err := json.MarshalIndent(assets, "", "  ")
 	require.NoError(t, err)
@@ -148,4 +150,27 @@ func TestReadWebassetsFromCDN(t *testing.T) {
 		"dark": "https://grafana-assets.grafana.net/grafana/10.3.0-64123/public/build/grafana.dark.b44253d019cd9cb46428.css",
 		"light": "https://grafana-assets.grafana.net/grafana/10.3.0-64123/public/build/grafana.light.e8e11c59b604d62836be.css"
 	  }`, string(dto))
+}
+
+func TestEmbeddedPanelAssets(t *testing.T) {
+	assets, err := readWebAssets(strings.NewReader(`{
+		"entrypoints": {
+			"app": {"assets": {"js": ["app.js"]}},
+			"embedded": {"assets": {"js": ["runtime.js", "embedded.js"], "css": ["embedded.css"]}},
+			"dark": {"assets": {"css": ["dark.css"]}},
+			"light": {"assets": {"css": ["light.css"]}},
+			"swagger": {"assets": {"js": ["swagger.js"]}}
+		},
+		"embedded.js": {"src": "embedded.js", "integrity": "sha384-embedded"}
+	}`))
+	require.NoError(t, err)
+	originalJS := assets.JSFiles
+	assets.SetContentDeliveryURL("https://cdn.example/grafana/")
+	embedded := assets.ForEmbeddedPanel()
+	require.Len(t, embedded.JSFiles, 2)
+	require.Equal(t, "https://cdn.example/grafana/embedded.js", embedded.JSFiles[1].FilePath)
+	require.Equal(t, "sha384-embedded", embedded.JSFiles[1].Integrity)
+	require.Equal(t, "https://cdn.example/grafana/embedded.css", embedded.CSSFiles[0].FilePath)
+	require.Equal(t, originalJS, assets.JSFiles, "selecting an embed must not change the cached full-app entrypoint")
+	require.Equal(t, assets.Dark, embedded.Dark)
 }
