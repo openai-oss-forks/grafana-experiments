@@ -174,6 +174,13 @@ export async function initEmbeddedApp() {
     regionalFormat
   );
   updateConfig({ language });
+
+  // The panel uses Grafana translations, which are ready now. Overlap its
+  // module load with the independent scene translations before mounting.
+  if (hasPanelPlugin('timeseries')) {
+    void importPanelPlugin('timeseries').catch((error) => console.error('Failed to preload time series panel', error));
+  }
+
   await loadNamespacedResources(GRAFANA_NAMESPACE, language ?? DEFAULT_LANGUAGE, [loadScenesResources]);
   configureStore();
   locationUtil.initialize({
@@ -184,12 +191,6 @@ export async function initEmbeddedApp() {
   const datasourceSrv = new DatasourceSrv();
   datasourceSrv.init(config.datasources, config.defaultDatasource);
   setDataSourceSrv(datasourceSrv);
-
-  // Warm the common chart renderer immediately rather than discovering its
-  // asynchronous module only after dashboard/variable initialization completes.
-  if (hasPanelPlugin('timeseries')) {
-    void importPanelPlugin('timeseries').catch((error) => console.error('Failed to preload time series panel', error));
-  }
 
   const registries = await getPluginExtensionRegistries();
   setPluginComponentHook(usePluginComponent);
