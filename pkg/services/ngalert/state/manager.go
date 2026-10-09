@@ -17,6 +17,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/ngalert/metrics"
 	ngModels "github.com/grafana/grafana/pkg/services/ngalert/models"
 	history_model "github.com/grafana/grafana/pkg/services/ngalert/state/historian/model"
+	"github.com/grafana/grafana/pkg/services/ngalert/state/template"
 )
 
 var (
@@ -435,8 +436,12 @@ func (st *Manager) setNextStateForRule(ctx context.Context, alertRule *ngModels.
 		}
 	}
 	transitions := make([]StateTransition, 0, len(results))
+	var batch *template.Batch
+	if len(results) > 1 && (template.HasReusableFields(alertRule.Labels) || template.HasReusableFields(alertRule.Annotations)) {
+		batch = template.NewBatch(ctx, alertRule.Title, st.externalURL)
+	}
 	for _, result := range results {
-		newState := newState(ctx, logger, alertRule, result, extraLabels, st.externalURL)
+		newState := newStateWithTemplates(ctx, logger, alertRule, result, extraLabels, st.externalURL, batch)
 		if curState := st.cache.get(alertRule.OrgID, alertRule.UID, newState.CacheID); curState != nil {
 			patch(newState, curState, result)
 		}
@@ -559,10 +564,12 @@ func (st *Manager) processMissingSeriesStates(logger log.Logger, evaluatedAt tim
 		}
 	}
 
-	st.cache.deleteRuleStates(alertRule.GetKey(), func(s *State) bool {
-		_, ok := toDeleteStates[s.CacheID]
-		return ok
-	})
+	if len(toDeleteStates) > 0 {
+		st.cache.deleteRuleStates(alertRule.GetKey(), func(s *State) bool {
+			_, ok := toDeleteStates[s.CacheID]
+			return ok
+		})
+	}
 
 	return missingTransitions, staleStatesCount
 }
