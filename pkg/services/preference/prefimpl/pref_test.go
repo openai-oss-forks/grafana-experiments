@@ -160,8 +160,10 @@ func TestGetDefaults_JSONData(t *testing.T) {
 	queryPreference := pref.QueryHistoryPreference{
 		HomeTab: "hometab",
 	}
+	sharedCrosshair := true
 	userPreferencesJsonData := pref.PreferenceJSONData{
-		QueryHistory: queryPreference,
+		QueryHistory:    queryPreference,
+		SharedCrosshair: &sharedCrosshair,
 	}
 	orgPreferencesJsonData := pref.PreferenceJSONData{}
 	orgPreferencesWithLanguageJsonData := pref.PreferenceJSONData{
@@ -224,8 +226,9 @@ func TestGetDefaults_JSONData(t *testing.T) {
 		require.Equal(t, &pref.Preference{
 			WeekStart: &weekStart,
 			JSONData: &pref.PreferenceJSONData{
-				Language:     "en-GB",
-				QueryHistory: queryPreference,
+				Language:        "en-GB",
+				QueryHistory:    queryPreference,
+				SharedCrosshair: &sharedCrosshair,
 			},
 		}, preference)
 	})
@@ -254,8 +257,9 @@ func TestGetDefaults_JSONData(t *testing.T) {
 		require.Equal(t, &pref.Preference{
 			WeekStart: &weekStart,
 			JSONData: &pref.PreferenceJSONData{
-				RegionalFormat: "en",
-				QueryHistory:   queryPreference,
+				RegionalFormat:  "en",
+				QueryHistory:    queryPreference,
+				SharedCrosshair: &sharedCrosshair,
 			},
 		}, preference)
 	})

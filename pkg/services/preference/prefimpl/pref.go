@@ -75,6 +75,9 @@ func (s *Service) GetWithDefaults(ctx context.Context, query *pref.GetPreference
 			if p.JSONData.RegionalFormat != "" {
 				res.JSONData.RegionalFormat = p.JSONData.RegionalFormat
 			}
+			if p.JSONData.SharedCrosshair != nil {
+				res.JSONData.SharedCrosshair = p.JSONData.SharedCrosshair
+			}
 
 			if p.JSONData.QueryHistory.HomeTab != "" {
 				res.JSONData.QueryHistory.HomeTab = p.JSONData.QueryHistory.HomeTab
@@ -194,6 +197,12 @@ func (s *Service) Patch(ctx context.Context, cmd *pref.PatchPreferenceCommand) e
 		}
 		preference.JSONData.RegionalFormat = *cmd.RegionalFormat
 	}
+	if cmd.SharedCrosshair != nil {
+		if preference.JSONData == nil {
+			preference.JSONData = &pref.PreferenceJSONData{}
+		}
+		preference.JSONData.SharedCrosshair = cmd.SharedCrosshair
+	}
 
 	if cmd.Navbar != nil && cmd.Navbar.BookmarkUrls != nil {
 		if preference.JSONData == nil {
@@ -262,8 +271,9 @@ func (s *Service) Delete(ctx context.Context, cmd *pref.DeleteCommand) error {
 
 func preferenceData(cmd *pref.SavePreferenceCommand) (*pref.PreferenceJSONData, error) {
 	jsonData := &pref.PreferenceJSONData{
-		Language:       cmd.Language,
-		RegionalFormat: cmd.RegionalFormat,
+		Language:        cmd.Language,
+		RegionalFormat:  cmd.RegionalFormat,
+		SharedCrosshair: cmd.SharedCrosshair,
 	}
 	if cmd.Navbar != nil {
 		jsonData.Navbar = *cmd.Navbar

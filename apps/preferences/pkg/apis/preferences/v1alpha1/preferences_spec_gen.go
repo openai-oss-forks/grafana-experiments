@@ -40,6 +40,8 @@ type PreferencesSpec struct {
 	Language *string `json:"language,omitempty"`
 	// Selected locale (beta)
 	RegionalFormat *string `json:"regionalFormat,omitempty"`
+	// Show a shared crosshair on dashboards without cursor sync
+	SharedCrosshair *bool `json:"sharedCrosshair,omitempty"`
 	// Explore query history preferences
 	QueryHistory *PreferencesQueryHistoryPreference `json:"queryHistory,omitempty"`
 	// Navigation preferences

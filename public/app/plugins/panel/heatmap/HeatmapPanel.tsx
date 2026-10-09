@@ -17,6 +17,7 @@ import {
 } from '@grafana/ui';
 import { FacetedData, TimeRange2, TooltipHoverMode } from '@grafana/ui/internal';
 import { ColorScale } from 'app/core/components/ColorScale/ColorScale';
+import { getEffectiveCursorSync } from 'app/core/utils/cursorSync';
 import { readHeatmapRowsCustomMeta } from 'app/features/transformers/calculateHeatmap/heatmap';
 
 import { getXAxisConfig } from '../../../core/components/TimeSeries/utils';
@@ -90,7 +91,7 @@ const HeatmapPanelViz = ({
   const theme = useTheme2();
   const styles = useStyles2(getStyles);
   const { sync, eventsScope, canAddAnnotations, onSelectRange, canExecuteActions } = usePanelContext();
-  const cursorSync = sync?.() ?? DashboardCursorSync.Off;
+  const cursorSync = getEffectiveCursorSync(sync?.());
 
   const userCanExecuteActions = useMemo(() => canExecuteActions?.() ?? false, [canExecuteActions]);
 

@@ -156,6 +156,7 @@ func (s *preferenceStorage) save(ctx context.Context, obj runtime.Object) (runti
 	if p.Spec.RegionalFormat != nil {
 		cmd.RegionalFormat = *p.Spec.RegionalFormat
 	}
+	cmd.SharedCrosshair = p.Spec.SharedCrosshair
 	if p.Spec.QueryHistory != nil {
 		cmd.QueryHistory = &pref.QueryHistoryPreference{
 			HomeTab: *p.Spec.QueryHistory.HomeTab,
@@ -301,6 +302,7 @@ func asPreferencesResource(ns string, p *preferenceModel) preferences.Preference
 	if p.JSONData != nil {
 		obj.Spec.Language = asPointer(p.JSONData.Language)
 		obj.Spec.RegionalFormat = asPointer(p.JSONData.RegionalFormat)
+		obj.Spec.SharedCrosshair = p.JSONData.SharedCrosshair
 
 		if p.JSONData.QueryHistory.HomeTab != "" {
 			obj.Spec.QueryHistory = &preferences.PreferencesQueryHistoryPreference{

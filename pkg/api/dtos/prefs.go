@@ -14,12 +14,13 @@ type UpdatePrefsCmd struct {
 	HomeDashboardID  int64   `json:"homeDashboardId"`
 	HomeDashboardUID *string `json:"homeDashboardUID,omitempty"`
 	// Any IANA timezone string (e.g. America/New_York), 'utc', 'browser', or empty string
-	Timezone       string                       `json:"timezone"`
-	WeekStart      string                       `json:"weekStart"`
-	QueryHistory   *pref.QueryHistoryPreference `json:"queryHistory,omitempty"`
-	Language       string                       `json:"language"`
-	RegionalFormat string                       `json:"regionalFormat"`
-	Navbar         *pref.NavbarPreference       `json:"navbar,omitempty"`
+	Timezone        string                       `json:"timezone"`
+	WeekStart       string                       `json:"weekStart"`
+	QueryHistory    *pref.QueryHistoryPreference `json:"queryHistory,omitempty"`
+	Language        string                       `json:"language"`
+	RegionalFormat  string                       `json:"regionalFormat"`
+	SharedCrosshair *bool                        `json:"sharedCrosshair,omitempty"`
+	Navbar          *pref.NavbarPreference       `json:"navbar,omitempty"`
 }
 
 // swagger:model
@@ -35,6 +36,7 @@ type PatchPrefsCmd struct {
 	WeekStart        *string                      `json:"weekStart,omitempty"`
 	Language         *string                      `json:"language,omitempty"`
 	RegionalFormat   *string                      `json:"regionalFormat,omitempty"`
+	SharedCrosshair  *bool                        `json:"sharedCrosshair,omitempty"`
 	QueryHistory     *pref.QueryHistoryPreference `json:"queryHistory,omitempty"`
 	HomeDashboardUID *string                      `json:"homeDashboardUID,omitempty"`
 	Navbar           *pref.NavbarPreference       `json:"navbar,omitempty"`

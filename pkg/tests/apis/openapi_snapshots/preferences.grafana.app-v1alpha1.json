@@ -808,6 +808,10 @@
             "description": "Selected locale (beta)",
             "type": "string"
           },
+          "sharedCrosshair": {
+            "description": "Show a shared crosshair on dashboards without cursor sync",
+            "type": "boolean"
+          },
           "theme": {
             "description": "light, dark, empty is default",
             "type": "string"

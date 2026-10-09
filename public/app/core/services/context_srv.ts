@@ -40,6 +40,7 @@ export class User implements Omit<CurrentUserInternal, 'lightTheme'> {
   weekStart: string;
   regionalFormat: string;
   language: string;
+  sharedCrosshair?: boolean;
   helpFlags1: number;
   hasEditPermissionInFolders: boolean;
   permissions?: UserPermission;

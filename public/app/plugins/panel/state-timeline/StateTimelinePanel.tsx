@@ -18,6 +18,7 @@ import {
   prepareTimelineLegendItems,
   TimelineMode,
 } from 'app/core/components/TimelineChart/utils';
+import { getEffectiveCursorSync } from 'app/core/utils/cursorSync';
 
 import { AnnotationsPlugin2 } from '../timeseries/plugins/AnnotationsPlugin2';
 import { OutsideRangePlugin } from '../timeseries/plugins/OutsideRangePlugin';
@@ -52,7 +53,7 @@ export const StateTimelinePanel = ({
   const { dataLinkPostProcessor } = useDataLinksContext();
 
   const userCanExecuteActions = useMemo(() => canExecuteActions?.() ?? false, [canExecuteActions]);
-  const cursorSync = sync?.() ?? DashboardCursorSync.Off;
+  const cursorSync = getEffectiveCursorSync(sync?.());
 
   const { frames, warn } = useMemo(
     () => prepareTimelineFields(data.series, options.mergeValues ?? true, timeRange, theme),
