@@ -1069,12 +1069,14 @@ export class PrometheusDatasource
     const exprWithAdhoc = targetHasScopes(target)
       ? expr
       : this.templateSrv.replace(this.enhanceExprWithAdHocFilters(filters, expr), variables, this.interpolateQueryExpr);
+    const stepSize = target.stepSize ? this.templateSrv.replace(target.stepSize, variables) : target.stepSize;
 
     return {
       ...target,
       ...(targetHasScopes(target) ? { adhocFilters: this.generateScopeFilters(filters) } : {}),
       expr: exprWithAdhoc,
       interval: this.templateSrv.replace(target.interval, variables),
+      stepSize: stepSize === 'auto' ? '' : stepSize,
       legendFormat: this.templateSrv.replace(target.legendFormat, variables),
     };
   }
