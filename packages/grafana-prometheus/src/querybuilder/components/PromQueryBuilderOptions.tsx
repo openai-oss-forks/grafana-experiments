@@ -18,7 +18,7 @@ import { getLegendModeLabel, PromQueryLegendEditor } from './PromQueryLegendEdit
 
 interface PromQueryBuilderOptionsProps {
   query: PromQuery;
-  variables: string[];
+  variables?: string[];
   app?: CoreApp;
   onChange: (update: PromQuery) => void;
   onRunQuery: () => void;
@@ -30,7 +30,7 @@ const INTERVAL_FACTOR_OPTIONS: Array<SelectableValue<number>> = map([1, 2, 3, 4,
 }));
 
 export const PromQueryBuilderOptions = React.memo<PromQueryBuilderOptionsProps>(
-  ({ query, variables, app, onChange, onRunQuery }) => {
+  ({ query, variables = [], app, onChange, onRunQuery }) => {
     const FORMAT_OPTIONS: Array<SelectableValue<PromQueryFormat>> = [
       {
         label: t(
