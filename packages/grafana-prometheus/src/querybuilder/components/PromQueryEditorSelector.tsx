@@ -194,7 +194,13 @@ export const PromQueryEditorSelector = memo<Props>((props) => {
             showExplain={explain}
           />
         )}
-        <PromQueryBuilderOptions query={query} app={props.app} onChange={onChange} onRunQuery={onRunQuery} />
+        <PromQueryBuilderOptions
+          query={query}
+          variables={props.datasource.getVariables()}
+          app={props.app}
+          onChange={onChange}
+          onRunQuery={onRunQuery}
+        />
       </EditorRows>
     </>
   );

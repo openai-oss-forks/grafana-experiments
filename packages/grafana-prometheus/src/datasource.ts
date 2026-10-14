@@ -393,7 +393,7 @@ export class PrometheusDatasource
   }
 
   targetContainsTemplate(target: PromQuery) {
-    return this.templateSrv.containsTemplate(target.expr);
+    return this.templateSrv.containsTemplate(target.expr) || this.templateSrv.containsTemplate(target.stepSize ?? '');
   }
 
   shouldRunExemplarQuery(target: PromQuery, request: DataQueryRequest<PromQuery>): boolean {
