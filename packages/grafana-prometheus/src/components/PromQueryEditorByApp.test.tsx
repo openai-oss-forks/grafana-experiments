@@ -26,6 +26,7 @@ function setup(app: CoreApp): { onRunQuery: jest.Mock } {
   const dataSource = {
     getPrometheusTime: jest.fn((date, roundup) => 123),
     getQueryHints: jest.fn(() => []),
+    getVariables: () => [],
     languageProvider: {
       start: () => Promise.resolve([]),
       retrieveMetrics: () => [],

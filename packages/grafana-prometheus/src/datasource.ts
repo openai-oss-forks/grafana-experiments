@@ -393,7 +393,7 @@ export class PrometheusDatasource
   }
 
   targetContainsTemplate(target: PromQuery) {
-    return this.templateSrv.containsTemplate(target.expr);
+    return this.templateSrv.containsTemplate(target.expr) || this.templateSrv.containsTemplate(target.stepSize ?? '');
   }
 
   shouldRunExemplarQuery(target: PromQuery, request: DataQueryRequest<PromQuery>): boolean {
@@ -1069,12 +1069,14 @@ export class PrometheusDatasource
     const exprWithAdhoc = targetHasScopes(target)
       ? expr
       : this.templateSrv.replace(this.enhanceExprWithAdHocFilters(filters, expr), variables, this.interpolateQueryExpr);
+    const stepSize = target.stepSize ? this.templateSrv.replace(target.stepSize, variables) : target.stepSize;
 
     return {
       ...target,
       ...(targetHasScopes(target) ? { adhocFilters: this.generateScopeFilters(filters) } : {}),
       expr: exprWithAdhoc,
       interval: this.templateSrv.replace(target.interval, variables),
+      stepSize: stepSize === 'auto' ? '' : stepSize,
       legendFormat: this.templateSrv.replace(target.legendFormat, variables),
     };
   }

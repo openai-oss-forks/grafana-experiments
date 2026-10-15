@@ -60,8 +60,8 @@ const defaultMeta: PluginMeta = {
   baseUrl: '',
 };
 
-const getDefaultDatasource = (jsonDataOverrides = {}) =>
-  new PrometheusDatasource(
+const getDefaultDatasource = (jsonDataOverrides = {}) => {
+  const datasource = new PrometheusDatasource(
     {
       uid: '',
       type: 'prometheus',
@@ -75,6 +75,9 @@ const getDefaultDatasource = (jsonDataOverrides = {}) =>
     undefined,
     new EmptyLanguageProviderMock() as unknown as PrometheusLanguageProviderInterface
   );
+  jest.spyOn(datasource, 'getVariables').mockReturnValue([]);
+  return datasource;
+};
 
 const defaultProps = {
   datasource: getDefaultDatasource(),

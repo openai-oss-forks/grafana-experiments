@@ -48,17 +48,17 @@ describe('PromQueryBuilderOptions', () => {
     expect(screen.getByText('Legend: Auto')).toBeInTheDocument();
   });
 
-  it('Can change step size', async () => {
+  it.each(['30m', '$interval'])('Can change step size to %s', async (stepSize) => {
     const { props } = setup();
 
     await userEvent.click(screen.getByRole('button', { name: /Options/ }));
 
     const stepSizeSelect = screen.getByLabelText('Step size combobox');
-    await waitFor(() => select(stepSizeSelect, '30m', { container: document.body }));
+    await waitFor(() => select(stepSizeSelect, stepSize, { container: document.body }));
 
     expect(props.onChange).toHaveBeenCalledWith({
       ...props.query,
-      stepSize: '30m',
+      stepSize,
     });
   });
 
@@ -136,6 +136,7 @@ describe('PromQueryBuilderOptions', () => {
 function setup(queryOverrides: Partial<PromQuery> = {}, app: CoreApp = CoreApp.PanelEditor) {
   const props = {
     app,
+    variables: ['$interval'],
     query: {
       ...getQueryWithDefaults(
         {
