@@ -206,6 +206,13 @@ func schema_pkg_apis_preferences_v1alpha1_PreferencesSpec(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
+					"sharedCrosshair": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Show a shared crosshair on dashboards without cursor sync",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"queryHistory": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Explore query history preferences",

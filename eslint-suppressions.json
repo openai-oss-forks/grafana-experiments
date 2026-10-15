@@ -1065,9 +1065,6 @@
     }
   },
   "public/app/core/components/SharedPreferences/SharedPreferences.tsx": {
-    "no-restricted-syntax": {
-      "count": 8
-    },
     "react-prefer-function-component/react-prefer-function-component": {
       "count": 1
     },

@@ -18,6 +18,7 @@ import {
 } from '@grafana/ui';
 import { AxisProps, ScaleProps, TimeRange2, TooltipHoverMode } from '@grafana/ui/internal';
 import { TimeSeries } from 'app/core/components/TimeSeries/TimeSeries';
+import { getEffectiveCursorSync } from 'app/core/utils/cursorSync';
 
 import { TimeSeriesTooltip } from '../timeseries/TimeSeriesTooltip';
 import { AnnotationsPlugin2 } from '../timeseries/plugins/AnnotationsPlugin2';
@@ -67,7 +68,7 @@ export const CandlestickPanel = ({
 
   // temp range set for adding new annotation set by TooltipPlugin2, consumed by AnnotationPlugin2
   const [newAnnotationRange, setNewAnnotationRange] = useState<TimeRange2 | null>(null);
-  const cursorSync = sync?.() ?? DashboardCursorSync.Off;
+  const cursorSync = getEffectiveCursorSync(sync?.());
 
   const { renderers, tweakScale, tweakAxis, shouldRenderPrice } = useMemo(() => {
     let tweakScale = (opts: ScaleProps, forField: Field) => opts;

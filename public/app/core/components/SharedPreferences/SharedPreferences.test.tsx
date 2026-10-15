@@ -120,6 +120,7 @@ describe('SharedPreferences', () => {
     await selectOptionInTest(screen.getByLabelText('Timezone'), 'Australia/Sydney');
     await selectComboboxOptionInTest(await screen.findByRole('combobox', { name: 'Week start' }), 'Saturday');
     await selectComboboxOptionInTest(await screen.findByRole('combobox', { name: /language/i }), 'Français');
+    await user.click(screen.getByRole('switch', { name: 'Shared crosshair' }));
 
     await user.click(screen.getByText('Save preferences'));
 
@@ -135,6 +136,7 @@ describe('SharedPreferences', () => {
         homeTab: '',
       },
       language: 'fr-FR',
+      sharedCrosshair: true,
     });
   });
 

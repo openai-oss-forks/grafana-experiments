@@ -19,6 +19,7 @@ import {
   prepareTimelineLegendItems,
   TimelineMode,
 } from 'app/core/components/TimelineChart/utils';
+import { getEffectiveCursorSync } from 'app/core/utils/cursorSync';
 
 import { StateTimelineTooltip } from '../state-timeline/StateTimelineTooltip';
 import { usePagination } from '../state-timeline/hooks';
@@ -53,7 +54,7 @@ export const StatusHistoryPanel = ({
   const [newAnnotationRange, setNewAnnotationRange] = useState<TimeRange2 | null>(null);
   const { sync, eventsScope, canAddAnnotations, eventBus, canExecuteActions } = usePanelContext();
   const { dataLinkPostProcessor } = useDataLinksContext();
-  const cursorSync = sync?.() ?? DashboardCursorSync.Off;
+  const cursorSync = getEffectiveCursorSync(sync?.());
 
   const enableAnnotationCreation = Boolean(canAddAnnotations && canAddAnnotations());
   const userCanExecuteActions = useMemo(() => canExecuteActions?.() ?? false, [canExecuteActions]);

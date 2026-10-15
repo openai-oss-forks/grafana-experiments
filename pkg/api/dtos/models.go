@@ -47,6 +47,7 @@ type CurrentUser struct {
 	Locale                     string             `json:"locale"`
 	RegionalFormat             string             `json:"regionalFormat"`
 	Language                   string             `json:"language"`
+	SharedCrosshair            bool               `json:"sharedCrosshair"`
 	HelpFlags1                 user.HelpFlags1    `json:"helpFlags1"`
 	HasEditPermissionInFolders bool               `json:"hasEditPermissionInFolders"`
 	AuthenticatedBy            string             `json:"authenticatedBy"`
