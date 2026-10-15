@@ -20,6 +20,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/ngalert/eval"
 	"github.com/grafana/grafana/pkg/services/ngalert/models"
+	"github.com/grafana/grafana/pkg/services/ngalert/state/template"
 	"github.com/grafana/grafana/pkg/services/screenshot"
 )
 
@@ -81,7 +82,11 @@ type State struct {
 }
 
 func newState(ctx context.Context, log log.Logger, alertRule *models.AlertRule, result eval.Result, extraLabels data.Labels, externalURL *url.URL) *State {
-	lbs, annotations := expandAnnotationsAndLabels(ctx, log, alertRule, result, extraLabels, externalURL)
+	return newStateWithTemplates(ctx, log, alertRule, result, extraLabels, externalURL, nil)
+}
+
+func newStateWithTemplates(ctx context.Context, log log.Logger, alertRule *models.AlertRule, result eval.Result, extraLabels data.Labels, externalURL *url.URL, batch *template.Batch) *State {
+	lbs, annotations := expandAnnotationsAndLabelsWithTemplates(ctx, log, alertRule, result, extraLabels, externalURL, batch)
 
 	cacheID := lbs.Fingerprint()
 	// For new states, we set StartsAt & EndsAt to EvaluatedAt as this is the
