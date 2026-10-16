@@ -1,7 +1,7 @@
 import { DataSourcePlugin } from '@grafana/data';
 import { PrometheusDatasource, PromQueryEditorByApp, PromCheatSheet } from '@grafana/prometheus';
 
-import { ConfigEditor } from './configuration/ConfigEditorPackage';
+import { ConfigEditor } from './configuration/LazyConfigEditor';
 
 export const plugin = new DataSourcePlugin(PrometheusDatasource)
   .setQueryEditor(PromQueryEditorByApp)

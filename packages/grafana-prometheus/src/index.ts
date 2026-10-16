@@ -4,17 +4,19 @@
 
 // COMPONENTS/
 // Main export
-export { PromQueryEditorByApp } from './components/PromQueryEditorByApp';
+export {
+  PromQueryEditorByApp,
+  AnnotationQueryEditor,
+  PromCheatSheet,
+  PromVariableQueryEditor,
+} from './components/LazyEditors';
 // The parts
 export { MonacoQueryFieldLazy } from './components/monaco-query-field/MonacoQueryFieldLazy';
-export { AnnotationQueryEditor } from './components/AnnotationQueryEditor';
-export { PromCheatSheet } from './components/PromCheatSheet';
 export { MetricsBrowser } from './components/metrics-browser/MetricsBrowser';
 export { PromExemplarField } from './components/PromExemplarField';
 export { PromExploreExtraField } from './components/PromExploreExtraField';
 export { PromQueryEditorForAlerting } from './components/PromQueryEditorForAlerting';
 export { PromQueryField } from './components/PromQueryField';
-export { PromVariableQueryEditor } from './components/VariableQueryEditor';
 
 // CONFIGURATION/
 // Main export
@@ -54,7 +56,8 @@ export { MetricsModal } from './querybuilder/components/metrics-modal/MetricsMod
 
 // SRC/
 // Main export
-export { PrometheusDatasource, combineCompactTimeSeries, materializeCompactTimeSeries } from './datasource';
+export { PrometheusDatasource } from './datasource';
+export { combineCompactTimeSeries, materializeCompactTimeSeries } from './compactTimeSeries';
 // The parts
 export { addLabelToQuery } from './add_label_to_query';
 export { type QueryEditorMode, type PromQueryFormat, type Prometheus } from './dataquery';

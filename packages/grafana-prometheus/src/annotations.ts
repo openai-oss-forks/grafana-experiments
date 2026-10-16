@@ -9,7 +9,7 @@ import {
   renderLegendFormat,
 } from '@grafana/data';
 
-import { AnnotationQueryEditor } from './components/AnnotationQueryEditor';
+import { AnnotationQueryEditor } from './components/LazyEditors';
 import { PrometheusDatasource } from './datasource';
 import { PromQuery } from './types';
 
