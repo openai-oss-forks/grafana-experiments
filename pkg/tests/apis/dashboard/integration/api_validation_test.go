@@ -461,19 +461,19 @@ func runDashboardValidationTests(t *testing.T, ctx TestContext) {
 			ctx.Helper.EnsureStatusError(err, http.StatusNotFound, "folders.folder.grafana.app \"non-existent-folder-uid\" not found")
 		})
 
-		t.Run("allow moving folder to general folder", func(t *testing.T) {
-			folder1 := createFolderObject(t, "folder1", "default", "")
-			folder1UID := folder1.GetName()
-			dash, err := createDashboard(t, adminClient, "Dashboard in a Folder", &folder1UID, nil, ctx.Helper)
+		t.Run("allow updating dashboard in general folder", func(t *testing.T) {
+			generalFolderUID := ""
+			dash, err := createDashboard(t, adminClient, "Dashboard in General", &generalFolderUID, nil, ctx.Helper)
 			require.NoError(t, err)
 
-			generalFolderUID := ""
-			_, err = updateDashboard(t, adminClient, dash, "Move dashboard into the General Folder", &generalFolderUID)
+			_, err = updateDashboard(t, adminClient, dash, "Updated dashboard in General", nil)
 			require.NoError(t, err)
 
 			err = adminClient.Resource.Delete(context.Background(), dash.GetName(), v1.DeleteOptions{})
 			require.NoError(t, err)
 		})
+
+		runDashboardFolderAccessTests(t, ctx)
 	})
 
 	t.Run("Dashboard schema validations", func(t *testing.T) {

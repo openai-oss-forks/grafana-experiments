@@ -54,6 +54,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/dashboardsnapshots"
 	"github.com/grafana/grafana/pkg/services/datasources"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
+	"github.com/grafana/grafana/pkg/services/folder"
 	"github.com/grafana/grafana/pkg/services/libraryelements"
 	"github.com/grafana/grafana/pkg/services/librarypanels"
 	"github.com/grafana/grafana/pkg/services/live"
@@ -474,20 +475,27 @@ func (b *DashboardsAPIBuilder) validateUpdate(ctx context.Context, a admission.A
 		return apierrors.NewBadRequest(err.Error())
 	}
 
+	sourceFolder := oldAccessor.GetFolder()
+	destinationFolder := newAccessor.GetFolder()
+	if sourceFolder != folder.RootFolderUID && sourceFolder != folder.GeneralFolderUID &&
+		(destinationFolder == folder.RootFolderUID || destinationFolder == folder.GeneralFolderUID) {
+		return apierrors.NewBadRequest("cannot move a dashboard to General because this removes inherited folder permissions. Keep the current folder or select another folder")
+	}
+
 	// Validate folder existence if specified and changed
-	if !a.IsDryRun() && newAccessor.GetFolder() != oldAccessor.GetFolder() && newAccessor.GetFolder() != "" {
+	if !a.IsDryRun() && destinationFolder != sourceFolder && destinationFolder != "" {
 		id, err := identity.GetRequester(ctx)
 		if err != nil {
 			return fmt.Errorf("error getting requester: %w", err)
 		}
 
-		if err := b.verifyFolderAccessPermissions(ctx, id, newAccessor.GetFolder()); err != nil {
+		if err := b.verifyFolderAccessPermissions(ctx, id, destinationFolder); err != nil {
 			return err
 		}
 
-		folder, err := b.validateFolderExists(ctx, newAccessor.GetFolder(), nsInfo.OrgID)
+		folder, err := b.validateFolderExists(ctx, destinationFolder, nsInfo.OrgID)
 		if err != nil {
-			return apierrors.NewNotFound(folders.FolderResourceInfo.GroupResource(), newAccessor.GetFolder())
+			return apierrors.NewNotFound(folders.FolderResourceInfo.GroupResource(), destinationFolder)
 		}
 
 		if err := b.validateFolderManagedBySameManager(folder, newAccessor); err != nil {

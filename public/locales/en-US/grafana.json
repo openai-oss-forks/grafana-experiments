@@ -3897,6 +3897,8 @@
       "move-button": "Move",
       "move-modal-alert": "Moving this item may change its permissions.",
       "move-modal-field-label": "Folder name",
+      "move-modal-folder-check-error": "Could not check dashboard folders",
+      "move-modal-folder-check-retry": "You can still select a named folder. Close and reopen this dialog to try again.",
       "move-modal-text": "This action will move the following content:",
       "move-modal-text-one-folder": "This action will move the folder \" <1>{{ folderName }}</1> \" and the following content:",
       "move-modal-title": "Move",

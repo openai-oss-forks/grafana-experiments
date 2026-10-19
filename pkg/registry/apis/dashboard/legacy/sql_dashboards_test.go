@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -19,7 +18,6 @@ import (
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/apimachinery/utils"
 	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/services/dashboards"
 	"github.com/grafana/grafana/pkg/services/provisioning"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/storage/legacysql"
@@ -273,11 +271,7 @@ func TestBuildSaveDashboardCommand(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			mockStore := &dashboards.FakeDashboardStore{}
-			access := &dashboardSqlAccess{
-				dashStore: mockStore,
-				log:       log.New("test"),
-			}
+			access := &dashboardSqlAccess{log: log.New("test")}
 
 			dashSpec := map[string]interface{}{
 				"title": "Test Dashboard",
@@ -301,7 +295,7 @@ func TestBuildSaveDashboardCommand(t *testing.T) {
 			}
 
 			// fail if no user in context
-			_, _, err := access.buildSaveDashboardCommand(context.Background(), 1, dash)
+			_, err := access.buildSaveDashboardCommand(context.Background(), 1, dash, 0)
 			require.Error(t, err)
 
 			ctx := identity.WithRequester(context.Background(), &user.SignedInUser{
@@ -309,10 +303,8 @@ func TestBuildSaveDashboardCommand(t *testing.T) {
 				OrgRole: "Admin",
 			})
 			// create new dashboard
-			mockStore.On("GetDashboard", mock.Anything, mock.Anything).Return(nil, nil).Once()
-			cmd, created, err := access.buildSaveDashboardCommand(ctx, 1, dash)
+			cmd, err := access.buildSaveDashboardCommand(ctx, 1, dash, 0)
 			require.NoError(t, err)
-			require.Equal(t, true, created)
 			require.NotNil(t, cmd)
 			require.Equal(t, "test-dash", cmd.Dashboard.Get("uid").MustString())
 			_, exists := cmd.Dashboard.CheckGet("id")
@@ -322,15 +314,11 @@ func TestBuildSaveDashboardCommand(t *testing.T) {
 			require.Equal(t, tc.expectedAPI, cmd.APIVersion) // verify expected API version
 
 			// now update existing dashboard
-			mockStore.On("GetDashboard", mock.Anything, mock.Anything).Return(
-				&dashboards.Dashboard{
-					ID:         1234,
-					Version:    2,
-					APIVersion: dashboardV1.VERSION,
-				}, nil).Once()
-			cmd, created, err = access.buildSaveDashboardCommand(ctx, 1, dash)
+			meta, err := utils.MetaAccessor(dash)
 			require.NoError(t, err)
-			require.Equal(t, false, created)
+			meta.SetDeprecatedInternalID(1234) //nolint:staticcheck
+			cmd, err = access.buildSaveDashboardCommand(ctx, 1, dash, 2)
+			require.NoError(t, err)
 			require.NotNil(t, cmd)
 			require.Equal(t, "test-dash", cmd.Dashboard.Get("uid").MustString())
 			require.Equal(t, cmd.Dashboard.Get("id").MustInt64(), int64(1234))       // should set to existing ID
@@ -342,11 +330,7 @@ func TestBuildSaveDashboardCommand(t *testing.T) {
 	}
 
 	t.Run("service account should have userID set", func(t *testing.T) {
-		mockStore := &dashboards.FakeDashboardStore{}
-		access := &dashboardSqlAccess{
-			dashStore: mockStore,
-			log:       log.New("test"),
-		}
+		access := &dashboardSqlAccess{log: log.New("test")}
 
 		dash := &dashboardV1.Dashboard{
 			TypeMeta: metav1.TypeMeta{
@@ -369,10 +353,8 @@ func TestBuildSaveDashboardCommand(t *testing.T) {
 			IsServiceAccount: true,
 		})
 
-		mockStore.On("GetDashboard", mock.Anything, mock.Anything).Return(nil, nil).Once()
-		cmd, created, err := access.buildSaveDashboardCommand(ctx, 1, dash)
+		cmd, err := access.buildSaveDashboardCommand(ctx, 1, dash, 0)
 		require.NoError(t, err)
-		require.True(t, created)
 		require.NotNil(t, cmd)
 		require.Equal(t, int64(123), cmd.UserID, "service account user ID should be set correctly")
 	})

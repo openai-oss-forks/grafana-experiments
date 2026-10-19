@@ -521,7 +521,7 @@ Authorization: Bearer eyJrIjoiT0tTcG1pUlY2RnVKZTFVaDFsNFZXdE9ZWmNrMkZYbk
 JSON Body schema:
 
 - **metadata.name** – The [unique identifier]({{< ref "#identifier-id-vs-unique-identifier-uid" >}}).
-- **metadata.annotations.grafana.app/folder** - Optional field, the unique identifier of the folder under which the dashboard should be created.
+- **metadata.annotations.grafana.app/folder** - The UID of the folder to save the dashboard in. Required when the dashboard is in a named folder: use its current folder UID or another named folder UID. Optional for dashboards already in General.
 - **metadata.annotations.grafana.app/message** - Optional field, to set a commit message for the version history.
 - **spec** – The dashboard json.
 
@@ -564,7 +564,7 @@ Content-Length: 485
 Status Codes:
 
 - **200** – OK
-- **400** – Errors (invalid json, missing or invalid fields, etc)
+- **400** – Errors (invalid JSON, missing or invalid fields, or attempts to move a dashboard from a named folder to General)
 - **401** – Unauthorized
 - **403** – Access denied
 - **409** – Conflict (dashboard with the same version already exists)
@@ -942,7 +942,9 @@ The identifier (id) of a dashboard is deprecated in favor of the unique identifi
 
 `POST /api/dashboards/db`
 
-Creates a new dashboard or updates an existing dashboard. When updating existing dashboards, if you do not define the `folderId` or the `folderUid` property, then the dashboard(s) are moved to the root level. (You need to define only one property, not both).
+Creates a new dashboard or updates an existing dashboard.
+
+When updating a dashboard in a named folder, set `folderId` or `folderUid` to the current folder or another named folder. Omitting both fields or selecting General (the root level) returns `400 Bad Request` and leaves the dashboard unchanged. You can omit both fields when creating a dashboard in General or updating a dashboard already in General.
 
 > **Note:** This endpoint is not intended for creating folders, use `POST /api/folders` for that.
 
@@ -1037,7 +1039,7 @@ Content-Length: 78
 Status Codes:
 
 - **200** – Created
-- **400** – Errors (invalid json, missing or invalid fields, etc)
+- **400** – Errors (invalid JSON, missing or invalid fields, or attempts to move a dashboard from a named folder to General)
 - **401** – Unauthorized
 - **403** – Access denied
 - **412** – Precondition failed
