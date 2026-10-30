@@ -2999,6 +2999,16 @@ Set this to `false` to disable loading other custom base maps and hide them in t
 
 Refer to [Role-based access control](../../administration/roles-and-permissions/access-control/) for more information.
 
+#### `metadata_reader_service_account_id`
+
+The numeric ID of a dedicated service account that reads dashboard permissions and organization/team membership. Use an account with basic role `None`. This account receives only those metadata read permissions, replacing its cached or inherited grants.
+
+Set both this option and `metadata_reader_org_id` to positive IDs to enable the reader. The default is `0` (disabled).
+
+#### `metadata_reader_org_id`
+
+The organization ID in which the metadata reader can read permissions and membership. The configured account receives no permissions in other organizations. The default is `0` (disabled).
+
 ### `[navigation.app_sections]`
 
 Move an app plugin (referenced by its id), including all its pages, to a specific navigation section. Format: `<pluginId> = <sectionId> <sortWeight>`
