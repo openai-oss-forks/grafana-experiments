@@ -142,6 +142,22 @@ func (s *Service) GetUserPermissions(ctx context.Context, user identity.Requeste
 	timer := prometheus.NewTimer(metrics.MAccessPermissionsSummary)
 	defer timer.ObserveDuration()
 
+	reader := s.cfg.RBAC
+	if reader.MetadataReaderServiceAccountID > 0 && reader.MetadataReaderOrgID > 0 &&
+		user.GetID() == claims.NewTypeID(claims.TypeServiceAccount, strconv.FormatInt(reader.MetadataReaderServiceAccountID, 10)) {
+		// Resolve this restricted identity before caches or inherited grants so
+		// it receives only metadata reads, and only in its configured organization.
+		if user.GetOrgID() != reader.MetadataReaderOrgID {
+			return nil, nil
+		}
+		return []accesscontrol.Permission{
+			{Action: dashboards.ActionDashboardsPermissionsRead, Scope: "dashboards:*"},
+			{Action: accesscontrol.ActionOrgUsersRead, Scope: accesscontrol.ScopeUsersAll},
+			{Action: accesscontrol.ActionTeamsRead, Scope: accesscontrol.ScopeTeamsAll},
+			{Action: accesscontrol.ActionTeamsPermissionsRead, Scope: accesscontrol.ScopeTeamsAll},
+		}, nil
+	}
+
 	if !s.cfg.RBAC.PermissionCache || !user.HasUniqueId() {
 		return s.getUserPermissions(ctx, user, options)
 	}

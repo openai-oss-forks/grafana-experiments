@@ -21,6 +21,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/accesscontrol/resourcepermissions"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/licensing"
+	"github.com/grafana/grafana/pkg/services/org"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/tests/testsuite"
@@ -29,6 +30,51 @@ import (
 
 func TestMain(m *testing.M) {
 	testsuite.Run(m)
+}
+
+func TestPermissionMetadataReader(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		for _, tc := range []struct {
+			name       string
+			userID     int64
+			orgID      int64
+			service    bool
+			enabled    bool
+			wantReader bool
+		}{
+			{"reader", 42, 7, true, true, true},
+			{"other account", 43, 7, true, true, false},
+			{"human", 42, 7, false, true, false},
+			{"other organization", 42, 8, true, true, false},
+			{"disabled", 42, 7, true, false, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := setting.NewCfg()
+				cfg.RBAC.PermissionCache = cached
+				if tc.enabled {
+					cfg.RBAC.MetadataReaderServiceAccountID = 42
+					cfg.RBAC.MetadataReaderOrgID = 7
+				}
+				s := ProvideOSSService(cfg, actest.FakeStore{}, resourcepermissions.NewActionSetService(),
+					localcache.ProvideService(), featuremgmt.WithFeatures(), tracing.InitializeTracerForTest(), nil, nil, nil)
+				u := &user.SignedInUser{UserID: tc.userID, OrgID: tc.orgID, OrgRole: org.RoleNone, IsServiceAccount: tc.service}
+				permissions, err := s.GetUserPermissions(context.Background(), u, accesscontrol.Options{})
+				require.NoError(t, err)
+				if tc.wantReader {
+					require.ElementsMatch(t, []accesscontrol.Permission{
+						{Action: "dashboards.permissions:read", Scope: "dashboards:*"},
+						{Action: "org.users:read", Scope: "users:*"},
+						{Action: "teams:read", Scope: "teams:*"},
+						{Action: "teams.permissions:read", Scope: "teams:*"},
+					}, permissions)
+				} else if tc.name == "other organization" {
+					require.Empty(t, permissions)
+				} else {
+					require.Equal(t, []accesscontrol.Permission{SharedWithMeFolderPermission}, permissions)
+				}
+			})
+		}
+	}
 }
 
 func setupTestEnv(t testing.TB, registerRoles bool) *Service {
