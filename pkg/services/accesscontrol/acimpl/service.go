@@ -142,27 +142,30 @@ func (s *Service) GetUserPermissions(ctx context.Context, user identity.Requeste
 	timer := prometheus.NewTimer(metrics.MAccessPermissionsSummary)
 	defer timer.ObserveDuration()
 
+	var permissions []accesscontrol.Permission
+	var err error
+	if !s.cfg.RBAC.PermissionCache || !user.HasUniqueId() {
+		permissions, err = s.getUserPermissions(ctx, user, options)
+	} else {
+		permissions, err = s.getCachedUserPermissions(ctx, user, options)
+	}
+	if err != nil {
+		return nil, err
+	}
+
 	reader := s.cfg.RBAC
 	if reader.MetadataReaderServiceAccountID > 0 && reader.MetadataReaderOrgID > 0 &&
+		user.GetOrgID() == reader.MetadataReaderOrgID &&
 		user.GetID() == claims.NewTypeID(claims.TypeServiceAccount, strconv.FormatInt(reader.MetadataReaderServiceAccountID, 10)) {
-		// Resolve this restricted identity before caches or inherited grants so
-		// it receives only metadata reads, and only in its configured organization.
-		if user.GetOrgID() != reader.MetadataReaderOrgID {
-			return nil, nil
-		}
-		return []accesscontrol.Permission{
-			{Action: dashboards.ActionDashboardsPermissionsRead, Scope: "dashboards:*"},
-			{Action: accesscontrol.ActionOrgUsersRead, Scope: accesscontrol.ScopeUsersAll},
-			{Action: accesscontrol.ActionTeamsRead, Scope: accesscontrol.ScopeTeamsAll},
-			{Action: accesscontrol.ActionTeamsPermissionsRead, Scope: accesscontrol.ScopeTeamsAll},
-		}, nil
+		// Add metadata reads without changing the account's existing grants or cached slice.
+		permissions = append(slices.Clone(permissions),
+			accesscontrol.Permission{Action: dashboards.ActionDashboardsPermissionsRead, Scope: "dashboards:*"},
+			accesscontrol.Permission{Action: accesscontrol.ActionOrgUsersRead, Scope: accesscontrol.ScopeUsersAll},
+			accesscontrol.Permission{Action: accesscontrol.ActionTeamsRead, Scope: accesscontrol.ScopeTeamsAll},
+			accesscontrol.Permission{Action: accesscontrol.ActionTeamsPermissionsRead, Scope: accesscontrol.ScopeTeamsAll},
+		)
 	}
-
-	if !s.cfg.RBAC.PermissionCache || !user.HasUniqueId() {
-		return s.getUserPermissions(ctx, user, options)
-	}
-
-	return s.getCachedUserPermissions(ctx, user, options)
+	return permissions, nil
 }
 
 func (s *Service) getUserPermissions(ctx context.Context, user identity.Requester, _ accesscontrol.Options) ([]accesscontrol.Permission, error) {

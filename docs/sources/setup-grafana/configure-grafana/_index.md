@@ -3001,13 +3001,13 @@ Refer to [Role-based access control](../../administration/roles-and-permissions/
 
 #### `metadata_reader_service_account_id`
 
-The numeric ID of a dedicated service account that reads dashboard permissions and organization/team membership. Use an account with basic role `None`. This account receives only those metadata read permissions, replacing its cached or inherited grants.
+The numeric ID of a service account that receives additional read access to dashboard permissions and organization/team membership. The account keeps its existing role and permissions. These settings add only metadata read permissions.
 
 Set both this option and `metadata_reader_org_id` to positive IDs to enable the reader. The default is `0` (disabled).
 
 #### `metadata_reader_org_id`
 
-The organization ID in which the metadata reader can read permissions and membership. The configured account receives no permissions in other organizations. The default is `0` (disabled).
+The organization ID in which the service account receives the additional metadata read permissions. Its permissions in other organizations are unchanged. The default is `0` (disabled).
 
 ### `[navigation.app_sections]`
 

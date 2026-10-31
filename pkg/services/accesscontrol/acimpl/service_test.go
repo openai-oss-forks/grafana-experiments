@@ -40,38 +40,50 @@ func TestPermissionMetadataReader(t *testing.T) {
 			orgID      int64
 			service    bool
 			enabled    bool
+			role       org.RoleType
 			wantReader bool
 		}{
-			{"reader", 42, 7, true, true, true},
-			{"other account", 43, 7, true, true, false},
-			{"human", 42, 7, false, true, false},
-			{"other organization", 42, 8, true, true, false},
-			{"disabled", 42, 7, true, false, false},
+			{"editor", 42, 7, true, true, org.RoleEditor, true},
+			{"no basic role", 42, 7, true, true, org.RoleNone, true},
+			{"other account", 43, 7, true, true, org.RoleEditor, false},
+			{"human", 42, 7, false, true, org.RoleEditor, false},
+			{"other organization", 42, 8, true, true, org.RoleEditor, false},
+			{"disabled", 42, 7, true, false, org.RoleEditor, false},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				cfg := setting.NewCfg()
 				cfg.RBAC.PermissionCache = cached
+				s := ProvideOSSService(cfg, actest.FakeStore{}, resourcepermissions.NewActionSetService(),
+					localcache.ProvideService(), featuremgmt.WithFeatures(), tracing.InitializeTracerForTest(), nil, nil, nil)
+				s.roles[string(org.RoleEditor)].Permissions = []accesscontrol.Permission{
+					{Action: "dashboards:write", Scope: "dashboards:uid:example"},
+				}
+				u := &user.SignedInUser{UserID: tc.userID, OrgID: tc.orgID, OrgRole: tc.role, IsServiceAccount: tc.service}
+				baseline, err := s.GetUserPermissions(context.Background(), u, accesscontrol.Options{})
+				require.NoError(t, err)
 				if tc.enabled {
 					cfg.RBAC.MetadataReaderServiceAccountID = 42
 					cfg.RBAC.MetadataReaderOrgID = 7
 				}
-				s := ProvideOSSService(cfg, actest.FakeStore{}, resourcepermissions.NewActionSetService(),
-					localcache.ProvideService(), featuremgmt.WithFeatures(), tracing.InitializeTracerForTest(), nil, nil, nil)
-				u := &user.SignedInUser{UserID: tc.userID, OrgID: tc.orgID, OrgRole: org.RoleNone, IsServiceAccount: tc.service}
+				want := append([]accesscontrol.Permission{}, baseline...)
+				if tc.wantReader {
+					want = append(want,
+						accesscontrol.Permission{Action: "dashboards.permissions:read", Scope: "dashboards:*"},
+						accesscontrol.Permission{Action: "org.users:read", Scope: "users:*"},
+						accesscontrol.Permission{Action: "teams:read", Scope: "teams:*"},
+						accesscontrol.Permission{Action: "teams.permissions:read", Scope: "teams:*"},
+					)
+				}
+				// Repeated reads must preserve the baseline without accumulating grants in the cache.
+				for range 2 {
+					permissions, err := s.GetUserPermissions(context.Background(), u, accesscontrol.Options{})
+					require.NoError(t, err)
+					require.ElementsMatch(t, want, permissions)
+				}
+				cfg.RBAC.MetadataReaderServiceAccountID = 0
 				permissions, err := s.GetUserPermissions(context.Background(), u, accesscontrol.Options{})
 				require.NoError(t, err)
-				if tc.wantReader {
-					require.ElementsMatch(t, []accesscontrol.Permission{
-						{Action: "dashboards.permissions:read", Scope: "dashboards:*"},
-						{Action: "org.users:read", Scope: "users:*"},
-						{Action: "teams:read", Scope: "teams:*"},
-						{Action: "teams.permissions:read", Scope: "teams:*"},
-					}, permissions)
-				} else if tc.name == "other organization" {
-					require.Empty(t, permissions)
-				} else {
-					require.Equal(t, []accesscontrol.Permission{SharedWithMeFolderPermission}, permissions)
-				}
+				require.ElementsMatch(t, baseline, permissions)
 			})
 		}
 	}

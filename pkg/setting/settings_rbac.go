@@ -7,7 +7,7 @@ import (
 type RBACSettings struct {
 	// Enable permission cache
 	PermissionCache bool
-	// Optional service account restricted to reading permission metadata.
+	// Optional service account granted additional permission metadata reads.
 	MetadataReaderServiceAccountID int64
 	MetadataReaderOrgID            int64
 	// Enable Permission validation during role creation and provisioning
