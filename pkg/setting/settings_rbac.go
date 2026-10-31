@@ -7,6 +7,9 @@ import (
 type RBACSettings struct {
 	// Enable permission cache
 	PermissionCache bool
+	// Optional service account granted additional permission metadata reads.
+	MetadataReaderServiceAccountID int64
+	MetadataReaderOrgID            int64
 	// Enable Permission validation during role creation and provisioning
 	PermissionValidationEnabled bool
 	// Reset basic roles permissions on start-up
@@ -25,6 +28,8 @@ func (cfg *Cfg) readRBACSettings() {
 
 	rbac := cfg.Raw.Section("rbac")
 	s.PermissionCache = rbac.Key("permission_cache").MustBool(true)
+	s.MetadataReaderServiceAccountID = rbac.Key("metadata_reader_service_account_id").MustInt64(0)
+	s.MetadataReaderOrgID = rbac.Key("metadata_reader_org_id").MustInt64(0)
 	s.PermissionValidationEnabled = rbac.Key("permission_validation_enabled").MustBool(false)
 	s.ResetBasicRoles = rbac.Key("reset_basic_roles").MustBool(false)
 	s.SingleOrganization = rbac.Key("single_organization").MustBool(false)

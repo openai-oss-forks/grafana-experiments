@@ -21,6 +21,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/accesscontrol/resourcepermissions"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/licensing"
+	"github.com/grafana/grafana/pkg/services/org"
 	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/tests/testsuite"
@@ -29,6 +30,63 @@ import (
 
 func TestMain(m *testing.M) {
 	testsuite.Run(m)
+}
+
+func TestPermissionMetadataReader(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		for _, tc := range []struct {
+			name       string
+			userID     int64
+			orgID      int64
+			service    bool
+			enabled    bool
+			role       org.RoleType
+			wantReader bool
+		}{
+			{"editor", 42, 7, true, true, org.RoleEditor, true},
+			{"no basic role", 42, 7, true, true, org.RoleNone, true},
+			{"other account", 43, 7, true, true, org.RoleEditor, false},
+			{"human", 42, 7, false, true, org.RoleEditor, false},
+			{"other organization", 42, 8, true, true, org.RoleEditor, false},
+			{"disabled", 42, 7, true, false, org.RoleEditor, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := setting.NewCfg()
+				cfg.RBAC.PermissionCache = cached
+				s := ProvideOSSService(cfg, actest.FakeStore{}, resourcepermissions.NewActionSetService(),
+					localcache.ProvideService(), featuremgmt.WithFeatures(), tracing.InitializeTracerForTest(), nil, nil, nil)
+				s.roles[string(org.RoleEditor)].Permissions = []accesscontrol.Permission{
+					{Action: "dashboards:write", Scope: "dashboards:uid:example"},
+				}
+				u := &user.SignedInUser{UserID: tc.userID, OrgID: tc.orgID, OrgRole: tc.role, IsServiceAccount: tc.service}
+				baseline, err := s.GetUserPermissions(context.Background(), u, accesscontrol.Options{})
+				require.NoError(t, err)
+				if tc.enabled {
+					cfg.RBAC.MetadataReaderServiceAccountID = 42
+					cfg.RBAC.MetadataReaderOrgID = 7
+				}
+				want := append([]accesscontrol.Permission{}, baseline...)
+				if tc.wantReader {
+					want = append(want,
+						accesscontrol.Permission{Action: "dashboards.permissions:read", Scope: "dashboards:*"},
+						accesscontrol.Permission{Action: "org.users:read", Scope: "users:*"},
+						accesscontrol.Permission{Action: "teams:read", Scope: "teams:*"},
+						accesscontrol.Permission{Action: "teams.permissions:read", Scope: "teams:*"},
+					)
+				}
+				// Repeated reads must preserve the baseline without accumulating grants in the cache.
+				for range 2 {
+					permissions, err := s.GetUserPermissions(context.Background(), u, accesscontrol.Options{})
+					require.NoError(t, err)
+					require.ElementsMatch(t, want, permissions)
+				}
+				cfg.RBAC.MetadataReaderServiceAccountID = 0
+				permissions, err := s.GetUserPermissions(context.Background(), u, accesscontrol.Options{})
+				require.NoError(t, err)
+				require.ElementsMatch(t, baseline, permissions)
+			})
+		}
+	}
 }
 
 func setupTestEnv(t testing.TB, registerRoles bool) *Service {
