@@ -11,6 +11,7 @@ import {
   defaultSpec as defaultDashboardV2Spec,
 } from '@grafana/schema/apis/dashboard.grafana.app/v2';
 import { provisioningAPIv0alpha1 } from 'app/api/clients/provisioning/v0alpha1';
+import { AnnoKeyFolder } from 'app/features/apiserver/types';
 import { getDashboardAPI } from 'app/features/dashboard/api/dashboard_api';
 import { DashboardVersionError, DashboardWithAccessInfo } from 'app/features/dashboard/api/types';
 import {
@@ -31,6 +32,7 @@ import {
   UnifiedDashboardScenePageStateManager,
   DASHBOARD_CACHE_TTL,
 } from './DashboardScenePageStateManager';
+import * as pageUtils from './utils';
 const fetchMock = jest.fn();
 
 jest.mock('@grafana/runtime', () => {
@@ -211,6 +213,50 @@ beforeEach(() => {
   locationService.getSearchObject = jest.fn().mockReturnValue({});
 
   testStore = createTestStore();
+});
+
+describe.each([1, 2])('dashboard v%s folder navigation', (version) => {
+  it.each([DashboardRoutes.Embedded, DashboardRoutes.Normal])(
+    'preserves the loading boundary for %s',
+    async (route) => {
+      let finishFolder!: () => void;
+      const navigation = jest.spyOn(pageUtils, 'updateNavModel').mockReturnValue(
+        new Promise<void>((resolve) => {
+          finishFolder = resolve;
+        })
+      );
+      setupLoadDashboardMock({ dashboard: { uid: 'fake-dash' }, meta: { folderUid: 'parent-folder' } });
+      setupDashboardAPI(
+        {
+          access: {},
+          apiVersion: 'v2beta1',
+          kind: 'DashboardWithAccessInfo',
+          metadata: {
+            name: 'fake-dash',
+            creationTimestamp: '',
+            resourceVersion: '1',
+            annotations: { [AnnoKeyFolder]: 'parent-folder' },
+          },
+          spec: defaultDashboardV2Spec(),
+        },
+        jest.fn()
+      );
+      const manager = version === 1 ? new DashboardScenePageStateManager({}) : new DashboardScenePageStateManagerV2({});
+      const loading = manager.fetchDashboard({ uid: 'fake-dash', route });
+      try {
+        const loadedBeforeFolder = await Promise.race([
+          loading.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 0)),
+        ]);
+        expect(navigation).toHaveBeenCalledWith('parent-folder');
+        expect(loadedBeforeFolder).toBe(route === DashboardRoutes.Embedded);
+      } finally {
+        finishFolder();
+        await loading;
+        navigation.mockRestore();
+      }
+    }
+  );
 });
 
 describe('DashboardScenePageStateManager v1', () => {

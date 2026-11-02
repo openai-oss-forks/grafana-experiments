@@ -774,7 +774,11 @@ export class DashboardScenePageStateManager extends DashboardScenePageStateManag
 
       // Populate nav model in global store according to the folder
       if (rsp.meta.folderUid) {
-        await updateNavModel(rsp.meta.folderUid);
+        const navigation = updateNavModel(rsp.meta.folderUid);
+        // Embedded panels do not render folder navigation, so load it concurrently.
+        if (route !== DashboardRoutes.Embedded) {
+          await navigation;
+        }
       }
 
       // Do not cache new dashboards
@@ -992,7 +996,11 @@ export class DashboardScenePageStateManagerV2 extends DashboardScenePageStateMan
       }
       // Populate nav model in global store according to the folder
       if (rsp.metadata.annotations?.[AnnoKeyFolder]) {
-        await updateNavModel(rsp.metadata.annotations?.[AnnoKeyFolder]);
+        const navigation = updateNavModel(rsp.metadata.annotations[AnnoKeyFolder]);
+        // Embedded panels do not render folder navigation, so load it concurrently.
+        if (route !== DashboardRoutes.Embedded) {
+          await navigation;
+        }
       }
       // Do not cache new dashboards
       this.setDashboardCache(cacheKey, rsp);

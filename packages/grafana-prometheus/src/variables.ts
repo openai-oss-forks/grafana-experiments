@@ -5,7 +5,7 @@ import { map } from 'rxjs/operators';
 import { CustomVariableSupport, DataQueryRequest, DataQueryResponse, rangeUtil } from '@grafana/data';
 import { getTemplateSrv, TemplateSrv } from '@grafana/runtime';
 
-import { PromVariableQueryEditor } from './components/VariableQueryEditor';
+import { PromVariableQueryEditor } from './components/LazyEditors';
 import { PrometheusDatasource } from './datasource';
 import { PrometheusMetricFindQuery } from './metric_find_query';
 import { PromVariableQuery } from './types';
