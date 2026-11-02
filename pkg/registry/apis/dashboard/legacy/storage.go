@@ -88,6 +88,19 @@ func (a *dashboardSqlAccess) WriteEvent(ctx context.Context, event resource.Writ
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		if errors.Is(err, dashboards.ErrDashboardVersionMismatch) {
+			err = apierrors.NewConflict(dashboard.DashboardResourceInfo.GroupResource(), event.Key.Name, err)
+		} else if errors.Is(err, dashboards.ErrDashboardWithSameUIDExists) {
+			err = apierrors.NewAlreadyExists(dashboard.DashboardResourceInfo.GroupResource(), event.Key.Name)
+		}
+	}()
+	if event.Type == resourcepb.WatchEvent_ADDED && event.PreviousRV != 0 {
+		return 0, apierrors.NewBadRequest("dashboard create must not include a previous resource version")
+	}
+	if event.Type == resourcepb.WatchEvent_MODIFIED && event.PreviousRV <= 0 {
+		return 0, apierrors.NewBadRequest("dashboard update must include the previous resource version")
+	}
 
 	switch event.Type {
 	case resourcepb.WatchEvent_DELETED:
@@ -95,7 +108,6 @@ func (a *dashboardSqlAccess) WriteEvent(ctx context.Context, event resource.Writ
 			_, _, err = a.DeleteDashboard(ctx, info.OrgID, event.Key.Name)
 			//rv = ???
 		}
-	// The difference depends on embedded internal ID
 	case resourcepb.WatchEvent_ADDED, resourcepb.WatchEvent_MODIFIED:
 		{
 			dash, err := getDashboardFromEvent(event)
@@ -111,7 +123,7 @@ func (a *dashboardSqlAccess) WriteEvent(ctx context.Context, event resource.Writ
 				return 0, err
 			}
 			if provisioning != nil {
-				cmd, _, err := a.buildSaveDashboardCommand(ctx, info.OrgID, dash)
+				cmd, err := a.buildSaveDashboardCommand(ctx, info.OrgID, dash, event.PreviousRV)
 				if err != nil {
 					return 0, err
 				}
@@ -131,7 +143,6 @@ func (a *dashboardSqlAccess) WriteEvent(ctx context.Context, event resource.Writ
 					}
 				}
 			} else {
-				failOnExisting := event.Type == resourcepb.WatchEvent_ADDED
 				sql, err := a.sql(ctx)
 				if err != nil {
 					return 0, err
@@ -140,7 +151,7 @@ func (a *dashboardSqlAccess) WriteEvent(ctx context.Context, event resource.Writ
 				var after *dashboard.Dashboard
 				if err := sql.DB.InTransaction(ctx, func(ctx context.Context) error {
 					var err error
-					after, _, err = a.SaveDashboard(ctx, info.OrgID, dash, failOnExisting)
+					after, err = a.SaveDashboard(ctx, info.OrgID, dash, event.PreviousRV)
 					return err
 				}); err != nil {
 					return 0, err
