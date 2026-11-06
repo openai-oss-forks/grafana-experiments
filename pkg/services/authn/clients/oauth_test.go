@@ -486,7 +486,7 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 		{"direct host", forwardedHostHeader, alternate, "", alternate},
 		{"caller-supplied forwarded host", forwardedHostHeader, alternate, "caller.example.org", "caller.example.org"},
 		{"preserved host ignores forwarding headers", "Host", alternate, primary, alternate},
-		{"default uses root URL", "", alternate, alternate, primary},
+		{"empty setting uses root URL", "", alternate, alternate, primary},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg.AzureADCallbackHostHeader = tc.header

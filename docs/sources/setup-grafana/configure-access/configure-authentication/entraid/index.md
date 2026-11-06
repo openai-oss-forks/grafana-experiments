@@ -322,21 +322,14 @@ Register an HTTPS Web redirect URI for each browser-facing hostname in Entra ID.
 Use the Grafana subpath followed by `/login/azuread` on each host.
 For example, if users open `https://grafana.example.org/metrics/d/overview`, register `https://grafana.example.org/metrics/login/azuread`.
 
-To derive the callback from the incoming request, set the following option and restart Grafana.
-
-```ini
-[auth]
-azuread_callback_host_header = X-Forwarded-Host
-```
-
-When the proxy rewrites `Host` and forwards the original host in `X-Forwarded-Host`, Grafana uses the forwarded host for both the login redirect and the token exchange.
+Grafana uses `X-Forwarded-Host` by default to build the HTTPS callback for both the login redirect and the token exchange.
 For direct requests where that header is absent, Grafana uses `Host`, including any explicit port.
 Grafana rejects forwarding headers that contain multiple hosts.
 
 A caller who can set the forwarding header can influence which callback Grafana requests.
 Entra ID accepts only redirect URIs registered for the application, so register only endpoints you control.
 To use the request host on every route, set `azuread_callback_host_header = Host`.
-Leaving the setting empty uses the callback derived from `root_url`.
+To derive the callback from `root_url`, set `azuread_callback_host_header` to an empty value under `[auth]`.
 
 ### Configure refresh token
 
