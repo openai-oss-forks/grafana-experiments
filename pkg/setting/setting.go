@@ -20,6 +20,7 @@ import (
 
 	"github.com/gobwas/glob"
 	"github.com/prometheus/common/model"
+	"golang.org/x/net/http/httpguts"
 	"gopkg.in/ini.v1"
 
 	"github.com/grafana/grafana-aws-sdk/pkg/awsds"
@@ -300,7 +301,7 @@ type Cfg struct {
 	OAuthAutoLogin                       bool
 	OAuthLoginErrorMessage               string
 	OAuthCookieMaxAge                    int
-	AzureADCallbackURLs                  map[string]string
+	AzureADCallbackHostHeader            string
 	OAuthAllowInsecureEmailLookup        bool
 	OAuthRefreshTokenServerLockMinWaitMs int64
 
@@ -1763,24 +1764,6 @@ func readSecuritySettings(iniFile *ini.File, cfg *Cfg) error {
 	return nil
 }
 
-// Index registered callback URLs by their browser-facing authority (including any port).
-func parseAzureADCallbackURLs(value, subURL string) (map[string]string, error) {
-	callbacks := make(map[string]string)
-	for _, callback := range strings.Fields(value) {
-		u, err := url.Parse(callback)
-		if err != nil || u.Hostname() == "" || strings.ContainsAny(u.Host, "*,") ||
-			callback != "https://"+u.Host+subURL+"/login/azuread" {
-			return nil, errors.New("azuread_callback_urls requires exact HTTPS URLs for the Grafana /login/azuread route")
-		}
-		host := strings.ToLower(u.Host)
-		if _, exists := callbacks[host]; exists {
-			return nil, fmt.Errorf("duplicate host %q in azuread_callback_urls", host)
-		}
-		callbacks[host] = callback
-	}
-	return callbacks, nil
-}
-
 func readAuthSettings(iniFile *ini.File, cfg *Cfg) (err error) {
 	auth := iniFile.Section("auth")
 
@@ -1820,9 +1803,9 @@ func readAuthSettings(iniFile *ini.File, cfg *Cfg) (err error) {
 	// Default to the translation key used in the frontend
 	cfg.OAuthLoginErrorMessage = valueAsString(auth, "oauth_login_error_message", "oauth.login.error")
 	cfg.OAuthCookieMaxAge = auth.Key("oauth_state_cookie_max_age").MustInt(600)
-	cfg.AzureADCallbackURLs, err = parseAzureADCallbackURLs(auth.Key("azuread_callback_urls").String(), cfg.AppSubURL)
-	if err != nil {
-		return err
+	cfg.AzureADCallbackHostHeader = auth.Key("azuread_callback_host_header").String()
+	if cfg.AzureADCallbackHostHeader != "" && !httpguts.ValidHeaderFieldName(cfg.AzureADCallbackHostHeader) {
+		return errors.New("azuread_callback_host_header must be an HTTP header name")
 	}
 	cfg.OAuthRefreshTokenServerLockMinWaitMs = auth.Key("oauth_refresh_token_server_lock_min_wait_ms").MustInt64(1000)
 	cfg.SignoutRedirectUrl = valueAsString(auth, "signout_redirect_url", "")

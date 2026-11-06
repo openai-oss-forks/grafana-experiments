@@ -318,19 +318,22 @@ Verify that the Grafana [root_url](../../../configure-grafana/#root_url) is set 
 
 ### Use multiple browser-facing hostnames
 
-If trusted reverse proxies expose the same Grafana instance on multiple hostnames, register a Web redirect URI in Entra ID for each hostname.
-Use the same Grafana subpath on each hostname.
-List the exact HTTPS callback URLs in your Grafana configuration and restart Grafana.
+Register an HTTPS Web redirect URI for each browser-facing hostname in Entra ID.
+Use the Grafana subpath followed by `/login/azuread` on each host.
+For example, if users open `https://grafana.example.org/metrics/d/overview`, register `https://grafana.example.org/metrics/login/azuread`.
+
+To derive the callback from the incoming request, set the following option and restart Grafana.
 
 ```ini
 [auth]
-azuread_callback_urls = https://grafana.example.com/login/azuread https://grafana.example.net/login/azuread
+azuread_callback_host_header = Host
 ```
 
-On every route to Grafana, have the trusted ingress strip any client-supplied `X-Grafana-External-Host` and set a single value to the browser-facing host from the matched route, including its port if present in the callback URL.
-Preserve that verified value across trusted proxy hops, including requests to the callback, and restrict direct access to Grafana to those proxies.
-Grafana rejects Entra ID login requests with a missing, repeated, or unlisted host when this setting is enabled.
-With an empty list, Grafana uses the callback derived from `root_url`.
+If a reverse proxy rewrites `Host`, set the option to the header in which your proxy preserves the verified browser-facing authority, such as `X-Envoy-Original-Host`.
+Only enable this behind ingress that validates the request host and strips client-supplied copies of the selected proxy header on every entry point.
+Grafana uses the proxy header when present and the request host otherwise, including any explicit port.
+Apply the same forwarding rules to the login and callback requests.
+Leaving the setting empty uses the callback derived from `root_url`.
 
 ### Configure refresh token
 

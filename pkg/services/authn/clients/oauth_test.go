@@ -457,16 +457,13 @@ func TestOAuth_RedirectURL(t *testing.T) {
 	}
 }
 
-func TestOAuth_AzureADCallbackURLs(t *testing.T) {
+func TestOAuth_AzureADCallbackHost(t *testing.T) {
 	const primary = "grafana.example.com"
 	const alternate = "alternate.example.com:8443"
 	const path = "/grafana/login/azuread"
 	cfg := setting.NewCfg()
 	cfg.AppURL = "https://" + primary + "/grafana/"
-	cfg.AzureADCallbackURLs = map[string]string{
-		primary:   "https://" + primary + path,
-		alternate: "https://" + alternate + path,
-	}
+	cfg.AppSubURL = "/grafana"
 
 	// Inspect the actual form posted by the Azure AD connector. End the flow before user lookup.
 	forms := make(chan url.Values, 1)
@@ -481,15 +478,26 @@ func TestOAuth_AzureADCallbackURLs(t *testing.T) {
 	connector := connectors.NewAzureADProvider(info, cfg, nil, ssosettingstests.NewFakeService(), features, nil)
 	svc := &socialtest.FakeSocialService{ExpectedAuthInfoProvider: info, ExpectedConnector: connector, ExpectedHttpClient: idp.Client()}
 	client := ProvideOAuth(authn.ClientWithPrefix("azuread"), cfg, nil, svc, nil, features, tracing.InitializeTracerForTest())
-	for _, host := range []string{alternate, primary} {
-		t.Run(host, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "https://upstream.example.org"+path, nil)
+	const originalHost = "X-Envoy-Original-Host"
+	for _, tc := range []struct {
+		name, header, requestHost, originalHost, wantHost string
+	}{
+		{"rewritten host", originalHost, alternate, primary, primary},
+		{"direct host", originalHost, alternate, "", alternate},
+		{"preserved host ignores forwarding headers", "Host", alternate, primary, alternate},
+		{"default uses root URL", "", alternate, alternate, primary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg.AzureADCallbackHostHeader = tc.header
+			req := httptest.NewRequest(http.MethodGet, "https://"+tc.requestHost+path+"?redirect_uri=https://untrusted.example.org", nil)
 			req.Header.Set("X-Forwarded-Host", "untrusted.example.org")
-			req.Header.Set("X-Grafana-External-Host", strings.ToUpper(host))
+			if tc.originalHost != "" {
+				req.Header.Set(originalHost, tc.originalHost)
+			}
 			redirect, err := client.RedirectURL(t.Context(), &authn.Request{HTTPRequest: req})
 			require.NoError(t, err)
 			params := mustParseURL(redirect.URL).Query()
-			require.Equal(t, cfg.AzureADCallbackURLs[host], params.Get("redirect_uri"))
+			require.Equal(t, "https://"+tc.wantHost+path, params.Get("redirect_uri"))
 			require.NotEmpty(t, params.Get("code_challenge"))
 			req.URL.RawQuery = url.Values{"state": {params.Get("state")}, "code": {"test-code"}}.Encode()
 			req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: redirect.Extra[authn.KeyOAuthState]})
@@ -504,19 +512,30 @@ func TestOAuth_AzureADCallbackURLs(t *testing.T) {
 			default:
 				t.Fatal("missing token request")
 			}
-
-			req.Header.Del("X-Grafana-External-Host")
-			_, err = client.Authenticate(t.Context(), &authn.Request{HTTPRequest: req})
-			require.ErrorIs(t, err, errOAuthCallbackHost)
 		})
 	}
-	for _, hosts := range [][]string{nil, {"unknown.example.org"}, {primary, alternate}, {primary + ", " + alternate}, {"alternate.example.com"}} {
-		req := httptest.NewRequest(http.MethodGet, "https://"+primary+path, nil)
-		req.Header.Set("X-Forwarded-Host", alternate)
+
+	cfg.AzureADCallbackHostHeader = originalHost
+	for _, hosts := range [][]string{
+		{""},
+		{primary, alternate},
+		{primary + "," + alternate},
+		{"https://" + primary},
+		{primary + "/extra"},
+		{"user@" + primary},
+		{primary + "?q=1"},
+		{primary + "#fragment"},
+		{"a\\b"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "https://"+primary+path+"?state=test", nil)
+		req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: hashOAuthState("test", cfg.SecretKey, info.ClientSecret)})
 		for _, host := range hosts {
-			req.Header.Add("X-Grafana-External-Host", host)
+			req.Header.Add(originalHost, host)
 		}
-		_, err := client.RedirectURL(t.Context(), &authn.Request{HTTPRequest: req})
+		r := &authn.Request{HTTPRequest: req}
+		_, err := client.RedirectURL(t.Context(), r)
+		require.ErrorIs(t, err, errOAuthCallbackHost)
+		_, err = client.Authenticate(t.Context(), r)
 		require.ErrorIs(t, err, errOAuthCallbackHost)
 	}
 }

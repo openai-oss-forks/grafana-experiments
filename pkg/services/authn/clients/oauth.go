@@ -304,23 +304,33 @@ func (c *OAuth) RedirectURL(ctx context.Context, r *authn.Request) (*authn.Redir
 
 // Both legs of the code flow must send the same registered redirect_uri.
 func (c *OAuth) callbackOptions(r *authn.Request) ([]oauth2.AuthCodeOption, error) {
-	if c.providerName != social.AzureADProviderName || len(c.cfg.AzureADCallbackURLs) == 0 {
+	header := c.cfg.AzureADCallbackHostHeader
+	if c.providerName != social.AzureADProviderName || header == "" {
 		return nil, nil
 	}
-
-	// The ingress must overwrite this header with the authority from its matched route.
 	if r == nil || r.HTTPRequest == nil {
 		return nil, errOAuthCallbackHost.Errorf("missing OAuth request")
 	}
-	hosts := r.HTTPRequest.Header.Values("X-Grafana-External-Host")
-	if len(hosts) != 1 {
-		return nil, errOAuthCallbackHost.Errorf("expected one X-Grafana-External-Host value")
+
+	// Go exposes the request authority in Host. A trusted proxy may preserve
+	// the original authority in the configured header when it rewrites Host.
+	host := r.HTTPRequest.Host
+	if !strings.EqualFold(header, "Host") {
+		values := r.HTTPRequest.Header.Values(header)
+		switch len(values) {
+		case 0: // The request authority was preserved.
+		case 1:
+			host = values[0]
+		default:
+			return nil, errOAuthCallbackHost.Errorf("multiple callback host header values")
+		}
 	}
-	callback, ok := c.cfg.AzureADCallbackURLs[strings.ToLower(hosts[0])]
-	if !ok {
-		return nil, errOAuthCallbackHost.Errorf("no registered callback for X-Grafana-External-Host")
+	callback, err := url.Parse("https://" + host)
+	if err != nil || callback.Host != host || callback.Hostname() == "" || strings.ContainsAny(host, ",*") {
+		return nil, errOAuthCallbackHost.Errorf("invalid callback host")
 	}
-	return []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("redirect_uri", callback)}, nil
+	callback.Path = c.cfg.AppSubURL + social.SocialBaseUrl + c.providerName
+	return []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("redirect_uri", callback.String())}, nil
 }
 
 func (c *OAuth) Logout(ctx context.Context, user identity.Requester, sessionToken *auth.UserToken) (*authn.Redirect, bool) {

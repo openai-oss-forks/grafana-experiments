@@ -752,22 +752,3 @@ func TestDynamicSection(t *testing.T) {
 		assert.Equal(t, value, ds.section.Key(key).String())
 	})
 }
-
-func TestParseAzureADCallbackURLs(t *testing.T) {
-	const primary = "https://Grafana.example.org/sub/login/azuread"
-	const alternate = "https://alternate.example.org:8443/sub/login/azuread"
-	callbacks, err := parseAzureADCallbackURLs(primary+" "+alternate, "/sub")
-	require.NoError(t, err)
-	require.Equal(t, map[string]string{"grafana.example.org": primary, "alternate.example.org:8443": alternate}, callbacks)
-
-	for _, value := range []string{
-		"http://example.org/sub/login/azuread",
-		"https://*.example.org/sub/login/azuread",
-		"https://alice@example.org/sub/login/azuread",
-		"https://example.org/login/azuread",
-		primary + "?next=/", primary + "#fragment", primary + " " + strings.ToLower(primary),
-	} {
-		_, err := parseAzureADCallbackURLs(value, "/sub")
-		require.Error(t, err, value)
-	}
-}
