@@ -48,6 +48,8 @@ var (
 	errOAuthGenPKCE     = errutil.Internal("auth.oauth.pkce.internal", errutil.WithPublicMessage("An internal error occurred"))
 	errOAuthMissingPKCE = errutil.BadRequest("auth.oauth.pkce.missing", errutil.WithPublicMessage("Missing required pkce cookie"))
 
+	errOAuthCallbackHost = errutil.BadRequest("auth.oauth.callback-host", errutil.WithPublicMessage("Unrecognized OAuth callback host"))
+
 	errOAuthGenState     = errutil.Internal("auth.oauth.state.internal", errutil.WithPublicMessage("An internal error occurred"))
 	errOAuthMissingState = errutil.BadRequest("auth.oauth.state.missing", errutil.WithPublicMessage("Missing saved oauth state"))
 	errOAuthInvalidState = errutil.Unauthorized("auth.oauth.state.invalid", errutil.WithPublicMessage("Provided state does not match stored state"))
@@ -130,7 +132,10 @@ func (c *OAuth) Authenticate(ctx context.Context, r *authn.Request) (*authn.Iden
 		return nil, errOAuthInvalidState.Errorf("provided state did not match stored state")
 	}
 
-	var opts []oauth2.AuthCodeOption
+	opts, err := c.callbackOptions(r)
+	if err != nil {
+		return nil, err
+	}
 	// if pkce is enabled for client validate we have the cookie and set it as url param
 	if oauthCfg.UsePKCE {
 		pkceCookie, err := r.HTTPRequest.Cookie(oauthPKCECookieName)
@@ -254,13 +259,15 @@ func (c *OAuth) RedirectURL(ctx context.Context, r *authn.Request) (*authn.Redir
 	ctx, span := c.tracer.Start(ctx, "authn.oauth.RedirectURL") //nolint:ineffassign,staticcheck
 	defer span.End()
 
-	var opts []oauth2.AuthCodeOption
-
 	oauthCfg := c.socialService.GetOAuthInfoProvider(c.providerName)
 	if !oauthCfg.Enabled {
 		return nil, errOAuthClientDisabled.Errorf("oauth client is disabled: %s", c.providerName)
 	}
 
+	opts, err := c.callbackOptions(r)
+	if err != nil {
+		return nil, err
+	}
 	if oauthCfg.HostedDomain != "" {
 		opts = append(opts, oauth2.SetAuthURLParam(hostedDomainParamName, oauthCfg.HostedDomain))
 	}
@@ -293,6 +300,27 @@ func (c *OAuth) RedirectURL(ctx context.Context, r *authn.Request) (*authn.Redir
 			authn.KeyOAuthPKCE:  plainPKCE,
 		},
 	}, nil
+}
+
+// Both legs of the code flow must send the same registered redirect_uri.
+func (c *OAuth) callbackOptions(r *authn.Request) ([]oauth2.AuthCodeOption, error) {
+	if c.providerName != social.AzureADProviderName || len(c.cfg.AzureADCallbackURLs) == 0 {
+		return nil, nil
+	}
+
+	// The ingress must overwrite this header with the authority from its matched route.
+	if r == nil || r.HTTPRequest == nil {
+		return nil, errOAuthCallbackHost.Errorf("missing OAuth request")
+	}
+	hosts := r.HTTPRequest.Header.Values("X-Grafana-External-Host")
+	if len(hosts) != 1 {
+		return nil, errOAuthCallbackHost.Errorf("expected one X-Grafana-External-Host value")
+	}
+	callback, ok := c.cfg.AzureADCallbackURLs[strings.ToLower(hosts[0])]
+	if !ok {
+		return nil, errOAuthCallbackHost.Errorf("no registered callback for X-Grafana-External-Host")
+	}
+	return []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("redirect_uri", callback)}, nil
 }
 
 func (c *OAuth) Logout(ctx context.Context, user identity.Requester, sessionToken *auth.UserToken) (*authn.Redirect, bool) {

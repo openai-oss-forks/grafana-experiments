@@ -316,6 +316,22 @@ GF_AUTH_AZUREAD_FEDERATED_CREDENTIAL_AUDIENCE
 Verify that the Grafana [root_url](../../../configure-grafana/#root_url) is set in your Azure Application Redirect URLs.
 {{< /admonition >}}
 
+### Use multiple browser-facing hostnames
+
+If trusted reverse proxies expose the same Grafana instance on multiple hostnames, register a Web redirect URI in Entra ID for each hostname.
+Use the same Grafana subpath on each hostname.
+List the exact HTTPS callback URLs in your Grafana configuration and restart Grafana.
+
+```ini
+[auth]
+azuread_callback_urls = https://grafana.example.com/login/azuread https://grafana.example.net/login/azuread
+```
+
+On every route to Grafana, have the trusted ingress strip any client-supplied `X-Grafana-External-Host` and set a single value to the browser-facing host from the matched route, including its port if present in the callback URL.
+Preserve that verified value across trusted proxy hops, including requests to the callback, and restrict direct access to Grafana to those proxies.
+Grafana rejects Entra ID login requests with a missing, repeated, or unlisted host when this setting is enabled.
+With an empty list, Grafana uses the callback derived from `root_url`.
+
 ### Configure refresh token
 
 When a user logs in using an OAuth provider, Grafana verifies that the access token has not expired. When an access token expires, Grafana uses the provided refresh token (if any exists) to obtain a new access token.
