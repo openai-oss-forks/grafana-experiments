@@ -478,21 +478,22 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 	connector := connectors.NewAzureADProvider(info, cfg, nil, ssosettingstests.NewFakeService(), features, nil)
 	svc := &socialtest.FakeSocialService{ExpectedAuthInfoProvider: info, ExpectedConnector: connector, ExpectedHttpClient: idp.Client()}
 	client := ProvideOAuth(authn.ClientWithPrefix("azuread"), cfg, nil, svc, nil, features, tracing.InitializeTracerForTest())
-	const originalHost = "X-Envoy-Original-Host"
+	const forwardedHostHeader = "X-Forwarded-Host"
 	for _, tc := range []struct {
-		name, header, requestHost, originalHost, wantHost string
+		name, header, requestHost, forwardedHost, wantHost string
 	}{
-		{"rewritten host", originalHost, alternate, primary, primary},
-		{"direct host", originalHost, alternate, "", alternate},
+		{"rewritten host", forwardedHostHeader, alternate, primary, primary},
+		{"direct host", forwardedHostHeader, alternate, "", alternate},
+		{"caller-supplied forwarded host", forwardedHostHeader, alternate, "caller.example.org", "caller.example.org"},
 		{"preserved host ignores forwarding headers", "Host", alternate, primary, alternate},
 		{"default uses root URL", "", alternate, alternate, primary},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg.AzureADCallbackHostHeader = tc.header
 			req := httptest.NewRequest(http.MethodGet, "https://"+tc.requestHost+path+"?redirect_uri=https://untrusted.example.org", nil)
-			req.Header.Set("X-Forwarded-Host", "untrusted.example.org")
-			if tc.originalHost != "" {
-				req.Header.Set(originalHost, tc.originalHost)
+			req.Header.Set("X-Envoy-Original-Host", "ignored.example.org")
+			if tc.forwardedHost != "" {
+				req.Header.Set(forwardedHostHeader, tc.forwardedHost)
 			}
 			redirect, err := client.RedirectURL(t.Context(), &authn.Request{HTTPRequest: req})
 			require.NoError(t, err)
@@ -515,7 +516,7 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 		})
 	}
 
-	cfg.AzureADCallbackHostHeader = originalHost
+	cfg.AzureADCallbackHostHeader = forwardedHostHeader
 	for _, hosts := range [][]string{
 		{""},
 		{primary, alternate},
@@ -530,7 +531,7 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://"+primary+path+"?state=test", nil)
 		req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: hashOAuthState("test", cfg.SecretKey, info.ClientSecret)})
 		for _, host := range hosts {
-			req.Header.Add(originalHost, host)
+			req.Header.Add(forwardedHostHeader, host)
 		}
 		r := &authn.Request{HTTPRequest: req}
 		_, err := client.RedirectURL(t.Context(), r)

@@ -326,13 +326,16 @@ To derive the callback from the incoming request, set the following option and r
 
 ```ini
 [auth]
-azuread_callback_host_header = Host
+azuread_callback_host_header = X-Forwarded-Host
 ```
 
-If a reverse proxy rewrites `Host`, set the option to the header in which your proxy preserves the verified browser-facing authority, such as `X-Envoy-Original-Host`.
-Only enable this behind ingress that validates the request host and strips client-supplied copies of the selected proxy header on every entry point.
-Grafana uses the proxy header when present and the request host otherwise, including any explicit port.
-Apply the same forwarding rules to the login and callback requests.
+When the proxy rewrites `Host` and forwards the original host in `X-Forwarded-Host`, Grafana uses the forwarded host for both the login redirect and the token exchange.
+For direct requests where that header is absent, Grafana uses `Host`, including any explicit port.
+Grafana rejects forwarding headers that contain multiple hosts.
+
+A caller who can set the forwarding header can influence which callback Grafana requests.
+Entra ID accepts only redirect URIs registered for the application, so register only endpoints you control.
+To use the request host on every route, set `azuread_callback_host_header = Host`.
 Leaving the setting empty uses the callback derived from `root_url`.
 
 ### Configure refresh token
