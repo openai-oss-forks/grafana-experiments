@@ -3,6 +3,7 @@ package clients
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/login/social"
+	"github.com/grafana/grafana/pkg/login/social/connectors"
 	"github.com/grafana/grafana/pkg/login/social/socialtest"
 	"github.com/grafana/grafana/pkg/models/usertoken"
 	"github.com/grafana/grafana/pkg/services/auth"
@@ -27,6 +29,7 @@ import (
 	"github.com/grafana/grafana/pkg/services/oauthtoken"
 	"github.com/grafana/grafana/pkg/services/oauthtoken/oauthtokentest"
 	"github.com/grafana/grafana/pkg/services/org"
+	"github.com/grafana/grafana/pkg/services/ssosettings/ssosettingstests"
 	"github.com/grafana/grafana/pkg/setting"
 )
 
@@ -451,6 +454,90 @@ func TestOAuth_RedirectURL(t *testing.T) {
 				assert.NotEmpty(t, redirect.Extra[authn.KeyOAuthPKCE])
 			}
 		})
+	}
+}
+
+func TestOAuth_AzureADCallbackHost(t *testing.T) {
+	const primary = "grafana.example.com"
+	const alternate = "alternate.example.com:8443"
+	const path = "/grafana/login/azuread"
+	cfg := setting.NewCfg()
+	cfg.AppURL = "https://" + primary + "/grafana/"
+	cfg.AppSubURL = "/grafana"
+
+	// Inspect the actual form posted by the Azure AD connector. End the flow before user lookup.
+	forms := make(chan url.Values, 1)
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.NoError(t, r.ParseForm())
+		forms <- r.PostForm
+		http.Error(w, "invalid_grant", http.StatusBadRequest)
+	}))
+	defer idp.Close()
+	info := &social.OAuthInfo{Enabled: true, AuthUrl: idp.URL + "/authorize", TokenUrl: idp.URL + "/token", AuthStyle: "InParams", UsePKCE: true}
+	features := featuremgmt.WithFeatures()
+	connector := connectors.NewAzureADProvider(info, cfg, nil, ssosettingstests.NewFakeService(), features, nil)
+	svc := &socialtest.FakeSocialService{ExpectedAuthInfoProvider: info, ExpectedConnector: connector, ExpectedHttpClient: idp.Client()}
+	client := ProvideOAuth(authn.ClientWithPrefix("azuread"), cfg, nil, svc, nil, features, tracing.InitializeTracerForTest())
+	const forwardedHostHeader = "X-Forwarded-Host"
+	for _, tc := range []struct {
+		name, header, requestHost, forwardedHost, wantHost string
+	}{
+		{"rewritten host", forwardedHostHeader, alternate, primary, primary},
+		{"direct host", forwardedHostHeader, alternate, "", alternate},
+		{"caller-supplied forwarded host", forwardedHostHeader, alternate, "caller.example.org", "caller.example.org"},
+		{"preserved host ignores forwarding headers", "Host", alternate, primary, alternate},
+		{"empty setting uses root URL", "", alternate, alternate, primary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg.AzureADCallbackHostHeader = tc.header
+			req := httptest.NewRequest(http.MethodGet, "https://"+tc.requestHost+path+"?redirect_uri=https://untrusted.example.org", nil)
+			req.Header.Set("X-Envoy-Original-Host", "ignored.example.org")
+			if tc.forwardedHost != "" {
+				req.Header.Set(forwardedHostHeader, tc.forwardedHost)
+			}
+			redirect, err := client.RedirectURL(t.Context(), &authn.Request{HTTPRequest: req})
+			require.NoError(t, err)
+			params := mustParseURL(redirect.URL).Query()
+			require.Equal(t, "https://"+tc.wantHost+path, params.Get("redirect_uri"))
+			require.NotEmpty(t, params.Get("code_challenge"))
+			req.URL.RawQuery = url.Values{"state": {params.Get("state")}, "code": {"test-code"}}.Encode()
+			req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: redirect.Extra[authn.KeyOAuthState]})
+			req.AddCookie(&http.Cookie{Name: oauthPKCECookieName, Value: redirect.Extra[authn.KeyOAuthPKCE]})
+
+			_, err = client.Authenticate(t.Context(), &authn.Request{HTTPRequest: req})
+			require.ErrorIs(t, err, errOAuthTokenExchange)
+			select {
+			case form := <-forms:
+				require.Equal(t, []string{params.Get("redirect_uri")}, form["redirect_uri"])
+				require.Equal(t, redirect.Extra[authn.KeyOAuthPKCE], form.Get("code_verifier"))
+			default:
+				t.Fatal("missing token request")
+			}
+		})
+	}
+
+	cfg.AzureADCallbackHostHeader = forwardedHostHeader
+	for _, hosts := range [][]string{
+		{""},
+		{primary, alternate},
+		{primary + "," + alternate},
+		{"https://" + primary},
+		{primary + "/extra"},
+		{"user@" + primary},
+		{primary + "?q=1"},
+		{primary + "#fragment"},
+		{"a\\b"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "https://"+primary+path+"?state=test", nil)
+		req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: hashOAuthState("test", cfg.SecretKey, info.ClientSecret)})
+		for _, host := range hosts {
+			req.Header.Add(forwardedHostHeader, host)
+		}
+		r := &authn.Request{HTTPRequest: req}
+		_, err := client.RedirectURL(t.Context(), r)
+		require.ErrorIs(t, err, errOAuthCallbackHost)
+		_, err = client.Authenticate(t.Context(), r)
+		require.ErrorIs(t, err, errOAuthCallbackHost)
 	}
 }
 

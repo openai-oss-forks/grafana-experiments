@@ -33,6 +33,7 @@ func TestLoadingSettings(t *testing.T) {
 		require.Nil(t, err)
 
 		require.Equal(t, "admin", cfg.AdminUser)
+		require.Equal(t, "X-Forwarded-Host", cfg.AzureADCallbackHostHeader)
 		require.Equal(t, "", cfg.RendererCallbackUrl)
 		require.Equal(t, "TLS1.2", cfg.MinTLSVersion)
 		require.Empty(t, cfg.ExplorePanelMenuLabel)

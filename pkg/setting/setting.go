@@ -20,6 +20,7 @@ import (
 
 	"github.com/gobwas/glob"
 	"github.com/prometheus/common/model"
+	"golang.org/x/net/http/httpguts"
 	"gopkg.in/ini.v1"
 
 	"github.com/grafana/grafana-aws-sdk/pkg/awsds"
@@ -300,6 +301,7 @@ type Cfg struct {
 	OAuthAutoLogin                       bool
 	OAuthLoginErrorMessage               string
 	OAuthCookieMaxAge                    int
+	AzureADCallbackHostHeader            string
 	OAuthAllowInsecureEmailLookup        bool
 	OAuthRefreshTokenServerLockMinWaitMs int64
 
@@ -1801,6 +1803,10 @@ func readAuthSettings(iniFile *ini.File, cfg *Cfg) (err error) {
 	// Default to the translation key used in the frontend
 	cfg.OAuthLoginErrorMessage = valueAsString(auth, "oauth_login_error_message", "oauth.login.error")
 	cfg.OAuthCookieMaxAge = auth.Key("oauth_state_cookie_max_age").MustInt(600)
+	cfg.AzureADCallbackHostHeader = auth.Key("azuread_callback_host_header").String()
+	if cfg.AzureADCallbackHostHeader != "" && !httpguts.ValidHeaderFieldName(cfg.AzureADCallbackHostHeader) {
+		return errors.New("azuread_callback_host_header must be an HTTP header name")
+	}
 	cfg.OAuthRefreshTokenServerLockMinWaitMs = auth.Key("oauth_refresh_token_server_lock_min_wait_ms").MustInt64(1000)
 	cfg.SignoutRedirectUrl = valueAsString(auth, "signout_redirect_url", "")
 
