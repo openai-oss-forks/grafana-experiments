@@ -8,6 +8,37 @@ test.describe(
     tag: ['@panels'],
   },
   () => {
+    test('Reopens the visualization after collapsing it completely', async ({ selectors, gotoDashboardPage, page }) => {
+      const dashboardPage = await gotoDashboardPage({
+        uid: '5SdHCadmz',
+        queryParams: new URLSearchParams({ editPanel: '3' }),
+      });
+      await expect(dashboardPage.getByGrafanaSelector(selectors.components.PanelEditor.DataPane.content)).toBeVisible();
+
+      const splitter = page.getByRole('separator', { name: 'Pane resize widget' }).first();
+      const paneId = await splitter.getAttribute('aria-controls');
+      const visualization = page.locator(`[id="${paneId}"]`);
+      const bounds = (await splitter.boundingBox())!;
+      const height = await visualization.evaluate((element) => element.getBoundingClientRect().height);
+
+      await splitter.hover();
+      await page.mouse.down();
+      await page.mouse.move(bounds.x + bounds.width / 2, bounds.y - height - 20);
+      await page.mouse.up();
+      await expect(visualization).toHaveCSS('height', '0px');
+      await page.mouse.move(0, 0);
+
+      const collapsedBounds = (await splitter.boundingBox())!;
+      await splitter.hover();
+      await page.mouse.down();
+      await page.mouse.move(collapsedBounds.x + collapsedBounds.width / 2, collapsedBounds.y + 120);
+      await page.mouse.up();
+
+      await expect
+        .poll(() => visualization.evaluate((element) => element.getBoundingClientRect().height))
+        .toBeGreaterThan(80);
+    });
+
     test('Tests various Panel edit queries scenarios', async ({ selectors, gotoDashboardPage, page }) => {
       const dashboardPage = await gotoDashboardPage({
         uid: '5SdHCadmz',
