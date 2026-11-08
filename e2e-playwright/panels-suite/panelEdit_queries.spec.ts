@@ -23,10 +23,10 @@ test.describe(
 
       await splitter.hover();
       await page.mouse.down();
-      await page.mouse.move(bounds.x + bounds.width / 2, bounds.y - height - 20);
+      // Release inside the collapsed divider, below the time picker.
+      await page.mouse.move(bounds.x + bounds.width / 2, bounds.y - height + 1);
       await page.mouse.up();
       await expect(visualization).toHaveCSS('height', '0px');
-      await page.mouse.move(0, 0);
 
       const collapsedBounds = (await splitter.boundingBox())!;
       await splitter.hover();
