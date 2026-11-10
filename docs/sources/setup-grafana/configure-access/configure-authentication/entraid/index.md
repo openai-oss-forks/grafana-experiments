@@ -331,6 +331,13 @@ Entra ID accepts only redirect URIs registered for the application, so register 
 To use the request host on every route, set `azuread_callback_host_header = Host`.
 To derive the callback from `root_url`, set `azuread_callback_host_header` to an empty value under `[auth]`.
 
+To limit one callback hostname to sign-in scopes, set `azuread_sign_in_only_host` under `[auth]` to its hostname, for example, `alternate.example.org`.
+Grafana matches the full hostname case-insensitively, ignoring the port, and requests `openid email profile offline_access` on both the authorization redirect and the code exchange.
+Other hostnames use the provider's configured scopes.
+The proxy must supply a trusted callback host as described above.
+This setting controls the scopes requested during sign-in.
+Enforce data source access separately.
+
 ### Configure refresh token
 
 When a user logs in using an OAuth provider, Grafana verifies that the access token has not expired. When an access token expires, Grafana uses the provided refresh token (if any exists) to obtain a new access token.

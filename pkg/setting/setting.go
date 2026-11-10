@@ -302,6 +302,7 @@ type Cfg struct {
 	OAuthLoginErrorMessage               string
 	OAuthCookieMaxAge                    int
 	AzureADCallbackHostHeader            string
+	AzureADSignInOnlyHost                string
 	OAuthAllowInsecureEmailLookup        bool
 	OAuthRefreshTokenServerLockMinWaitMs int64
 
@@ -1806,6 +1807,16 @@ func readAuthSettings(iniFile *ini.File, cfg *Cfg) (err error) {
 	cfg.AzureADCallbackHostHeader = auth.Key("azuread_callback_host_header").String()
 	if cfg.AzureADCallbackHostHeader != "" && !httpguts.ValidHeaderFieldName(cfg.AzureADCallbackHostHeader) {
 		return errors.New("azuread_callback_host_header must be an HTTP header name")
+	}
+	cfg.AzureADSignInOnlyHost = auth.Key("azuread_sign_in_only_host").String()
+	if host := cfg.AzureADSignInOnlyHost; host != "" {
+		if cfg.AzureADCallbackHostHeader == "" {
+			return errors.New("azuread_sign_in_only_host requires azuread_callback_host_header")
+		}
+		u, err := url.Parse("https://" + host)
+		if err != nil || u.Hostname() != host || strings.ContainsAny(host, ",*") {
+			return errors.New("azuread_sign_in_only_host must be a single hostname without a port")
+		}
 	}
 	cfg.OAuthRefreshTokenServerLockMinWaitMs = auth.Key("oauth_refresh_token_server_lock_min_wait_ms").MustInt64(1000)
 	cfg.SignoutRedirectUrl = valueAsString(auth, "signout_redirect_url", "")

@@ -330,7 +330,11 @@ func (c *OAuth) callbackOptions(r *authn.Request) ([]oauth2.AuthCodeOption, erro
 		return nil, errOAuthCallbackHost.Errorf("invalid callback host")
 	}
 	callback.Path = c.cfg.AppSubURL + social.SocialBaseUrl + c.providerName
-	return []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("redirect_uri", callback.String())}, nil
+	opts := []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("redirect_uri", callback.String())}
+	if strings.EqualFold(callback.Hostname(), c.cfg.AzureADSignInOnlyHost) {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", "openid email profile offline_access"))
+	}
+	return opts, nil
 }
 
 func (c *OAuth) Logout(ctx context.Context, user identity.Requester, sessionToken *auth.UserToken) (*authn.Redirect, bool) {
