@@ -34,9 +34,22 @@ func TestLoadingSettings(t *testing.T) {
 
 		require.Equal(t, "admin", cfg.AdminUser)
 		require.Equal(t, "X-Forwarded-Host", cfg.AzureADCallbackHostHeader)
+		require.Empty(t, cfg.AzureADSignInOnlyHost)
 		require.Equal(t, "", cfg.RendererCallbackUrl)
 		require.Equal(t, "TLS1.2", cfg.MinTLSVersion)
 		require.Empty(t, cfg.ExplorePanelMenuLabel)
+	})
+
+	t.Run("Azure AD sign-in-only hostname", func(t *testing.T) {
+		t.Setenv("GF_AUTH_AZUREAD_SIGN_IN_ONLY_HOST", "alternate.example.com")
+		cfg := NewCfg()
+		require.NoError(t, cfg.Load(CommandLineArgs{HomePath: "../../"}))
+		require.Equal(t, "alternate.example.com", cfg.AzureADSignInOnlyHost)
+
+		for _, host := range []string{"*.example.com", "example.com:443", "https://example.com"} {
+			t.Setenv("GF_AUTH_AZUREAD_SIGN_IN_ONLY_HOST", host)
+			require.ErrorContains(t, cfg.Load(CommandLineArgs{HomePath: "../../"}), "single hostname")
+		}
 	})
 
 	t.Run("default.ini should have no semi-colon commented entries", func(t *testing.T) {

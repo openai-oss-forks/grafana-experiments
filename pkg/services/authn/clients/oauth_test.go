@@ -462,6 +462,7 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 	const alternate = "alternate.example.com:8443"
 	const path = "/grafana/login/azuread"
 	cfg := setting.NewCfg()
+	cfg.AzureADSignInOnlyHost = "ALTERNATE.example.com"
 	cfg.AppURL = "https://" + primary + "/grafana/"
 	cfg.AppSubURL = "/grafana"
 
@@ -473,7 +474,9 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 		http.Error(w, "invalid_grant", http.StatusBadRequest)
 	}))
 	defer idp.Close()
-	info := &social.OAuthInfo{Enabled: true, AuthUrl: idp.URL + "/authorize", TokenUrl: idp.URL + "/token", AuthStyle: "InParams", UsePKCE: true}
+	const signInScopes = "openid email profile offline_access"
+	const providerScopes = signInScopes + " api://example/read"
+	info := &social.OAuthInfo{Enabled: true, Scopes: strings.Fields(providerScopes), AuthUrl: idp.URL + "/authorize", TokenUrl: idp.URL + "/token", AuthStyle: "InParams", UsePKCE: true}
 	features := featuremgmt.WithFeatures()
 	connector := connectors.NewAzureADProvider(info, cfg, nil, ssosettingstests.NewFakeService(), features, nil)
 	svc := &socialtest.FakeSocialService{ExpectedAuthInfoProvider: info, ExpectedConnector: connector, ExpectedHttpClient: idp.Client()}
@@ -484,9 +487,11 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 	}{
 		{"rewritten host", forwardedHostHeader, alternate, primary, primary},
 		{"direct host", forwardedHostHeader, alternate, "", alternate},
+		{"forwarded sign-in host", forwardedHostHeader, primary, alternate, alternate},
 		{"caller-supplied forwarded host", forwardedHostHeader, alternate, "caller.example.org", "caller.example.org"},
 		{"preserved host ignores forwarding headers", "Host", alternate, primary, alternate},
 		{"empty setting uses root URL", "", alternate, alternate, primary},
+		{"similar host uses provider scopes", "Host", "extra." + alternate, "", "extra." + alternate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg.AzureADCallbackHostHeader = tc.header
@@ -499,6 +504,13 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 			require.NoError(t, err)
 			params := mustParseURL(redirect.URL).Query()
 			require.Equal(t, "https://"+tc.wantHost+path, params.Get("redirect_uri"))
+			wantScope := providerScopes
+			wantExchangeScope := ""
+			if strings.EqualFold(tc.wantHost, alternate) {
+				wantScope = signInScopes
+				wantExchangeScope = signInScopes
+			}
+			require.Equal(t, wantScope, params.Get("scope"))
 			require.NotEmpty(t, params.Get("code_challenge"))
 			req.URL.RawQuery = url.Values{"state": {params.Get("state")}, "code": {"test-code"}}.Encode()
 			req.AddCookie(&http.Cookie{Name: oauthStateCookieName, Value: redirect.Extra[authn.KeyOAuthState]})
@@ -508,12 +520,25 @@ func TestOAuth_AzureADCallbackHost(t *testing.T) {
 			require.ErrorIs(t, err, errOAuthTokenExchange)
 			select {
 			case form := <-forms:
+				require.Equal(t, wantExchangeScope, form.Get("scope"))
 				require.Equal(t, []string{params.Get("redirect_uri")}, form["redirect_uri"])
 				require.Equal(t, redirect.Extra[authn.KeyOAuthPKCE], form.Get("code_verifier"))
 			default:
 				t.Fatal("missing token request")
 			}
 		})
+	}
+
+	// Refresh uses the original grant. A provider-wide scope on this request
+	// would also request the resource scope for sign-in-only logins.
+	_, err := connector.TokenSource(t.Context(), &oauth2.Token{RefreshToken: "test-refresh"}).Token()
+	require.Error(t, err) // The test endpoint rejects all token requests.
+	select {
+	case form := <-forms:
+		require.Equal(t, "refresh_token", form.Get("grant_type"))
+		require.NotContains(t, form, "scope")
+	default:
+		t.Fatal("missing refresh request")
 	}
 
 	cfg.AzureADCallbackHostHeader = forwardedHostHeader
